@@ -37,17 +37,20 @@ const SYMBOL_MAP: Record<string, string> = {
 };
 
 const DATASET = "GLBX.MDP3"; // CME Group Market Data Platform 3
+const LIVE_BASE_URL = "https://live.databento.com"; // Real-time API base
 
 /**
  * DataBento API Client
  */
 export class DataBentoClient {
   private readonly http: DataBentoHTTP;
+  private readonly liveHttp: DataBentoHTTP;
   private priceCache: Map<string, { data: QuoteData; timestamp: number }> = new Map();
   private readonly CACHE_TTL = 30000; // 30 seconds
 
   constructor(apiKey: string) {
     this.http = new DataBentoHTTP(apiKey);
+    this.liveHttp = new DataBentoHTTP(apiKey, { baseUrl: LIVE_BASE_URL });
   }
 
   /**
@@ -66,6 +69,7 @@ export class DataBentoClient {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
 
+    const shouldUseLive = this.getSessionInfo().currentSession === "NY";
     const today = new Date();
     const endDate = new Date(today);
     const startDate = new Date(today);
@@ -82,7 +86,22 @@ export class DataBentoClient {
       limit: 100,
     };
 
-    const response = await this.http.get("/v0/timeseries.get_range", params);
+    let response: string | undefined;
+
+    if (shouldUseLive) {
+      try {
+        const liveResponse = await this.liveHttp.get("/v0/timeseries.get_range", params);
+        if (this.responseHasData(liveResponse)) {
+          response = liveResponse;
+        }
+      } catch (error) {
+        response = await this.http.get("/v0/timeseries.get_range", params);
+      }
+    }
+
+    if (!response) {
+      response = await this.http.get("/v0/timeseries.get_range", params);
+    }
 
     if (!response || response.length === 0) {
       throw new Error(`No quote data available for ${symbol}`);
@@ -272,5 +291,16 @@ export class DataBentoClient {
       sessionEnd,
       timestamp: now,
     };
+  }
+
+  /**
+   * Determine if a CSV response contains data rows beyond the header
+   */
+  private responseHasData(response?: string | null): boolean {
+    if (!response) {
+      return false;
+    }
+    const lines = response.split("\n");
+    return lines.slice(1).some((line) => line.trim().length > 0);
   }
 }

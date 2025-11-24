@@ -6,16 +6,16 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as dotenv from "dotenv";
-import { DataBentoClient } from "./databento-client.js";
-import { DataBentoHTTP } from "./http/databento-http.js";
-import { MetadataClient } from "./api/metadata-client.js";
-import { TimeseriesClient } from "./api/timeseries-client.js";
-import { ReferenceClient } from "./api/reference-client.js";
-import { SymbologyClient } from "./api/symbology-client.js";
-import { BatchClient } from "./api/batch-client.js";
-import { Schema, SType } from "./types/timeseries.js";
-import { SymbolType } from "./types/symbology.js";
-import type { BatchJobRequest, ListJobsParams } from "./types/batch.js";
+import { DataBentoClient } from "../src/databento-client.js";
+import { DataBentoHTTP } from "../src/http/databento-http.js";
+import { MetadataClient } from "../src/api/metadata-client.js";
+import { TimeseriesClient } from "../src/api/timeseries-client.js";
+import { ReferenceClient } from "../src/api/reference-client.js";
+import { SymbologyClient } from "../src/api/symbology-client.js";
+import { BatchClient } from "../src/api/batch-client.js";
+import { Schema, SType } from "../src/types/timeseries.js";
+import { SymbolType } from "../src/types/symbology.js";
+import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 
 // Load environment variables
 dotenv.config();

@@ -6,7 +6,14 @@
 /**
  * Configuration for DataBento API requests
  */
-export const DATABENTO_CONFIG = {
+export interface DataBentoConfig {
+  baseUrl: string;
+  timeout: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+}
+
+export const DATABENTO_CONFIG: DataBentoConfig = {
   baseUrl: "https://hist.databento.com",
   timeout: 15000, // 15 seconds
   retryAttempts: 3,
@@ -19,8 +26,9 @@ export const DATABENTO_CONFIG = {
  */
 export class DataBentoHTTP {
   private readonly apiKey: string;
+  private readonly config: DataBentoConfig;
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, overrides?: Partial<DataBentoConfig>) {
     if (!apiKey) {
       throw new Error("DATABENTO_API_KEY is required");
     }
@@ -28,6 +36,10 @@ export class DataBentoHTTP {
       throw new Error('DATABENTO_API_KEY must start with "db-"');
     }
     this.apiKey = apiKey;
+    this.config = {
+      ...DATABENTO_CONFIG,
+      ...(overrides || {}),
+    };
   }
 
   /**
@@ -38,7 +50,7 @@ export class DataBentoHTTP {
    * @returns Response text (CSV or JSON depending on endpoint)
    */
   async get(endpoint: string, params?: Record<string, any>): Promise<string> {
-    const url = new URL(endpoint, DATABENTO_CONFIG.baseUrl);
+    const url = new URL(endpoint, this.config.baseUrl);
 
     // Add query parameters
     if (params) {
@@ -60,7 +72,7 @@ export class DataBentoHTTP {
    * @returns Response text (CSV or JSON depending on endpoint)
    */
   async post(endpoint: string, data?: any): Promise<string> {
-    const url = new URL(endpoint, DATABENTO_CONFIG.baseUrl);
+    const url = new URL(endpoint, this.config.baseUrl);
 
     const body = data ? JSON.stringify(data) : undefined;
     const headers: Record<string, string> = {
@@ -88,7 +100,7 @@ export class DataBentoHTTP {
    * @returns Response text (JSON response)
    */
   async postForm(endpoint: string, data: Record<string, any>): Promise<string> {
-    const url = new URL(endpoint, DATABENTO_CONFIG.baseUrl);
+    const url = new URL(endpoint, this.config.baseUrl);
 
     // Convert data to URLSearchParams for form encoding
     const formData = new URLSearchParams();
@@ -123,7 +135,7 @@ export class DataBentoHTTP {
     url: string,
     options: RequestInit
   ): Promise<string> {
-    for (let attempt = 1; attempt <= DATABENTO_CONFIG.retryAttempts; attempt++) {
+    for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
       try {
         const response = await fetch(url, {
           ...options,
@@ -132,7 +144,7 @@ export class DataBentoHTTP {
             Authorization: this.getAuthHeader(),
             "User-Agent": "DataBento-MCP-Server/1.0",
           },
-          signal: AbortSignal.timeout(DATABENTO_CONFIG.timeout),
+          signal: AbortSignal.timeout(this.config.timeout),
         });
 
         if (!response.ok) {
@@ -145,14 +157,14 @@ export class DataBentoHTTP {
         return await response.text();
       } catch (error) {
         // If this is the last attempt, throw the error
-        if (attempt === DATABENTO_CONFIG.retryAttempts) {
+        if (attempt === this.config.retryAttempts) {
           throw new Error(
-            `DataBento API request failed after ${DATABENTO_CONFIG.retryAttempts} attempts: ${error}`
+            `DataBento API request failed after ${this.config.retryAttempts} attempts: ${error}`
           );
         }
 
         // Wait before retry with exponential backoff
-        const delay = DATABENTO_CONFIG.retryDelayMs * attempt;
+        const delay = this.config.retryDelayMs * attempt;
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
@@ -172,7 +184,7 @@ export class DataBentoHTTP {
    * Useful for constructing download URLs
    */
   getBaseUrl(): string {
-    return DATABENTO_CONFIG.baseUrl;
+    return this.config.baseUrl;
   }
 }
 

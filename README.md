@@ -1,19 +1,22 @@
-# DataBento MCP Server
+# DataBento MCP Server & Skills
 
-Model Context Protocol (MCP) server for DataBento market data, providing AI assistants with direct access to professional market data across all asset classes.
+Professional market data access via DataBento API, available as both an MCP server and Claude Code skills.
 
 ## What's New
 
-**Version 2.0 - Complete Databento API Coverage**
+**Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
-This MCP server now provides complete access to the Databento API framework with 18 tools across 6 categories:
-- Expanded from 3 original tools to 18 comprehensive tools
-- Full Historical API support (Timeseries, Metadata, Batch, Symbology)
-- Complete Reference API support (Securities, Corporate Actions, Adjustments)
-- Modular architecture with specialized API clients
+This project now supports two deployment modes:
+- **MCP Server**: For Claude Desktop and other MCP clients (18 tools)
+- **Claude Code Skills**: Native skills for Claude Code CLI (8 skill scripts)
+
+Both modes share the same core functionality:
+- Complete Databento API coverage (Timeseries, Metadata, Batch, Symbology, Reference)
+- Full Historical API support with flexible schemas
+- Real-time futures quotes (ES, NQ)
 - Type-safe TypeScript implementation throughout
 
-See [ADR 001](/Users/jeremymiranda/Dev/databento-mcp-server/docs/adrs/001-databento-api-expansion.md) for implementation details.
+Choose the deployment that fits your workflow best!
 
 ## Features
 
@@ -33,7 +36,8 @@ See [ADR 001](/Users/jeremymiranda/Dev/databento-mcp-server/docs/adrs/001-databe
 
 - Node.js v18+ or compatible runtime
 - DataBento API key ([get one here](https://databento.com))
-- Claude Desktop or compatible MCP client
+- **For MCP**: Claude Desktop or compatible MCP client
+- **For Skills**: Claude Code CLI
 
 ### Setup
 
@@ -61,14 +65,16 @@ DATABENTO_API_KEY=db-your-api-key-here
 DATABENTO_DATASET=GLBX.MDP3
 ```
 
-4. Build the project:
-```bash
-npm run build
-```
+4. Choose your deployment mode below
 
 ## Configuration
 
-### Claude Desktop
+### Option 1: MCP Server (for Claude Desktop)
+
+Build the MCP server:
+```bash
+npm run build:mcp
+```
 
 Add to your Claude Desktop MCP configuration (`~/.claude/mcp.json`):
 
@@ -77,7 +83,7 @@ Add to your Claude Desktop MCP configuration (`~/.claude/mcp.json`):
   "mcpServers": {
     "databento": {
       "command": "node",
-      "args": ["/Users/yourusername/Dev/databento-mcp-server/dist/index.js"],
+      "args": ["/Users/yourusername/Dev/databento-mcp-server/dist/mcp/mcp/index.js"],
       "env": {
         "DATABENTO_API_KEY": "db-your-api-key-here"
       }
@@ -99,6 +105,29 @@ Or use `npx` directly (if published to npm):
     }
   }
 }
+```
+
+### Option 2: Claude Code Skills
+
+Build and install skills:
+```bash
+npm run install:skills
+```
+
+This will:
+- Compile the skills from TypeScript
+- Copy them to `~/.claude/skills/databento/`
+- Make scripts executable
+
+Set your API key environment variable:
+```bash
+export DATABENTO_API_KEY="db-your-api-key-here"
+# Or add to your .bashrc/.zshrc for persistence
+```
+
+Verify installation:
+```bash
+node ~/.claude/skills/databento/scripts/get-quote.js ES
 ```
 
 ### Environment Variables
@@ -809,34 +838,86 @@ Common errors:
 - No data available (weekends, holidays)
 - API rate limit exceeded
 
+## Claude Code Skills Usage
+
+Once installed, the skills can be invoked naturally in Claude Code:
+
+**Get real-time quote:**
+```
+> Get the current ES futures quote
+```
+
+**Historical data:**
+```
+> Fetch 50 daily bars for NQ
+```
+
+**Symbol resolution:**
+```
+> Resolve ESM4 symbol to instrument ID in GLBX.MDP3
+```
+
+**Metadata queries:**
+```
+> List all available schemas for GLBX.MDP3 dataset
+```
+
+**Batch operations:**
+```
+> List my databento batch jobs
+```
+
+The skills are automatically detected based on context and keywords.
+
 ## Project Structure
 
 ```
 databento-mcp-server/
-├── src/
-│   ├── index.ts              # MCP server entry point & tool registration
-│   ├── databento-client.ts   # Legacy futures client (original 3 tools)
+├── src/                      # Shared code (used by both MCP & Skills)
+│   ├── databento-client.ts   # Futures client (quotes, bars, sessions)
 │   ├── http/
 │   │   └── databento-http.ts # Base HTTP client with auth, retry, caching
-│   ├── api/
-│   │   ├── metadata-client.ts    # Metadata API client (datasets, schemas, etc.)
-│   │   ├── timeseries-client.ts  # Timeseries API client (historical data)
-│   │   ├── batch-client.ts       # Batch API client (job management)
-│   │   ├── symbology-client.ts   # Symbology API client (symbol resolution)
-│   │   └── reference-client.ts   # Reference API client (securities, corporate actions)
-│   └── types/
-│       ├── metadata.ts       # Metadata type definitions
-│       ├── timeseries.ts     # Timeseries type definitions
-│       ├── batch.ts          # Batch type definitions
-│       ├── symbology.ts      # Symbology type definitions
-│       └── reference.ts      # Reference type definitions
+│   ├── api/                  # API clients
+│   │   ├── metadata-client.ts
+│   │   ├── timeseries-client.ts
+│   │   ├── batch-client.ts
+│   │   ├── symbology-client.ts
+│   │   └── reference-client.ts
+│   └── types/                # TypeScript type definitions
+│       ├── metadata.ts
+│       ├── timeseries.ts
+│       ├── batch.ts
+│       ├── symbology.ts
+│       └── reference.ts
+├── mcp/                      # MCP Server specific code
+│   └── index.ts              # MCP server entry point & 18 tool definitions
+├── skills/                   # Claude Code Skills
+│   ├── databento/
+│   │   ├── skill.md          # Skill documentation
+│   │   ├── scripts/          # 8 executable skill scripts
+│   │   │   ├── get-quote.ts
+│   │   │   ├── get-historical.ts
+│   │   │   ├── get-session.ts
+│   │   │   ├── resolve-symbols.ts
+│   │   │   ├── timeseries.ts
+│   │   │   ├── metadata.ts
+│   │   │   ├── batch.ts
+│   │   │   └── reference.ts
+│   │   └── data/
+│   └── manifest.json         # Skills manifest
+├── scripts/
+│   └── install-skills.sh     # Skill installation script
+├── dist/                     # Compiled JavaScript (build output)
+│   ├── mcp/                  # MCP server build
+│   ├── skills/               # Skills build
+│   └── src/                  # Shared code build
 ├── docs/
 │   ├── adrs/                 # Architecture Decision Records
-│   │   └── 001-databento-api-expansion.md
 │   └── journals/             # Implementation journals
-├── dist/                     # Compiled JavaScript (build output)
+├── tsconfig.json             # Base TypeScript config
+├── tsconfig.mcp.json         # MCP build config
+├── tsconfig.skills.json      # Skills build config
 ├── package.json
-├── tsconfig.json
 ├── .env.example
 └── README.md
 ```
@@ -845,16 +926,39 @@ databento-mcp-server/
 
 ### Building
 
+Build everything:
 ```bash
 npm run build
 ```
 
-### Adding New Tools
+Build MCP server only:
+```bash
+npm run build:mcp
+```
 
-1. Add tool definition to `ListToolsRequestSchema` handler in `src/index.ts`
+Build skills only:
+```bash
+npm run build:skills
+```
+
+### Adding New Functionality
+
+**For MCP Server:**
+1. Add tool definition to `ListToolsRequestSchema` handler in `mcp/index.ts`
 2. Implement handler in `CallToolRequestSchema` switch statement
-3. Add client method to `DataBentoClient` if needed
-4. Rebuild and test
+3. Add client method to appropriate API client in `src/api/`
+4. Rebuild: `npm run build:mcp`
+
+**For Skills:**
+1. Create new script in `skills/databento/scripts/`
+2. Import and use shared clients from `src/`
+3. Update `skills/manifest.json` with new script
+4. Rebuild and install: `npm run install:skills`
+
+**For Shared Functionality:**
+1. Add logic to appropriate client in `src/api/`
+2. Update both MCP and Skills to use it
+3. Rebuild both: `npm run build`
 
 ### Testing Locally
 

@@ -3,7 +3,7 @@
  * Target: 85%+ code coverage
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DataBentoClient } from '../../src/databento-client.js';
 import { DataBentoHTTP } from '../../src/http/databento-http.js';
 
@@ -21,21 +21,45 @@ vi.mock('../../src/http/databento-http.js', () => {
 describe('DataBentoClient', () => {
   let client: DataBentoClient;
   let mockHttpGet: ReturnType<typeof vi.fn>;
+  let mockLiveGet: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     client = new DataBentoClient('db-test-api-key');
     mockHttpGet = (client as any).http.get;
+    mockLiveGet = (client as any).liveHttp.get;
   });
 
   describe('Constructor', () => {
     it('should create instance with API key', () => {
       expect(client).toBeInstanceOf(DataBentoClient);
-      expect(DataBentoHTTP).toHaveBeenCalledWith('db-test-api-key');
+      expect(DataBentoHTTP).toHaveBeenNthCalledWith(1, 'db-test-api-key');
+      expect(DataBentoHTTP).toHaveBeenNthCalledWith(
+        2,
+        'db-test-api-key',
+        expect.objectContaining({
+          baseUrl: 'https://live.databento.com',
+        })
+      );
     });
   });
 
   describe('getQuote', () => {
+    let sessionSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      sessionSpy = vi.spyOn(client, 'getSessionInfo').mockReturnValue({
+        currentSession: 'Unknown',
+        sessionStart: new Date(0),
+        sessionEnd: new Date(0),
+        timestamp: new Date(0),
+      });
+    });
+
+    afterEach(() => {
+      sessionSpy.mockRestore();
+    });
+
     // Mock response with prices in DataBento fixed-point format (value * 1e9)
     const mockQuoteResponse = `ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00
 1234567890123456,1234567890000000,1,1,1234,A,B,0,0,0,0,0,0,4500000000,4502000000,10,15`;
@@ -76,6 +100,55 @@ describe('DataBentoClient', () => {
           symbols: 'NQ.c.0',
         })
       );
+    });
+
+    it('should use live API during NY session', async () => {
+      sessionSpy.mockReturnValue({
+        currentSession: 'NY',
+        sessionStart: new Date(),
+        sessionEnd: new Date(),
+        timestamp: new Date(),
+      });
+      mockLiveGet.mockResolvedValue(mockQuoteResponse);
+
+      await client.getQuote('ES');
+
+      expect(mockLiveGet).toHaveBeenCalledTimes(1);
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to historical API when live API fails', async () => {
+      sessionSpy.mockReturnValue({
+        currentSession: 'NY',
+        sessionStart: new Date(),
+        sessionEnd: new Date(),
+        timestamp: new Date(),
+      });
+      mockLiveGet.mockRejectedValue(new Error('Live API error'));
+      mockHttpGet.mockResolvedValue(mockQuoteResponse);
+
+      const quote = await client.getQuote('ES');
+
+      expect(mockLiveGet).toHaveBeenCalledTimes(1);
+      expect(mockHttpGet).toHaveBeenCalledTimes(1);
+      expect(quote.symbol).toBe('ES');
+    });
+
+    it('should fall back to historical API when live API returns no data', async () => {
+      sessionSpy.mockReturnValue({
+        currentSession: 'NY',
+        sessionStart: new Date(),
+        sessionEnd: new Date(),
+        timestamp: new Date(),
+      });
+      mockLiveGet.mockResolvedValue('');
+      mockHttpGet.mockResolvedValue(mockQuoteResponse);
+
+      const quote = await client.getQuote('ES');
+
+      expect(mockLiveGet).toHaveBeenCalledTimes(1);
+      expect(mockHttpGet).toHaveBeenCalledTimes(1);
+      expect(quote.symbol).toBe('ES');
     });
 
     it('should cache quote data for 30 seconds', async () => {

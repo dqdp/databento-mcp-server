@@ -889,6 +889,20 @@ data,456
 
       expect(client1.getBaseUrl()).toBe(client2.getBaseUrl());
     });
+
+    it('should support overriding the base URL per instance', async () => {
+      const customBaseUrl = 'https://live.databento.com';
+      const client = new DataBentoHTTP(VALID_API_KEY, { baseUrl: customBaseUrl });
+
+      mockFetch.mockResolvedValue(createMockResponse('success'));
+
+      await client.get('/v0/test');
+
+      const url = mockFetch.mock.calls[0][0];
+      expect(url).toBe(`${customBaseUrl}/v0/test`);
+      expect(client.getBaseUrl()).toBe(customBaseUrl);
+      expect(DATABENTO_CONFIG.baseUrl).toBe(BASE_URL);
+    });
   });
 
   describe('Configuration', () => {

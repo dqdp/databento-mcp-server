@@ -151,8 +151,15 @@ export class TimeseriesClient {
   }
 
   /**
-   * Format date string to YYYY-MM-DD
-   * Accepts ISO 8601 or YYYY-MM-DD format
+   * Format date string for Databento API
+   *
+   * Accepts:
+   * - YYYY-MM-DD format (passed through)
+   * - ISO 8601 timestamps (passed through - API accepts full timestamps)
+   * - Other parseable date formats (normalized to YYYY-MM-DD)
+   *
+   * IMPORTANT: ISO 8601 timestamps with time components are preserved.
+   * This allows intraday queries like "2025-11-24T14:00:00Z" to "2025-11-24T16:00:00Z"
    */
   private formatDate(dateStr: string): string {
     // If already in YYYY-MM-DD format, return as-is
@@ -160,7 +167,18 @@ export class TimeseriesClient {
       return dateStr;
     }
 
-    // Try to parse as ISO 8601 or other format
+    // If ISO 8601 timestamp (has time component), pass through unchanged
+    // Databento API accepts full ISO timestamps for intraday queries
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(dateStr)) {
+      // Validate it's parseable
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) {
+        throw new Error(`Invalid ISO timestamp: ${dateStr}`);
+      }
+      return dateStr; // Return original timestamp with time component
+    }
+
+    // Try to parse other date formats and convert to YYYY-MM-DD
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) {
       throw new Error(`Invalid date: ${dateStr}`);
