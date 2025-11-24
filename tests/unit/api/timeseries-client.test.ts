@@ -364,7 +364,7 @@ describe('TimeseriesClient', () => {
       );
     });
 
-    it('should convert ISO 8601 dates to YYYY-MM-DD', async () => {
+    it('should preserve ISO 8601 timestamps with time components', async () => {
       vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 
       const result = await client.getRange({
@@ -375,13 +375,13 @@ describe('TimeseriesClient', () => {
         end: '2024-01-15T23:59:59Z',
       });
 
-      // Verify dates were formatted (actual value depends on timezone)
+      // Verify ISO timestamps are preserved for intraday queries
       const call = vi.mocked(mockHttp.get).mock.calls[0];
-      expect(call[1].start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(call[1].end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(call[1].start).toBe('2024-01-15T12:00:00Z');
+      expect(call[1].end).toBe('2024-01-15T23:59:59Z');
     });
 
-    it('should handle Date objects', async () => {
+    it('should preserve ISO 8601 timestamps from Date objects', async () => {
       vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 
       const startDate = new Date('2024-01-01T12:00:00Z');
@@ -395,10 +395,10 @@ describe('TimeseriesClient', () => {
         end: endDate.toISOString(),
       });
 
-      // Verify dates were formatted (actual value depends on timezone)
+      // Verify ISO timestamps from Date.toISOString() are preserved
       const call = vi.mocked(mockHttp.get).mock.calls[0];
-      expect(call[1].start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(call[1].end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(call[1].start).toBe('2024-01-01T12:00:00.000Z');
+      expect(call[1].end).toBe('2024-01-31T12:00:00.000Z');
     });
 
     it('should default end date to start date if not provided', async () => {
