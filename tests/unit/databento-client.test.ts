@@ -603,5 +603,236 @@ describe('DataBentoClient', () => {
       expect(result[0].close).toBe(4.65);
       expect(result[0].volume).toBe(3300);
     });
+
+    it('should handle empty bars array', () => {
+      const bars: any[] = [];
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(0);
+      expect(result).toEqual([]);
+    });
+
+    it('should handle single bar', () => {
+      const bars = [
+        {
+          timestamp: new Date('2021-01-01T00:00:00Z'),
+          open: 4.5,
+          high: 4.6,
+          low: 4.4,
+          close: 4.55,
+          volume: 1000,
+        },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual(bars[0]);
+    });
+
+    it('should handle exactly 4 bars (perfect H4)', () => {
+      const bars = [
+        {
+          timestamp: new Date('2021-01-01T00:00:00Z'),
+          open: 4.5,
+          high: 4.6,
+          low: 4.4,
+          close: 4.55,
+          volume: 1000,
+        },
+        {
+          timestamp: new Date('2021-01-01T01:00:00Z'),
+          open: 4.55,
+          high: 4.65,
+          low: 4.45,
+          close: 4.6,
+          volume: 1100,
+        },
+        {
+          timestamp: new Date('2021-01-01T02:00:00Z'),
+          open: 4.6,
+          high: 4.7,
+          low: 4.5,
+          close: 4.65,
+          volume: 1200,
+        },
+        {
+          timestamp: new Date('2021-01-01T03:00:00Z'),
+          open: 4.65,
+          high: 4.75,
+          low: 4.55,
+          close: 4.7,
+          volume: 1300,
+        },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].open).toBe(4.5);
+      expect(result[0].high).toBe(4.75);
+      expect(result[0].low).toBe(4.4);
+      expect(result[0].close).toBe(4.7);
+      expect(result[0].volume).toBe(4600);
+    });
+
+    it('should handle 8 bars (2 perfect H4s)', () => {
+      const bars = Array.from({ length: 8 }, (_, i) => ({
+        timestamp: new Date(`2021-01-01T${String(i).padStart(2, '0')}:00:00Z`),
+        open: 100 + i,
+        high: 100 + i + 0.5,
+        low: 100 + i - 0.5,
+        close: 100 + i + 0.25,
+        volume: 1000 + i * 100,
+      }));
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(2);
+      // First H4 bar (indices 0-3)
+      expect(result[0].open).toBe(100);
+      expect(result[0].close).toBe(103.25);
+      expect(result[0].volume).toBe(4600);  // 1000+1100+1200+1300
+      // Second H4 bar (indices 4-7)
+      expect(result[1].open).toBe(104);
+      expect(result[1].close).toBe(107.25);
+      expect(result[1].volume).toBe(6200);  // 1400+1500+1600+1700
+    });
+
+    it('should handle 2 bars (incomplete H4)', () => {
+      const bars = [
+        {
+          timestamp: new Date('2021-01-01T00:00:00Z'),
+          open: 100,
+          high: 101,
+          low: 99,
+          close: 100.5,
+          volume: 1000,
+        },
+        {
+          timestamp: new Date('2021-01-01T01:00:00Z'),
+          open: 100.5,
+          high: 102,
+          low: 100,
+          close: 101,
+          volume: 1100,
+        },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].open).toBe(100);
+      expect(result[0].high).toBe(102);
+      expect(result[0].low).toBe(99);
+      expect(result[0].close).toBe(101);
+      expect(result[0].volume).toBe(2100);
+    });
+
+    it('should handle 5 bars (1 complete + 1 incomplete H4)', () => {
+      const bars = Array.from({ length: 5 }, (_, i) => ({
+        timestamp: new Date(`2021-01-01T${String(i).padStart(2, '0')}:00:00Z`),
+        open: 100 + i,
+        high: 100 + i + 1,
+        low: 100 + i - 1,
+        close: 100 + i + 0.5,
+        volume: 1000,
+      }));
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result).toHaveLength(2);
+      // First H4 (4 bars)
+      expect(result[0].open).toBe(100);
+      expect(result[0].close).toBe(103.5);
+      expect(result[0].volume).toBe(4000);
+      // Second H4 (1 bar)
+      expect(result[1].open).toBe(104);
+      expect(result[1].close).toBe(104.5);
+      expect(result[1].volume).toBe(1000);
+    });
+
+    it('should preserve timestamp from first bar in chunk', () => {
+      const firstTimestamp = new Date('2021-06-15T08:00:00Z');
+      const bars = [
+        { timestamp: firstTimestamp, open: 1, high: 2, low: 0.5, close: 1.5, volume: 100 },
+        { timestamp: new Date('2021-06-15T09:00:00Z'), open: 1.5, high: 2.5, low: 1, close: 2, volume: 200 },
+        { timestamp: new Date('2021-06-15T10:00:00Z'), open: 2, high: 3, low: 1.5, close: 2.5, volume: 300 },
+        { timestamp: new Date('2021-06-15T11:00:00Z'), open: 2.5, high: 3.5, low: 2, close: 3, volume: 400 },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].timestamp).toEqual(firstTimestamp);
+    });
+
+    it('should calculate correct high/low across all bars in chunk', () => {
+      const bars = [
+        { timestamp: new Date(), open: 100, high: 105, low: 95, close: 102, volume: 1000 },
+        { timestamp: new Date(), open: 102, high: 110, low: 100, close: 108, volume: 1100 },  // Highest high
+        { timestamp: new Date(), open: 108, high: 109, low: 90, close: 92, volume: 1200 },    // Lowest low
+        { timestamp: new Date(), open: 92, high: 98, low: 91, close: 95, volume: 1300 },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].high).toBe(110);  // Max of all highs
+      expect(result[0].low).toBe(90);    // Min of all lows
+    });
+
+    it('should use close of last bar in chunk', () => {
+      const bars = [
+        { timestamp: new Date(), open: 100, high: 105, low: 95, close: 102, volume: 1000 },
+        { timestamp: new Date(), open: 102, high: 108, low: 100, close: 106, volume: 1100 },
+        { timestamp: new Date(), open: 106, high: 110, low: 104, close: 108, volume: 1200 },
+        { timestamp: new Date(), open: 108, high: 112, low: 106, close: 110, volume: 1300 },  // Last close
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].close).toBe(110);  // Close from last bar
+    });
+
+    it('should sum volumes correctly', () => {
+      const bars = [
+        { timestamp: new Date(), open: 100, high: 105, low: 95, close: 102, volume: 1000 },
+        { timestamp: new Date(), open: 102, high: 108, low: 100, close: 106, volume: 2500 },
+        { timestamp: new Date(), open: 106, high: 110, low: 104, close: 108, volume: 3750 },
+        { timestamp: new Date(), open: 108, high: 112, low: 106, close: 110, volume: 5000 },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].volume).toBe(12250);  // Sum of all volumes
+    });
+
+    it('should handle zero volume bars', () => {
+      const bars = [
+        { timestamp: new Date(), open: 100, high: 105, low: 95, close: 102, volume: 0 },
+        { timestamp: new Date(), open: 102, high: 108, low: 100, close: 106, volume: 0 },
+        { timestamp: new Date(), open: 106, high: 110, low: 104, close: 108, volume: 0 },
+        { timestamp: new Date(), open: 108, high: 112, low: 106, close: 110, volume: 0 },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].volume).toBe(0);
+    });
+
+    it('should handle negative prices (e.g., spreads)', () => {
+      const bars = [
+        { timestamp: new Date(), open: -10, high: -5, low: -15, close: -8, volume: 1000 },
+        { timestamp: new Date(), open: -8, high: -3, low: -12, close: -6, volume: 1100 },
+        { timestamp: new Date(), open: -6, high: -1, low: -10, close: -4, volume: 1200 },
+        { timestamp: new Date(), open: -4, high: 1, low: -8, close: -2, volume: 1300 },
+      ];
+
+      const result = (client as any).aggregateToH4(bars);
+
+      expect(result[0].open).toBe(-10);
+      expect(result[0].high).toBe(1);    // Max (least negative)
+      expect(result[0].low).toBe(-15);   // Min (most negative)
+      expect(result[0].close).toBe(-2);
+    });
   });
 });

@@ -902,4 +902,302 @@ value1, value2 ,value3 `;
       ).rejects.toThrow(/No data available.*INVALID.*2024-01-01/);
     });
   });
+
+  describe('Date Formatting Edge Cases', () => {
+    it('should reject invalid ISO timestamp format', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-13-45T99:99:99Z',  // Invalid date
+        })
+      ).rejects.toThrow(/Invalid ISO timestamp|Invalid date/);
+    });
+
+    it('should reject completely invalid date string', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: 'not-a-date-at-all',
+        })
+      ).rejects.toThrow(/Invalid date/);
+    });
+
+    it('should accept Feb 30 as valid (JS Date auto-converts to Mar 1)', async () => {
+      // JavaScript Date constructor accepts Feb 30 and converts it to Mar 1
+      // This is standard JS behavior, not a bug
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-02-30T12:00:00Z',  // Auto-converts to Mar 1
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].start).toBe('2024-02-30T12:00:00Z');  // Preserved as-is
+    });
+
+    it('should reject invalid end date when start is valid', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          end: 'invalid-end-date',
+        })
+      ).rejects.toThrow(/Invalid date/);
+    });
+
+    it('should handle numeric date strings', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-15',  // Already in YYYY-MM-DD format
+        end: '2024-01-16',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].start).toBe('2024-01-15');
+      expect(call[1].end).toBe('2024-01-16');
+    });
+
+    it('should preserve milliseconds in ISO timestamps', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-15T12:00:00.123Z',
+        end: '2024-01-15T18:00:00.456Z',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].start).toBe('2024-01-15T12:00:00.123Z');
+      expect(call[1].end).toBe('2024-01-15T18:00:00.456Z');
+    });
+
+    it('should handle timezone offsets in ISO timestamps', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-15T12:00:00+05:00',
+        end: '2024-01-15T18:00:00-08:00',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].start).toBe('2024-01-15T12:00:00+05:00');
+      expect(call[1].end).toBe('2024-01-15T18:00:00-08:00');
+    });
+
+    it('should handle year-only boundary dates', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+        end: '2024-12-31',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].start).toBe('2024-01-01');
+      expect(call[1].end).toBe('2024-12-31');
+    });
+  });
+
+  describe('Schema Edge Cases', () => {
+    it('should handle all 13 schemas without errors', async () => {
+      const schemas = [
+        Schema.MBP_1, Schema.MBP_10, Schema.MBO, Schema.TRADES,
+        Schema.OHLCV_1S, Schema.OHLCV_1M, Schema.OHLCV_1H, Schema.OHLCV_1D, Schema.OHLCV_EOD,
+        Schema.STATISTICS, Schema.DEFINITION, Schema.IMBALANCE, Schema.STATUS,
+      ];
+
+      for (const schema of schemas) {
+        vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+        const result = await client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema,
+          start: '2024-01-01',
+        });
+
+        expect(result.schema).toBe(schema);
+      }
+    });
+  });
+
+  describe('Symbols Edge Cases', () => {
+    it('should handle single character symbol', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'A',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].symbols).toBe('A');
+    });
+
+    it('should handle symbols with special characters', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].symbols).toBe('ES.c.0');
+    });
+
+    it('should handle comma-separated symbol string', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockMultiSymbolOHLCVResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0,NQ.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].symbols).toBe('ES.c.0,NQ.c.0');
+    });
+
+    it('should validate symbol count in comma-separated string', async () => {
+      const tooManySymbols = Array.from({ length: 2001 }, (_, i) => `SYM${i}`).join(',');
+
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: tooManySymbols,
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+        })
+      ).rejects.toThrow('Maximum 2000 symbols allowed per request');
+    });
+  });
+
+  describe('Limit Edge Cases', () => {
+    it('should reject limit of 0', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          limit: 0,
+        })
+      ).rejects.toThrow('limit must be greater than 0');
+    });
+
+    it('should reject negative limit', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          limit: -10,
+        })
+      ).rejects.toThrow('limit must be greater than 0');
+    });
+
+    it('should accept limit of 1', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+        limit: 1,
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].limit).toBe(1);
+    });
+
+    it('should accept very large limit', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+        limit: 1000000,
+      });
+
+      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      expect(call[1].limit).toBe(1000000);
+    });
+  });
+
+  describe('Required Field Validation', () => {
+    it('should reject missing dataset', async () => {
+      await expect(
+        client.getRange({
+          dataset: '',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+        })
+      ).rejects.toThrow('dataset is required');
+    });
+
+    it('should reject missing schema', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: '' as any,
+          start: '2024-01-01',
+        })
+      ).rejects.toThrow('schema is required');
+    });
+
+    it('should reject missing start date', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '',
+        })
+      ).rejects.toThrow('start date is required');
+    });
+
+    it('should reject missing symbols', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: '' as any,
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+        })
+      ).rejects.toThrow('symbols is required');
+    });
+  });
 });

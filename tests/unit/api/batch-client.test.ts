@@ -618,4 +618,168 @@ describe("BatchClient", () => {
       });
     });
   });
+
+  describe('Job Status Message Edge Cases', () => {
+    it('should handle expired job state', () => {
+      const job = generateBatchJobInfo({
+        id: 'expired-job-123',
+        state: 'expired',
+      });
+
+      const message = (batchClient as any).getJobStatusMessage(job);
+
+      expect(message).toContain('expired-job-123');
+      expect(message).toContain('expired');
+      expect(message).toMatch(/no longer available/i);
+    });
+
+    it('should handle unknown job state', () => {
+      const job = generateBatchJobInfo({
+        id: 'unknown-job-456',
+        state: 'unknown-state' as any,
+      });
+
+      const message = (batchClient as any).getJobStatusMessage(job);
+
+      expect(message).toContain('unknown-job-456');
+      expect(message).toContain('unknown-state');
+    });
+
+    it('should handle processing state with start time', () => {
+      const job = generateBatchJobInfo({
+        id: 'processing-job-789',
+        state: 'processing',
+        ts_process_start: '2024-01-15T10:30:00Z',
+      });
+
+      const message = (batchClient as any).getJobStatusMessage(job);
+
+      expect(message).toContain('processing-job-789');
+      expect(message).toContain('processing');
+      expect(message).toContain('2024-01-15T10:30:00Z');
+    });
+
+    it('should handle done state with record and file counts', () => {
+      const job = generateBatchJobInfo({
+        id: 'done-job-101',
+        state: 'done',
+        record_count: 1500000,
+        file_count: 5,
+      });
+
+      const message = (batchClient as any).getJobStatusMessage(job);
+
+      expect(message).toContain('done-job-101');
+      expect(message).toContain('completed');
+      expect(message).toContain('1500000');
+      expect(message).toContain('5');
+    });
+  });
+
+  describe('File Extension Generation Edge Cases', () => {
+    it('should handle dbn encoding with no compression', () => {
+      const ext = (batchClient as any).getFileExtension('dbn', 'none');
+      expect(ext).toBe('.dbn');
+    });
+
+    it('should handle csv encoding with gzip compression', () => {
+      const ext = (batchClient as any).getFileExtension('csv', 'gzip');
+      expect(ext).toBe('.csv.gz');
+    });
+
+    it('should handle json encoding with zstd compression', () => {
+      const ext = (batchClient as any).getFileExtension('json', 'zstd');
+      expect(ext).toBe('.json.zst');
+    });
+
+    it('should handle unknown encoding with default extension', () => {
+      const ext = (batchClient as any).getFileExtension('unknown-format', 'none');
+      expect(ext).toBe('.bin');
+    });
+
+    it('should handle all compression types', () => {
+      expect((batchClient as any).getFileExtension('csv', 'none')).toBe('.csv');
+      expect((batchClient as any).getFileExtension('csv', 'gzip')).toBe('.csv.gz');
+      expect((batchClient as any).getFileExtension('csv', 'zstd')).toBe('.csv.zst');
+    });
+  });
+
+  describe('Filename Generation Edge Cases', () => {
+    it('should generate filenames for multi-file job', () => {
+      const job = generateBatchJobInfo({
+        id: 'multi-file-job',
+        file_count: 3,
+        encoding: 'csv',
+        compression: 'gzip',
+      });
+
+      const filenames = (batchClient as any).generateFilenames(job);
+
+      expect(filenames).toHaveLength(3);
+      expect(filenames[0]).toBe('multi-file-job_0.csv.gz');
+      expect(filenames[1]).toBe('multi-file-job_1.csv.gz');
+      expect(filenames[2]).toBe('multi-file-job_2.csv.gz');
+    });
+
+    it('should handle job with no file count (undefined defaults to 1)', () => {
+      // generateBatchJobInfo defaults file_count to 1 when not specified
+      const job = generateBatchJobInfo({
+        id: 'no-files-job',
+        encoding: 'dbn',
+        compression: 'zstd',
+        state: 'received',  // state !== 'done' means no default file_count
+        file_count: undefined,  // Explicitly set to undefined
+      });
+
+      const filenames = (batchClient as any).generateFilenames(job);
+
+      // When file_count is undefined (falsy), no filenames are generated
+      expect(filenames).toEqual([]);
+    });
+
+    it('should handle job with zero file count (mock defaults 0 to 1)', () => {
+      const job = generateBatchJobInfo({
+        id: 'zero-files-job',
+        file_count: 0,  // Mock uses || operator, so 0 becomes default (1)
+        encoding: 'json',
+        compression: 'none',
+      });
+
+      const filenames = (batchClient as any).generateFilenames(job);
+
+      // Mock converts file_count: 0 to 1 due to || operator
+      // This tests the actual behavior with the mock
+      expect(filenames).toHaveLength(1);
+      expect(filenames[0]).toBe('zero-files-job_0.json');
+    });
+
+    it('should handle single file job', () => {
+      const job = generateBatchJobInfo({
+        id: 'single-file-job',
+        file_count: 1,
+        encoding: 'dbn',
+        compression: 'none',
+      });
+
+      const filenames = (batchClient as any).generateFilenames(job);
+
+      expect(filenames).toHaveLength(1);
+      expect(filenames[0]).toBe('single-file-job_0.dbn');
+    });
+
+    it('should handle large file count', () => {
+      const job = generateBatchJobInfo({
+        id: 'large-job',
+        file_count: 100,
+        encoding: 'csv',
+        compression: 'zstd',
+      });
+
+      const filenames = (batchClient as any).generateFilenames(job);
+
+      expect(filenames).toHaveLength(100);
+      expect(filenames[0]).toBe('large-job_0.csv.zst');
+      expect(filenames[99]).toBe('large-job_99.csv.zst');
+    });
+  });
 });
