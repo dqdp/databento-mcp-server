@@ -56,7 +56,7 @@ export class TimeseriesClient {
 
     // Format dates to YYYY-MM-DD
     const start = this.formatDate(request.start);
-    const end = request.end ? this.formatDate(request.end) : start;
+    const end = request.end ? this.formatDate(request.end) : undefined;
 
     // Build API parameters
     const params: Record<string, any> = {
@@ -64,18 +64,18 @@ export class TimeseriesClient {
       symbols,
       schema: request.schema,
       start,
-      end,
       stype_in: request.stype_in || SType.RAW_SYMBOL,
       stype_out: request.stype_out || SType.INSTRUMENT_ID,
+      encoding: Encoding.CSV,
     };
 
     // Add optional parameters
-    if (request.limit !== undefined) {
-      params.limit = request.limit;
+    if (end !== undefined) {
+      params.end = end;
     }
 
-    if (request.encoding !== undefined) {
-      params.encoding = request.encoding;
+    if (request.limit !== undefined) {
+      params.limit = request.limit;
     }
 
     // Make API request
@@ -83,7 +83,7 @@ export class TimeseriesClient {
 
     if (!response || response.length === 0) {
       throw new Error(
-        `No data available for symbols: ${symbols} in date range: ${start} to ${end}`
+        `No data available for symbols: ${symbols} in date range: ${start} to ${end ?? "forward_filled"}`
       );
     }
 
@@ -100,7 +100,7 @@ export class TimeseriesClient {
         : [request.symbols],
       dateRange: {
         start,
-        end,
+        end: end ?? "forward_filled",
       },
     };
   }
@@ -133,6 +133,10 @@ export class TimeseriesClient {
       }
     } catch (error) {
       throw new Error(`Invalid date format: ${error}`);
+    }
+
+    if (request.encoding !== undefined && request.encoding !== Encoding.CSV) {
+      throw new Error("TimeseriesClient.getRange only supports csv encoding");
     }
 
     // Validate limit if provided
@@ -218,6 +222,6 @@ export class TimeseriesClient {
    * Helper: Get available encoding formats
    */
   static getAvailableEncodings(): Encoding[] {
-    return Object.values(Encoding);
+    return [Encoding.CSV];
   }
 }

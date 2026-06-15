@@ -86,7 +86,7 @@ export interface TimeseriesGetRangeRequest {
   /** Start date (ISO 8601 or YYYY-MM-DD) */
   start: string;
 
-  /** End date (ISO 8601 or YYYY-MM-DD), defaults to start date */
+  /** End date (ISO 8601 or YYYY-MM-DD). If omitted, Databento forward-fills start based on resolution. */
   end?: string;
 
   /** Input symbology type, defaults to "raw_symbol" */

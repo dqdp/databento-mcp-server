@@ -1,6 +1,6 @@
 /**
  * Unit tests for SymbologyClient
- * Tests symbol resolution across all 8 symbol types
+ * Tests symbol resolution across supported Historical API symbol types
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -21,7 +21,7 @@ describe("SymbologyClient", () => {
     symbologyClient = new SymbologyClient("db-test-api-key-12345");
     // Get the internal HTTP client and mock its methods
     mockHTTP = (symbologyClient as any).http as DataBentoHTTP;
-    vi.spyOn(mockHTTP, "post").mockResolvedValue("");
+    vi.spyOn(mockHTTP, "postForm").mockResolvedValue("");
   });
 
   describe("resolve", () => {
@@ -34,7 +34,7 @@ describe("SymbologyClient", () => {
       const expectedResponse = generateSymbologyResponse(request.symbols);
       const mockResponse = generateJSONResponse(expectedResponse.mappings);
 
-      vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       const result = await symbologyClient.resolve(request);
 
@@ -43,15 +43,15 @@ describe("SymbologyClient", () => {
       expect(Object.keys(result.mappings)).toHaveLength(2);
     });
 
-    it("should use POST method for symbol resolution", async () => {
+    it("should use form-encoded POST method for symbol resolution", async () => {
       const request = generateSymbologyRequest();
       const mockResponse = generateJSONResponse({});
 
-      const postSpy = vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      const postFormSpy = vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       await symbologyClient.resolve(request);
 
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(postFormSpy).toHaveBeenCalledWith(
         "/v0/symbology.resolve",
         expect.any(Object)
       );
@@ -63,11 +63,11 @@ describe("SymbologyClient", () => {
       });
       const mockResponse = generateJSONResponse({});
 
-      const postSpy = vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      const postFormSpy = vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       await symbologyClient.resolve(request);
 
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(postFormSpy).toHaveBeenCalledWith(
         "/v0/symbology.resolve",
         expect.objectContaining({
           symbols: "ES.FUT,NQ.FUT,YM.FUT",
@@ -85,11 +85,11 @@ describe("SymbologyClient", () => {
       });
       const mockResponse = generateJSONResponse({});
 
-      const postSpy = vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      const postFormSpy = vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       await symbologyClient.resolve(request);
 
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(postFormSpy).toHaveBeenCalledWith(
         "/v0/symbology.resolve",
         expect.objectContaining({
           dataset: "GLBX.MDP3",
@@ -107,11 +107,11 @@ describe("SymbologyClient", () => {
       });
       const mockResponse = generateJSONResponse({});
 
-      const postSpy = vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      const postFormSpy = vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       await symbologyClient.resolve(request);
 
-      expect(postSpy).toHaveBeenCalledWith(
+      expect(postFormSpy).toHaveBeenCalledWith(
         "/v0/symbology.resolve",
         expect.objectContaining({
           end_date: "2024-01-31",
@@ -125,15 +125,15 @@ describe("SymbologyClient", () => {
       });
       const mockResponse = generateJSONResponse({});
 
-      const postSpy = vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+      const postFormSpy = vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
       await symbologyClient.resolve(request);
 
-      const callArgs = postSpy.mock.calls[0][1];
+      const callArgs = postFormSpy.mock.calls[0][1];
       expect(callArgs).not.toHaveProperty("end_date");
     });
 
-    // Test all 8 symbol types
+    // Test supported Historical API symbol types
     describe("Symbol Types", () => {
       it("should resolve RawSymbol type", async () => {
         const request = generateSymbologyRequest({
@@ -143,7 +143,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({ ESH5: "12345" });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -159,7 +159,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({ "12345": "ESH5" });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -178,7 +178,7 @@ describe("SymbologyClient", () => {
           "ES.c.1": "ESM5",
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -197,7 +197,7 @@ describe("SymbologyClient", () => {
           ES: ["ESH5", "ESM5", "ESU5"],
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -205,69 +205,6 @@ describe("SymbologyClient", () => {
         expect(result.mappings["ES"]).toBeDefined();
       });
 
-      it("should resolve Nasdaq type", async () => {
-        const request = generateSymbologyRequest({
-          symbols: ["AAPL"],
-          stype_in: SymbolType.Nasdaq,
-          stype_out: SymbolType.InstrumentId,
-        });
-        const mockResponse = generateJSONResponse({ AAPL: "67890" });
-
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
-
-        const result = await symbologyClient.resolve(request);
-
-        expect(result.result).toBe("success");
-        expect(result.mappings["AAPL"]).toBeDefined();
-      });
-
-      it("should resolve CMS type", async () => {
-        const request = generateSymbologyRequest({
-          symbols: ["ES"],
-          stype_in: SymbolType.Cms,
-          stype_out: SymbolType.InstrumentId,
-        });
-        const mockResponse = generateJSONResponse({ ES: "11111" });
-
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
-
-        const result = await symbologyClient.resolve(request);
-
-        expect(result.result).toBe("success");
-        expect(result.mappings["ES"]).toBeDefined();
-      });
-
-      it("should resolve Bats type", async () => {
-        const request = generateSymbologyRequest({
-          symbols: ["SPY"],
-          stype_in: SymbolType.Bats,
-          stype_out: SymbolType.InstrumentId,
-        });
-        const mockResponse = generateJSONResponse({ SPY: "22222" });
-
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
-
-        const result = await symbologyClient.resolve(request);
-
-        expect(result.result).toBe("success");
-        expect(result.mappings["SPY"]).toBeDefined();
-      });
-
-      it("should resolve Smart type", async () => {
-        const request = generateSymbologyRequest({
-          symbols: ["TSLA"],
-          stype_in: SymbolType.Smart,
-          stype_out: SymbolType.InstrumentId,
-        });
-        const mockResponse = generateJSONResponse({ TSLA: "33333" });
-
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
-
-        const result = await symbologyClient.resolve(request);
-
-        expect(result.result).toBe("success");
-        expect(result.mappings["TSLA"]).toBeDefined();
-      });
     });
 
     // Validation tests
@@ -302,7 +239,7 @@ describe("SymbologyClient", () => {
         const request = generateSymbologyRequest({ symbols });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });
@@ -357,7 +294,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });
@@ -378,7 +315,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });
@@ -386,6 +323,69 @@ describe("SymbologyClient", () => {
 
     // Response parsing tests
     describe("Response Parsing", () => {
+      it("should parse Databento result envelope with interval metadata", async () => {
+        const request = generateSymbologyRequest({
+          symbols: ["ES.c.0"],
+          stype_in: SymbolType.Continuous,
+          stype_out: SymbolType.RawSymbol,
+        });
+        const mockResponse = generateJSONResponse({
+          result: {
+            "ES.c.0": [
+              { d0: "2024-01-01", d1: "2024-03-15", s: "ESH4" },
+              { d0: "2024-03-15", d1: "2024-06-21", s: "ESM4" },
+            ],
+          },
+          partial: [],
+          not_found: [],
+        });
+
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
+
+        const result = await symbologyClient.resolve(request);
+
+        expect(result.result).toBe("success");
+        expect(result.mappings["ES.c.0"]).toEqual(["ESH4", "ESM4"]);
+        expect(result.symbols).toEqual([
+          {
+            input_symbol: "ES.c.0",
+            output_symbols: ["ESH4", "ESM4"],
+            intervals: [
+              { d0: "2024-01-01", d1: "2024-03-15", s: "ESH4" },
+              { d0: "2024-03-15", d1: "2024-06-21", s: "ESM4" },
+            ],
+          },
+        ]);
+      });
+
+      it("should expose partial and not_found symbols from Databento response", async () => {
+        const request = generateSymbologyRequest({
+          symbols: ["ES.c.0", "NQ.c.0", "BAD"],
+          stype_in: SymbolType.Continuous,
+          stype_out: SymbolType.RawSymbol,
+        });
+        const mockResponse = generateJSONResponse({
+          result: {
+            "ES.c.0": [{ d0: "2024-01-01", d1: "2024-03-15", s: "ESH4" }],
+          },
+          partial: ["NQ.c.0"],
+          not_found: ["BAD"],
+        });
+
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
+
+        const result = await symbologyClient.resolve(request);
+
+        expect(result.result).toBe("partial");
+        expect(result.mappings["ES.c.0"]).toBe("ESH4");
+        expect(result.partial).toEqual(["NQ.c.0"]);
+        expect(result.not_found).toEqual(["BAD"]);
+        expect(result.partial_errors).toEqual({
+          "NQ.c.0": "partial",
+          BAD: "not_found",
+        });
+      });
+
       it("should parse simple string mappings", async () => {
         const request = generateSymbologyRequest({
           symbols: ["ES.c.0", "NQ.c.0"],
@@ -395,7 +395,7 @@ describe("SymbologyClient", () => {
           "NQ.c.0": "NQH5",
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -412,7 +412,7 @@ describe("SymbologyClient", () => {
           ES: ["ESH5", "ESM5", "ESU5"],
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -429,7 +429,7 @@ describe("SymbologyClient", () => {
           "ES.c.0": ["ESH5"],
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -445,7 +445,7 @@ describe("SymbologyClient", () => {
           "ES.c.0": { s: "ESH5", d0: "2024-01-01", d1: "2024-01-31" },
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -464,7 +464,7 @@ describe("SymbologyClient", () => {
           ],
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -479,7 +479,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -490,7 +490,7 @@ describe("SymbologyClient", () => {
       it("should handle malformed JSON", async () => {
         const request = generateSymbologyRequest();
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue("invalid json {");
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue("invalid json {");
 
         const result = await symbologyClient.resolve(request);
 
@@ -506,7 +506,7 @@ describe("SymbologyClient", () => {
           TEST: { custom_field: "value", other_field: 123 },
         });
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         const result = await symbologyClient.resolve(request);
 
@@ -521,7 +521,7 @@ describe("SymbologyClient", () => {
         const request = generateSymbologyRequest();
         const httpError = new Error("HTTP 401: Unauthorized");
 
-        vi.spyOn(mockHTTP, "post").mockRejectedValue(httpError);
+        vi.spyOn(mockHTTP, "postForm").mockRejectedValue(httpError);
 
         await expect(symbologyClient.resolve(request)).rejects.toThrow(
           "Symbology resolution failed"
@@ -532,7 +532,7 @@ describe("SymbologyClient", () => {
         const request = generateSymbologyRequest();
         const networkError = new Error("Network timeout");
 
-        vi.spyOn(mockHTTP, "post").mockRejectedValue(networkError);
+        vi.spyOn(mockHTTP, "postForm").mockRejectedValue(networkError);
 
         await expect(symbologyClient.resolve(request)).rejects.toThrow(
           "Symbology resolution failed: Error: Network timeout"
@@ -543,7 +543,7 @@ describe("SymbologyClient", () => {
         const request = generateSymbologyRequest();
         const rateLimitError = new Error("HTTP 429: Too Many Requests");
 
-        vi.spyOn(mockHTTP, "post").mockRejectedValue(rateLimitError);
+        vi.spyOn(mockHTTP, "postForm").mockRejectedValue(rateLimitError);
 
         await expect(symbologyClient.resolve(request)).rejects.toThrow(
           "Symbology resolution failed"
@@ -560,7 +560,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });
@@ -572,7 +572,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });
@@ -584,7 +584,7 @@ describe("SymbologyClient", () => {
         });
         const mockResponse = generateJSONResponse({});
 
-        vi.spyOn(mockHTTP, "post").mockResolvedValue(mockResponse);
+        vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
 
         await expect(symbologyClient.resolve(request)).resolves.not.toThrow();
       });

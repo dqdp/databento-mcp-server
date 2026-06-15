@@ -6,6 +6,21 @@
 import type { BatchClient } from "./batch-client.js";
 import type { BatchJobRequest, ListJobsParams } from "../types/batch.js";
 
+function countBatchSymbols(symbols: string[] | string): number {
+  if (Array.isArray(symbols)) {
+    return symbols.length;
+  }
+
+  return symbols
+    .split(",")
+    .map((symbol) => symbol.trim())
+    .filter(Boolean).length;
+}
+
+function getBatchDownloadSize(job: { package_size?: number; actual_size?: number; total_size?: number }): number | undefined {
+  return job.package_size ?? job.actual_size ?? job.total_size;
+}
+
 /**
  * Tool definitions for batch API
  */
@@ -51,12 +66,12 @@ export const batchToolDefinitions = [
         },
         stype_in: {
           type: "string",
-          enum: ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+          enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
           description: "Input symbology type (default: raw_symbol)",
         },
         stype_out: {
           type: "string",
-          enum: ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+          enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
           description: "Output symbology type (default: instrument_id)",
         },
         split_duration: {
@@ -89,7 +104,7 @@ export const batchToolDefinitions = [
           type: "array",
           items: {
             type: "string",
-            enum: ["received", "queued", "processing", "done", "expired"],
+            enum: ["queued", "processing", "done", "expired"],
           },
           description: "Filter by job states",
         },
@@ -135,7 +150,7 @@ export async function handleBatchSubmitJob(batchClient: BatchClient, args: any) 
             state: jobInfo.state,
             dataset: jobInfo.dataset,
             schema: jobInfo.schema,
-            symbols_count: jobInfo.symbols.length,
+            symbols_count: countBatchSymbols(jobInfo.symbols),
             cost_usd: jobInfo.cost_usd,
             date_range: {
               start: jobInfo.start,
@@ -169,7 +184,7 @@ export async function handleBatchListJobs(batchClient: BatchClient, args: any) {
       state: job.state,
       dataset: job.dataset,
       schema: job.schema,
-      symbols_count: job.symbols.length,
+      symbols_count: countBatchSymbols(job.symbols),
       cost_usd: job.cost_usd,
       date_range: {
         start: job.start,
@@ -182,7 +197,7 @@ export async function handleBatchListJobs(batchClient: BatchClient, args: any) {
       ts_expiration: job.ts_expiration,
       record_count: job.record_count,
       file_count: job.file_count,
-      total_size_bytes: job.total_size,
+      total_size_bytes: getBatchDownloadSize(job),
     })),
   };
 

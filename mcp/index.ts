@@ -4,6 +4,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  type CallToolRequest,
+  type CallToolResult,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as dotenv from "dotenv";
 import { DataBentoClient } from "../src/databento-client.js";
@@ -17,42 +20,49 @@ import { Schema, SType } from "../src/types/timeseries.js";
 import { SymbolType } from "../src/types/symbology.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 
-// Load environment variables
-dotenv.config();
+function countBatchSymbols(symbols: string[] | string): number {
+  if (Array.isArray(symbols)) {
+    return symbols.length;
+  }
 
-// Validate API key
-const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
-if (!DATABENTO_API_KEY) {
-  console.error("Error: DATABENTO_API_KEY environment variable is required");
-  process.exit(1);
+  return symbols
+    .split(",")
+    .map((symbol) => symbol.trim())
+    .filter(Boolean).length;
 }
 
-// Initialize DataBento clients
-const databentoClient = new DataBentoClient(DATABENTO_API_KEY);
-const http = new DataBentoHTTP(DATABENTO_API_KEY);
-const metadataClient = new MetadataClient(http);
-const referenceClient = new ReferenceClient(DATABENTO_API_KEY);
-const timeseriesClient = new TimeseriesClient(http);
-const symbologyClient = new SymbologyClient(DATABENTO_API_KEY);
-const batchClient = new BatchClient(http);
+function getBatchDownloadSize(job: { package_size?: number; actual_size?: number; total_size?: number }): number | undefined {
+  return job.package_size ?? job.actual_size ?? job.total_size;
+}
 
-// Create MCP server instance
-const server = new Server(
-  {
-    name: "databento-mcp-server",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
+export interface DatabentoMcpClients {
+  databentoClient: Pick<DataBentoClient, "getQuote" | "getSessionInfo" | "getHistoricalBars">;
+  metadataClient: Pick<
+    MetadataClient,
+    "listDatasets" | "listSchemas" | "listPublishers" | "listFields" | "getCost" | "getDatasetRange"
+  >;
+  referenceClient: Pick<ReferenceClient, "searchSecurities" | "getCorporateActions" | "getAdjustmentFactors">;
+  timeseriesClient: Pick<TimeseriesClient, "getRange">;
+  symbologyClient: Pick<SymbologyClient, "resolve">;
+  batchClient: Pick<BatchClient, "submitJob" | "listJobs" | "getDownloadInfo">;
+}
+
+export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpClients {
+  const http = new DataBentoHTTP(apiKey);
+
+  return {
+    databentoClient: new DataBentoClient(apiKey),
+    metadataClient: new MetadataClient(http),
+    referenceClient: new ReferenceClient(apiKey),
+    timeseriesClient: new TimeseriesClient(http),
+    symbologyClient: new SymbologyClient(apiKey),
+    batchClient: new BatchClient(http),
+  };
+}
 
 // List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
+export function listDatabentoTools(): Tool[] {
+  return [
       {
         name: "get_futures_quote",
         description: "Get current price quote for ES or NQ futures contracts",
@@ -125,13 +135,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             stype_in: {
               type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent", "nasdaq", "cms", "bats", "smart"],
+              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
               description: "Input symbol type",
               default: "raw_symbol",
             },
             stype_out: {
               type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent", "nasdaq", "cms", "bats", "smart"],
+              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
               description: "Output symbol type",
               default: "instrument_id",
             },
@@ -142,7 +152,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             end_date: {
               type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD)",
+              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, Databento forward-fills start_date based on resolution.",
               pattern: "^\\d{4}-\\d{2}-\\d{2}$",
             },
           },
@@ -178,7 +188,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             end: {
               type: "string",
-              description: "End date (ISO 8601 or YYYY-MM-DD format), defaults to start date",
+              description: "Optional exclusive end date (ISO 8601 or YYYY-MM-DD). If omitted, Databento forward-fills start based on resolution.",
             },
             stype_in: {
               type: "string",
@@ -358,12 +368,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             stype_in: {
               type: "string",
-              enum: ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+              enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
               description: "Input symbology type (default: raw_symbol)",
             },
             stype_out: {
               type: "string",
-              enum: ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+              enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
               description: "Output symbology type (default: instrument_id)",
             },
             split_duration: {
@@ -396,7 +406,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "array",
               items: {
                 type: "string",
-                enum: ["received", "queued", "processing", "done", "expired"],
+                enum: ["queued", "processing", "done", "expired"],
               },
               description: "Filter by job states",
             },
@@ -429,7 +439,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             dataset: {
               type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)",
+              description: "Optional compatibility label for the response; Databento Reference API does not require a dataset",
             },
             symbols: {
               type: "string",
@@ -437,18 +447,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             start_date: {
               type: "string",
-              description: "Start date (YYYY-MM-DD)",
+              description: "Optional start date (YYYY-MM-DD). If omitted, returns the latest security master snapshot.",
             },
             end_date: {
               type: "string",
-              description: "Optional end date (YYYY-MM-DD)",
+              description: "Optional exclusive end date (YYYY-MM-DD). Used with start_date for a historical range.",
             },
             limit: {
               type: "number",
-              description: "Maximum number of records to return",
+              description: "Local maximum number of records to include in the MCP response",
             },
           },
-          required: ["dataset", "symbols", "start_date"],
+          required: ["symbols"],
         },
       },
       {
@@ -459,7 +469,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             dataset: {
               type: "string",
-              description: "Dataset code (e.g., XNAS.ITCH)",
+              description: "Optional compatibility label for output. Databento Reference API does not require a dataset.",
             },
             symbols: {
               type: "string",
@@ -471,15 +481,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             end_date: {
               type: "string",
-              description: "Optional end date (YYYY-MM-DD)",
+              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, returns all available data after start_date.",
             },
             action_types: {
               type: "array",
               items: { type: "string" },
-              description: "Filter by action types (e.g., ['dividend', 'split'])",
+              description: "Databento corporate action event filters (e.g., ['DIV', 'FSPLT', 'RSPLT'])",
             },
           },
-          required: ["dataset", "symbols", "start_date"],
+          required: ["symbols", "start_date"],
         },
       },
       {
@@ -490,7 +500,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             dataset: {
               type: "string",
-              description: "Dataset code (e.g., XNAS.ITCH)",
+              description: "Optional compatibility label for output. Databento Reference API does not require a dataset.",
             },
             symbols: {
               type: "string",
@@ -502,22 +512,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             end_date: {
               type: "string",
-              description: "Optional end date (YYYY-MM-DD)",
+              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, returns all available data after start_date.",
             },
           },
-          required: ["dataset", "symbols", "start_date"],
+          required: ["symbols", "start_date"],
         },
       },
-    ],
-  };
-});
+  ];
+}
 
 // Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+function createCallToolHandler(clients: DatabentoMcpClients) {
+  return async (request: CallToolRequest): Promise<CallToolResult> => {
+    const {
+      databentoClient,
+      metadataClient,
+      referenceClient,
+      timeseriesClient,
+      symbologyClient,
+      batchClient,
+    } = clients;
+    const { name } = request.params;
+    const args = request.params.arguments ?? {};
 
-  try {
-    switch (name) {
+    try {
+      switch (name) {
       case "get_futures_quote": {
         const { symbol } = args as { symbol: "ES" | "NQ" };
         const quote = await databentoClient.getQuote(symbol);
@@ -624,11 +643,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           stype_out,
           date_range: {
             start: start_date,
-            end: end_date || "open",
+            end: end_date || "forward_filled",
           },
           symbol_count: symbols.length,
           result: response.result,
           mappings: response.mappings,
+          symbols: response.symbols,
+          partial: response.partial,
+          not_found: response.not_found,
+          partial_errors: response.partial_errors,
         };
 
         return {
@@ -861,7 +884,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   state: jobInfo.state,
                   dataset: jobInfo.dataset,
                   schema: jobInfo.schema,
-                  symbols_count: jobInfo.symbols.length,
+                  symbols_count: countBatchSymbols(jobInfo.symbols),
                   cost_usd: jobInfo.cost_usd,
                   date_range: {
                     start: jobInfo.start,
@@ -895,7 +918,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             state: job.state,
             dataset: job.dataset,
             schema: job.schema,
-            symbols_count: job.symbols.length,
+            symbols_count: countBatchSymbols(job.symbols),
             cost_usd: job.cost_usd,
             date_range: {
               start: job.start,
@@ -908,7 +931,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ts_expiration: job.ts_expiration,
             record_count: job.record_count,
             file_count: job.file_count,
-            total_size_bytes: job.total_size,
+            total_size_bytes: getBatchDownloadSize(job),
           })),
         };
 
@@ -938,9 +961,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "reference_search_securities": {
         const { dataset, symbols, start_date, end_date, limit } = args as {
-          dataset: string;
+          dataset?: string;
           symbols: string;
-          start_date: string;
+          start_date?: string;
           end_date?: string;
           limit?: number;
         };
@@ -954,11 +977,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         const result = {
-          dataset,
+          dataset: dataset ?? "reference",
           symbols,
           date_range: {
-            start: start_date,
-            end: end_date || "open",
+            start: start_date ?? "latest",
+            end: end_date || (start_date ? "all_available_after_start" : "not_applicable"),
           },
           record_count: response.securities.length,
           securities: response.securities,
@@ -992,11 +1015,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         const result = {
-          dataset,
+          dataset: dataset ?? "reference",
           symbols,
           date_range: {
             start: start_date,
-            end: end_date || "open",
+            end: end_date || "all_available_after_start",
           },
           record_count: response.actions.length,
           action_types_filter: action_types || "all",
@@ -1029,11 +1052,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         const result = {
-          dataset,
+          dataset: dataset ?? "reference",
           symbols,
           date_range: {
             start: start_date,
-            end: end_date || "open",
+            end: end_date || "all_available_after_start",
           },
           record_count: response.adjustments.length,
           adjustments: response.adjustments,
@@ -1052,28 +1075,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: errorMessage }, null, 2),
+          },
+        ],
+        isError: true,
+      };
+    }
+  };
+}
+
+export function createDatabentoMcpServer(clients: DatabentoMcpClients): Server {
+  const server = new Server(
+    {
+      name: "databento-mcp-server",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ error: errorMessage }, null, 2),
-        },
-      ],
-      isError: true,
+      tools: listDatabentoTools(),
     };
-  }
-});
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, createCallToolHandler(clients));
+
+  return server;
+}
 
 // Start the server
 async function main() {
+  dotenv.config({ quiet: true });
+
+  const apiKey = process.env.DATABENTO_API_KEY;
+  if (!apiKey) {
+    throw new Error("DATABENTO_API_KEY environment variable is required");
+  }
+
+  const server = createDatabentoMcpServer(createDefaultDatabentoMcpClients(apiKey));
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("DataBento MCP Server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Server error:", error);
+    process.exit(1);
+  });
+}

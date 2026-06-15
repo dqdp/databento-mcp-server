@@ -40,12 +40,12 @@
         },
         "stype_in": {
           "type": "string",
-          "enum": ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+          "enum": ["instrument_id", "raw_symbol", "continuous", "parent"],
           "description": "Input symbology type (default: raw_symbol)"
         },
         "stype_out": {
           "type": "string",
-          "enum": ["instrument_id", "raw_symbol", "continuous", "parent", "nasdaq", "cms", "isin"],
+          "enum": ["instrument_id", "raw_symbol", "continuous", "parent"],
           "description": "Output symbology type (default: instrument_id)"
         },
         "split_duration": {

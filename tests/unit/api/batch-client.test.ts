@@ -384,24 +384,47 @@ describe("BatchClient", () => {
         state: "done",
         record_count: 50000,
         file_count: 1,
-        total_size: 2048000,
+        package_size: 2048000,
         ts_expiration: "2024-02-01T00:00:00Z",
         encoding: "dbn",
         compression: "zstd",
       });
-      const mockResponse = generateJSONResponse([job]);
+      const files = [
+        {
+          filename: "test-job-123.dbn.zst",
+          size: 2048000,
+          hash: "sha256:test",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/test-job-123.dbn.zst",
+            ftp: "ftp://ftp.databento.com/user/test-job-123/test-job-123.dbn.zst",
+          },
+        },
+      ];
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
+      expect(mockHTTP.get).toHaveBeenNthCalledWith(1, "/v0/batch.get_job_details", {
+        job_id: jobId,
+      });
+      expect(mockHTTP.get).toHaveBeenNthCalledWith(2, "/v0/batch.list_files", {
+        job_id: jobId,
+      });
       expect(result.job_id).toBe(jobId);
       expect(result.state).toBe("done");
       expect(result.download_info).toBeDefined();
       expect(result.download_info?.id).toBe(jobId);
       expect(result.download_info?.download_url).toBe(
-        `https://hist.databento.com/v0/batch.download/${jobId}`
+        "https://api.databento.com/v0/batch/download/user/test-job-123/test-job-123.dbn.zst"
       );
+      expect(result.download_info?.download_urls).toEqual([
+        "https://api.databento.com/v0/batch/download/user/test-job-123/test-job-123.dbn.zst",
+      ]);
+      expect(result.download_info?.files).toEqual(files);
+      expect(result.download_info?.filenames).toEqual(["test-job-123.dbn.zst"]);
       expect(result.download_info?.record_count).toBe(50000);
       expect(result.download_info?.file_count).toBe(1);
       expect(result.download_info?.total_size).toBe(2048000);
@@ -414,9 +437,7 @@ describe("BatchClient", () => {
         id: jobId,
         state: "received",
       });
-      const mockResponse = generateJSONResponse([job]);
-
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get").mockResolvedValue(generateJSONResponse(job));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
@@ -433,9 +454,7 @@ describe("BatchClient", () => {
         state: "queued",
         ts_queued: "2024-01-01T00:01:00Z",
       });
-      const mockResponse = generateJSONResponse([job]);
-
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get").mockResolvedValue(generateJSONResponse(job));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
@@ -452,9 +471,7 @@ describe("BatchClient", () => {
         state: "processing",
         ts_process_start: "2024-01-01T00:02:00Z",
       });
-      const mockResponse = generateJSONResponse([job]);
-
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get").mockResolvedValue(generateJSONResponse(job));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
@@ -466,9 +483,8 @@ describe("BatchClient", () => {
 
     it("should handle job not found", async () => {
       const jobId = "nonexistent-job";
-      const mockResponse = generateJSONResponse([]);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get").mockRejectedValue(new Error("HTTP 404: Not Found"));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
@@ -493,54 +509,129 @@ describe("BatchClient", () => {
         encoding: "csv",
         compression: "gzip",
       });
-      const mockResponse = generateJSONResponse([job]);
+      const files = [
+        {
+          filename: "actual/ES-20240101.csv.gz",
+          size: 1000,
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240101.csv.gz",
+          },
+        },
+        {
+          filename: "actual/ES-20240102.csv.gz",
+          size: 2000,
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240102.csv.gz",
+          },
+        },
+        {
+          filename: "actual/NQ-20240101.csv.gz",
+          size: 3000,
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/NQ-20240101.csv.gz",
+          },
+        },
+        {
+          filename: "actual/NQ-20240102.csv.gz",
+          size: 4000,
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/NQ-20240102.csv.gz",
+          },
+        },
+        {
+          filename: "actual/metadata.json",
+          size: 500,
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/metadata.json",
+          },
+        },
+      ];
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
       expect(result.download_info?.file_count).toBe(5);
-      expect(result.download_info?.filenames).toBeDefined();
-      expect(result.download_info?.filenames?.length).toBe(5);
-      expect(result.download_info?.filenames?.[0]).toBe(`${jobId}_0.csv.gz`);
-      expect(result.download_info?.filenames?.[4]).toBe(`${jobId}_4.csv.gz`);
+      expect(result.download_info?.filenames).toEqual([
+        "actual/ES-20240101.csv.gz",
+        "actual/ES-20240102.csv.gz",
+        "actual/NQ-20240101.csv.gz",
+        "actual/NQ-20240102.csv.gz",
+        "actual/metadata.json",
+      ]);
+      expect(result.download_info?.files).toEqual(files);
       expect(result.message).toContain("5 file(s) ready");
     });
 
-    it("should generate correct file extensions for dbn+zstd", async () => {
+    it("should choose a data file for the primary download URL when metadata is listed first", async () => {
       const jobId = "test-job-123";
       const job = generateBatchJobInfo({
         id: jobId,
         state: "done",
         file_count: 2,
-        encoding: "dbn",
-        compression: "zstd",
       });
-      const mockResponse = generateJSONResponse([job]);
+      const files = [
+        {
+          filename: "metadata.json",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/metadata.json",
+          },
+        },
+        {
+          filename: "actual/ES-20240101.dbn.zst",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240101.dbn.zst",
+          },
+        },
+      ];
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
-      expect(result.download_info?.filenames?.[0]).toBe(`${jobId}_0.dbn.zst`);
+      expect(result.download_info?.download_url).toBe(
+        "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240101.dbn.zst"
+      );
+      expect(result.download_info?.download_urls).toEqual([
+        "https://api.databento.com/v0/batch/download/user/test-job-123/metadata.json",
+        "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240101.dbn.zst",
+      ]);
     });
 
-    it("should generate correct file extensions for json+none", async () => {
+    it("should use listed files count in message when job file_count is absent", async () => {
       const jobId = "test-job-123";
       const job = generateBatchJobInfo({
         id: jobId,
         state: "done",
-        file_count: 2,
-        encoding: "json",
-        compression: "none",
       });
-      const mockResponse = generateJSONResponse([job]);
+      delete (job as any).file_count;
+      const files = [
+        {
+          filename: "actual/ES-20240101.csv.gz",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240101.csv.gz",
+          },
+        },
+        {
+          filename: "actual/ES-20240102.csv.gz",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/ES-20240102.csv.gz",
+          },
+        },
+      ];
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
-      expect(result.download_info?.filenames?.[0]).toBe(`${jobId}_0.json`);
+      expect(result.download_info?.file_count).toBe(2);
+      expect(result.message).toContain("2 file(s) ready");
     });
 
     it("should handle API errors gracefully", async () => {
@@ -549,12 +640,7 @@ describe("BatchClient", () => {
 
       vi.spyOn(mockHTTP, "get").mockRejectedValue(error);
 
-      const result = await batchClient.getDownloadInfo(jobId);
-
-      expect(result.job_id).toBe(jobId);
-      expect(result.state).toBe("expired");
-      expect(result.error).toContain("Network error");
-      expect(result.message).toContain("Failed to get download info");
+      await expect(batchClient.getDownloadInfo(jobId)).rejects.toThrow("Network error");
     });
 
     it("should handle expired job status", async () => {
@@ -563,31 +649,38 @@ describe("BatchClient", () => {
         id: jobId,
         state: "expired",
       });
-      const mockResponse = generateJSONResponse([job]);
-
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get").mockResolvedValue(generateJSONResponse(job));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
+      expect(mockHTTP.get).toHaveBeenCalledWith("/v0/batch.get_job_details", {
+        job_id: jobId,
+      });
       expect(result.state).toBe("expired");
       expect(result.message).toContain("has expired");
     });
 
-    it("should not generate filenames when file_count is 1", async () => {
+    it("should not invent filenames or URLs when list_files returns no files", async () => {
       const jobId = "test-job-123";
       const job = generateBatchJobInfo({
         id: jobId,
         state: "done",
         file_count: 1,
       });
-      const mockResponse = generateJSONResponse([job]);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse([]));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
       expect(result.download_info?.file_count).toBe(1);
       expect(result.download_info?.filenames).toBeUndefined();
+      expect(result.download_info?.download_url).toBeUndefined();
+      expect(result.download_info?.download_urls).toBeUndefined();
+      expect(result.download_info?.files).toEqual([]);
+      expect(result.message).toContain("did not return downloadable file URLs");
+      expect(result.message).not.toContain("ready for download");
     });
 
     it("should include all job metadata in download info", async () => {
@@ -600,22 +693,55 @@ describe("BatchClient", () => {
         total_size: 5000000,
         ts_expiration: "2024-03-01T00:00:00Z",
       });
-      const mockResponse = generateJSONResponse([job]);
+      const files = [
+        { filename: "part-0.dbn.zst", size: 1000 },
+        { filename: "part-1.dbn.zst", size: 2000 },
+        { filename: "part-2.dbn.zst", size: 3000 },
+      ];
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
 
       const result = await batchClient.getDownloadInfo(jobId);
 
       expect(result.download_info).toEqual({
         id: jobId,
         state: "done",
-        download_url: `https://hist.databento.com/v0/batch.download/${jobId}`,
         total_size: 5000000,
         ts_expiration: "2024-03-01T00:00:00Z",
         record_count: 100000,
         file_count: 3,
-        filenames: expect.any(Array),
+        filenames: ["part-0.dbn.zst", "part-1.dbn.zst", "part-2.dbn.zst"],
+        files,
       });
+    });
+
+    it("should use actual_size when package_size is absent", async () => {
+      const jobId = "test-job-123";
+      const job = generateBatchJobInfo({
+        id: jobId,
+        state: "done",
+        actual_size: 4096,
+      });
+      delete (job as any).package_size;
+      delete (job as any).total_size;
+      const files = [
+        {
+          filename: "part-0.dbn.zst",
+          urls: {
+            https: "https://api.databento.com/v0/batch/download/user/test-job-123/part-0.dbn.zst",
+          },
+        },
+      ];
+
+      vi.spyOn(mockHTTP, "get")
+        .mockResolvedValueOnce(generateJSONResponse(job))
+        .mockResolvedValueOnce(generateJSONResponse(files));
+
+      const result = await batchClient.getDownloadInfo(jobId);
+
+      expect(result.download_info?.total_size).toBe(4096);
     });
   });
 
@@ -676,110 +802,4 @@ describe("BatchClient", () => {
     });
   });
 
-  describe('File Extension Generation Edge Cases', () => {
-    it('should handle dbn encoding with no compression', () => {
-      const ext = (batchClient as any).getFileExtension('dbn', 'none');
-      expect(ext).toBe('.dbn');
-    });
-
-    it('should handle csv encoding with gzip compression', () => {
-      const ext = (batchClient as any).getFileExtension('csv', 'gzip');
-      expect(ext).toBe('.csv.gz');
-    });
-
-    it('should handle json encoding with zstd compression', () => {
-      const ext = (batchClient as any).getFileExtension('json', 'zstd');
-      expect(ext).toBe('.json.zst');
-    });
-
-    it('should handle unknown encoding with default extension', () => {
-      const ext = (batchClient as any).getFileExtension('unknown-format', 'none');
-      expect(ext).toBe('.bin');
-    });
-
-    it('should handle all compression types', () => {
-      expect((batchClient as any).getFileExtension('csv', 'none')).toBe('.csv');
-      expect((batchClient as any).getFileExtension('csv', 'gzip')).toBe('.csv.gz');
-      expect((batchClient as any).getFileExtension('csv', 'zstd')).toBe('.csv.zst');
-    });
-  });
-
-  describe('Filename Generation Edge Cases', () => {
-    it('should generate filenames for multi-file job', () => {
-      const job = generateBatchJobInfo({
-        id: 'multi-file-job',
-        file_count: 3,
-        encoding: 'csv',
-        compression: 'gzip',
-      });
-
-      const filenames = (batchClient as any).generateFilenames(job);
-
-      expect(filenames).toHaveLength(3);
-      expect(filenames[0]).toBe('multi-file-job_0.csv.gz');
-      expect(filenames[1]).toBe('multi-file-job_1.csv.gz');
-      expect(filenames[2]).toBe('multi-file-job_2.csv.gz');
-    });
-
-    it('should handle job with no file count (undefined defaults to 1)', () => {
-      // generateBatchJobInfo defaults file_count to 1 when not specified
-      const job = generateBatchJobInfo({
-        id: 'no-files-job',
-        encoding: 'dbn',
-        compression: 'zstd',
-        state: 'received',  // state !== 'done' means no default file_count
-        file_count: undefined,  // Explicitly set to undefined
-      });
-
-      const filenames = (batchClient as any).generateFilenames(job);
-
-      // When file_count is undefined (falsy), no filenames are generated
-      expect(filenames).toEqual([]);
-    });
-
-    it('should handle job with zero file count (mock defaults 0 to 1)', () => {
-      const job = generateBatchJobInfo({
-        id: 'zero-files-job',
-        file_count: 0,  // Mock uses || operator, so 0 becomes default (1)
-        encoding: 'json',
-        compression: 'none',
-      });
-
-      const filenames = (batchClient as any).generateFilenames(job);
-
-      // Mock converts file_count: 0 to 1 due to || operator
-      // This tests the actual behavior with the mock
-      expect(filenames).toHaveLength(1);
-      expect(filenames[0]).toBe('zero-files-job_0.json');
-    });
-
-    it('should handle single file job', () => {
-      const job = generateBatchJobInfo({
-        id: 'single-file-job',
-        file_count: 1,
-        encoding: 'dbn',
-        compression: 'none',
-      });
-
-      const filenames = (batchClient as any).generateFilenames(job);
-
-      expect(filenames).toHaveLength(1);
-      expect(filenames[0]).toBe('single-file-job_0.dbn');
-    });
-
-    it('should handle large file count', () => {
-      const job = generateBatchJobInfo({
-        id: 'large-job',
-        file_count: 100,
-        encoding: 'csv',
-        compression: 'zstd',
-      });
-
-      const filenames = (batchClient as any).generateFilenames(job);
-
-      expect(filenames).toHaveLength(100);
-      expect(filenames[0]).toBe('large-job_0.csv.zst');
-      expect(filenames[99]).toBe('large-job_99.csv.zst');
-    });
-  });
 });

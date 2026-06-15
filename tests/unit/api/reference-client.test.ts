@@ -3,15 +3,25 @@
  * Tests security search, corporate actions, and adjustment factors
  */
 
+import * as zlib from "node:zlib";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ReferenceClient } from "../../../src/api/reference-client.js";
 import { DataBentoHTTP } from "../../../src/http/databento-http.js";
-import {
-  generateSecurityRecord,
-  generateCorporateAction,
-  generateAdjustmentFactor,
-  generateCSVResponse,
-} from "../../fixtures/mock-data.js";
+
+function generateReferenceResponse(rows: Record<string, unknown>[]): Buffer {
+  const jsonl = rows.map((row) => JSON.stringify(row)).join("\n");
+  const zstdCompressSync = (
+    zlib as typeof zlib & {
+      zstdCompressSync?: (buffer: Buffer) => Buffer;
+    }
+  ).zstdCompressSync;
+
+  if (!zstdCompressSync) {
+    throw new Error("Test runtime does not support zstd compression");
+  }
+
+  return zstdCompressSync(Buffer.from(jsonl, "utf8"));
+}
 
 describe("ReferenceClient", () => {
   let referenceClient: ReferenceClient;
@@ -21,7 +31,7 @@ describe("ReferenceClient", () => {
     referenceClient = new ReferenceClient("db-test-api-key-12345");
     // Get the internal HTTP client and mock its methods
     mockHTTP = (referenceClient as any).http as DataBentoHTTP;
-    vi.spyOn(mockHTTP, "get").mockResolvedValue("");
+    vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(generateReferenceResponse([]));
   });
 
   describe("searchSecurities", () => {
@@ -41,9 +51,9 @@ describe("ReferenceClient", () => {
           tick_size: "0.25",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -57,8 +67,8 @@ describe("ReferenceClient", () => {
     });
 
     it("should use correct endpoint", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -66,14 +76,17 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
-        expect.any(Object)
+        "/v0/security_master.get_last",
+        expect.objectContaining({
+          compression: "zstd",
+          symbols: "ESH5",
+        })
       );
     });
 
     it("should convert string symbols to comma-separated", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -81,7 +94,7 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
+        "/v0/security_master.get_last",
         expect.objectContaining({
           symbols: "ESH5",
         })
@@ -89,8 +102,8 @@ describe("ReferenceClient", () => {
     });
 
     it("should convert array symbols to comma-separated", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -98,7 +111,7 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
+        "/v0/security_master.get_last",
         expect.objectContaining({
           symbols: "ESH5,NQH5,YMH5",
         })
@@ -106,8 +119,8 @@ describe("ReferenceClient", () => {
     });
 
     it("should use default stype_in if not provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -115,7 +128,7 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
+        "/v0/security_master.get_last",
         expect.objectContaining({
           stype_in: "raw_symbol",
         })
@@ -123,8 +136,8 @@ describe("ReferenceClient", () => {
     });
 
     it("should use custom stype_in when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -133,16 +146,16 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
+        "/v0/security_master.get_last",
         expect.objectContaining({
           stype_in: "instrument_id",
         })
       );
     });
 
-    it("should use default limit if not provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+    it("should not send unsupported dataset or limit parameters", async () => {
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -150,34 +163,45 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
-        expect.objectContaining({
-          limit: 1000,
+        "/v0/security_master.get_last",
+        expect.not.objectContaining({
+          dataset: expect.any(String),
+          limit: expect.any(Number),
         })
       );
     });
 
-    it("should use custom limit when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+    it("should apply limit locally without sending it to security_master", async () => {
+      const csvData = [
+        { instrument_id: "1", symbol: "ESM6", stype: "FUTURE" },
+        { instrument_id: "2", symbol: "ESU6", stype: "FUTURE" },
+        { instrument_id: "3", symbol: "ESZ6", stype: "FUTURE" },
+      ];
+      const mockResponse = generateReferenceResponse(csvData);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
-      await referenceClient.searchSecurities({
+      const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
         symbols: "ESH5",
-        limit: 500,
+        limit: 2,
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
-        expect.objectContaining({
-          limit: 500,
+        "/v0/security_master.get_last",
+        expect.not.objectContaining({
+          limit: 2,
         })
       );
+      expect(result.count).toBe(2);
+      expect(result.securities.map((security) => security.symbol)).toEqual([
+        "ESM6",
+        "ESU6",
+      ]);
     });
 
     it("should include date range when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -187,7 +211,7 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/metadata.list_symbols",
+        "/v0/security_master.get_range",
         expect.objectContaining({
           start: "2024-01-01",
           end: "2024-01-31",
@@ -195,7 +219,7 @@ describe("ReferenceClient", () => {
       );
     });
 
-    it("should parse CSV to SecurityRecord objects", async () => {
+    it("should parse JSONL to SecurityRecord objects", async () => {
       const csvData = [
         {
           instrument_id: "98765",
@@ -213,9 +237,9 @@ describe("ReferenceClient", () => {
           expiration: "2025-03-15",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -240,6 +264,48 @@ describe("ReferenceClient", () => {
       });
     });
 
+    it("should parse Databento security_master fields without inventing an instrument_id", async () => {
+      const csvData = [
+        {
+          ts_effective: "2024-07-19T00:00:00Z",
+          listing_id: "L-135825",
+          security_id: "S-33449",
+          issuer_id: "I-30017",
+          issuer_name: "Apple Inc",
+          security_type: "EQS",
+          security_description: "Ordinary Shares",
+          primary_exchange: "USNASD",
+          operating_mic: "XNAS",
+          symbol: "AAPL",
+          isin: "US0378331005",
+          trading_currency: "USD",
+        },
+      ];
+      const mockResponse = generateReferenceResponse(csvData);
+
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
+
+      const result = await referenceClient.searchSecurities({
+        dataset: "SECURITY_MASTER",
+        symbols: "AAPL",
+      });
+
+      expect(result.securities[0]).toMatchObject({
+        security_id: "S-33449",
+        listing_id: "L-135825",
+        issuer_id: "I-30017",
+        symbol: "AAPL",
+        stype: "EQS",
+        first_available: "2024-07-19T00:00:00Z",
+        exchange: "USNASD",
+        asset_class: "EQS",
+        description: "Ordinary Shares",
+        isin: "US0378331005",
+        currency: "USD",
+      });
+      expect(result.securities[0].instrument_id).toBeUndefined();
+    });
+
     it("should handle alternative field names", async () => {
       const csvData = [
         {
@@ -251,9 +317,9 @@ describe("ReferenceClient", () => {
           venue: "CME",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -265,9 +331,9 @@ describe("ReferenceClient", () => {
     });
 
     it("should handle empty results", async () => {
-      const mockResponse = generateCSVResponse([]);
+      const mockResponse = generateReferenceResponse([]);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -289,9 +355,9 @@ describe("ReferenceClient", () => {
           exchange: "CME",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -306,7 +372,7 @@ describe("ReferenceClient", () => {
     it("should propagate HTTP errors with context", async () => {
       const error = new Error("HTTP 401: Unauthorized");
 
-      vi.spyOn(mockHTTP, "get").mockRejectedValue(error);
+      vi.spyOn(mockHTTP, "postFormBinary").mockRejectedValue(error);
 
       await expect(
         referenceClient.searchSecurities({
@@ -335,9 +401,9 @@ describe("ReferenceClient", () => {
           exchange: "CME",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.searchSecurities({
         dataset: "GLBX.MDP3",
@@ -361,13 +427,14 @@ describe("ReferenceClient", () => {
           currency: "USD",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions).toHaveLength(1);
@@ -376,33 +443,36 @@ describe("ReferenceClient", () => {
     });
 
     it("should use correct endpoint", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
-        expect.objectContaining({
-          schema: "corporate_actions",
+        "/v0/corporate_actions.get_range",
+        expect.not.objectContaining({
+          dataset: expect.any(String),
+          schema: expect.any(String),
         })
       );
     });
 
     it("should convert symbols to comma-separated string", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: ["AAPL", "MSFT", "GOOGL"],
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/corporate_actions.get_range",
         expect.objectContaining({
           symbols: "AAPL,MSFT,GOOGL",
         })
@@ -427,18 +497,25 @@ describe("ReferenceClient", () => {
           split_factor: "2.0",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
         action_types: ["DIVIDEND"],
       });
 
       expect(result.actions).toHaveLength(1);
       expect(result.actions[0].action_type).toBe("DIVIDEND");
+      expect(getSpy).toHaveBeenCalledWith(
+        "/v0/corporate_actions.get_range",
+        expect.objectContaining({
+          events: "DIVIDEND",
+        })
+      );
     });
 
     it("should not filter when action_types is empty", async () => {
@@ -456,13 +533,14 @@ describe("ReferenceClient", () => {
           ts_event: "2024-06-15T00:00:00Z",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
         action_types: [],
       });
 
@@ -490,13 +568,14 @@ describe("ReferenceClient", () => {
           ts_event: "2024-07-15T00:00:00Z",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
         action_types: ["DIVIDEND", "SPLIT"],
       });
 
@@ -523,13 +602,14 @@ describe("ReferenceClient", () => {
           details: "Quarterly dividend",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions[0]).toMatchObject({
@@ -548,6 +628,43 @@ describe("ReferenceClient", () => {
       });
     });
 
+    it("should parse Databento corporate action event fields", async () => {
+      const csvData = [
+        {
+          security_id: "S-33449",
+          event_id: "E-1443840-DIV",
+          event: "DIV",
+          symbol: "AAPL",
+          ex_date: "2024-05-15",
+          dividend: "0.25",
+          dividend_currency: "USD",
+          detail: "Dividend (cash) of USD0.25/EQS",
+        },
+      ];
+      const mockResponse = generateReferenceResponse(csvData);
+
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
+
+      const result = await referenceClient.getCorporateActions({
+        dataset: "CORPORATE_ACTIONS",
+        symbols: "AAPL",
+        start_date: "2024-01-01",
+      });
+
+      expect(result.actions[0]).toMatchObject({
+        security_id: "S-33449",
+        event_id: "E-1443840-DIV",
+        symbol: "AAPL",
+        action_type: "DIV",
+        effective_date: "2024-05-15",
+        ex_date: "2024-05-15",
+        amount: 0.25,
+        currency: "USD",
+        details: "Dividend (cash) of USD0.25/EQS",
+      });
+      expect(result.actions[0].instrument_id).toBeUndefined();
+    });
+
     it("should parse split actions", async () => {
       const csvData = [
         {
@@ -559,17 +676,54 @@ describe("ReferenceClient", () => {
           split_factor: "4.0",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions[0].split_ratio).toBe("4:1");
       expect(result.actions[0].split_factor).toBe(4.0);
+    });
+
+    it("should parse Databento split ratio fields", async () => {
+      const csvData = [
+        {
+          security_id: "S-33449",
+          event_id: "E-1443840-FSPLT",
+          event: "FSPLT",
+          symbol: "AAPL",
+          date_info: {
+            ex_date: "2024-06-15",
+          },
+          rate_info: {
+            ratio_old: "1",
+            ratio_new: "4",
+          },
+        },
+      ];
+      const mockResponse = generateReferenceResponse(csvData);
+
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
+
+      const result = await referenceClient.getCorporateActions({
+        dataset: "CORPORATE_ACTIONS",
+        symbols: "AAPL",
+        start_date: "2024-01-01",
+      });
+
+      expect(result.actions[0]).toMatchObject({
+        security_id: "S-33449",
+        event_id: "E-1443840-FSPLT",
+        action_type: "FSPLT",
+        effective_date: "2024-06-15",
+        split_ratio: "1:4",
+        split_factor: 4,
+      });
     });
 
     it("should handle alternative field names", async () => {
@@ -582,13 +736,14 @@ describe("ReferenceClient", () => {
           amount: "0.25",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions[0].action_type).toBe("DIVIDEND");
@@ -596,13 +751,14 @@ describe("ReferenceClient", () => {
     });
 
     it("should handle empty results", async () => {
-      const mockResponse = generateCSVResponse([]);
+      const mockResponse = generateReferenceResponse([]);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "INVALID",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions).toHaveLength(0);
@@ -617,13 +773,14 @@ describe("ReferenceClient", () => {
           effective_date: "2024-05-15T00:00:00Z",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.actions[0].symbol).toBe("AAPL");
@@ -632,19 +789,32 @@ describe("ReferenceClient", () => {
     it("should propagate HTTP errors with context", async () => {
       const error = new Error("HTTP 404: Not Found");
 
-      vi.spyOn(mockHTTP, "get").mockRejectedValue(error);
+      vi.spyOn(mockHTTP, "postFormBinary").mockRejectedValue(error);
 
       await expect(
         referenceClient.getCorporateActions({
           dataset: "XNAS.ITCH",
           symbols: "AAPL",
+          start_date: "2024-01-01",
         })
       ).rejects.toThrow("Failed to get corporate actions");
     });
 
+    it("should require start_date before calling the API", async () => {
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary");
+
+      await expect(
+        referenceClient.getCorporateActions({
+          dataset: "XNAS.ITCH",
+          symbols: "AAPL",
+        } as any)
+      ).rejects.toThrow("start_date is required");
+      expect(getSpy).not.toHaveBeenCalled();
+    });
+
     it("should include date range when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
@@ -654,25 +824,27 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/corporate_actions.get_range",
         expect.objectContaining({
           start: "2024-01-01",
           end: "2024-12-31",
+          compression: "zstd",
         })
       );
     });
 
     it("should use default stype_in", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getCorporateActions({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/corporate_actions.get_range",
         expect.objectContaining({
           stype_in: "raw_symbol",
         })
@@ -693,13 +865,14 @@ describe("ReferenceClient", () => {
           action_type: "DIVIDEND",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments).toHaveLength(1);
@@ -708,18 +881,20 @@ describe("ReferenceClient", () => {
     });
 
     it("should use correct endpoint", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
-        expect.objectContaining({
-          schema: "adjustment",
+        "/v0/adjustment_factors.get_range",
+        expect.not.objectContaining({
+          dataset: expect.any(String),
+          schema: expect.any(String),
         })
       );
     });
@@ -736,13 +911,14 @@ describe("ReferenceClient", () => {
           action_type: "DIVIDEND",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments[0]).toMatchObject({
@@ -757,6 +933,39 @@ describe("ReferenceClient", () => {
       });
     });
 
+    it("should parse Databento adjustment factor event fields", async () => {
+      const csvData = [
+        {
+          security_id: "S-39827",
+          event_id: "E-1443840-DIV",
+          event: "DIV",
+          symbol: "MSFT",
+          ex_date: "2019-02-20",
+          factor: "0.99875",
+          detail: "Dividend adjustment",
+        },
+      ];
+      const mockResponse = generateReferenceResponse(csvData);
+
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
+
+      const result = await referenceClient.getAdjustmentFactors({
+        dataset: "ADJUSTMENT_FACTORS",
+        symbols: "MSFT",
+        start_date: "2024-01-01",
+      });
+
+      expect(result.adjustments[0]).toMatchObject({
+        security_id: "S-39827",
+        event_id: "E-1443840-DIV",
+        symbol: "MSFT",
+        effective_date: "2019-02-20",
+        price_factor: 0.99875,
+        action_type: "DIV",
+      });
+      expect(result.adjustments[0].instrument_id).toBeUndefined();
+    });
+
     it("should handle alternative field names", async () => {
       const csvData = [
         {
@@ -766,13 +975,14 @@ describe("ReferenceClient", () => {
           price_adj_factor: "1.05",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments[0].effective_date).toBe("2024-05-15T00:00:00Z");
@@ -787,13 +997,14 @@ describe("ReferenceClient", () => {
           effective_date: "2024-05-15T00:00:00Z",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments[0].price_factor).toBe(1.0);
@@ -808,29 +1019,31 @@ describe("ReferenceClient", () => {
           price_factor: "1.05",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments[0].volume_factor).toBeUndefined();
     });
 
     it("should convert symbols to comma-separated string", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: ["AAPL", "MSFT", "GOOGL"],
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/adjustment_factors.get_range",
         expect.objectContaining({
           symbols: "AAPL,MSFT,GOOGL",
         })
@@ -838,13 +1051,14 @@ describe("ReferenceClient", () => {
     });
 
     it("should handle empty results", async () => {
-      const mockResponse = generateCSVResponse([]);
+      const mockResponse = generateReferenceResponse([]);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "INVALID",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments).toHaveLength(0);
@@ -859,13 +1073,14 @@ describe("ReferenceClient", () => {
           price_factor: "1.05",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments[0].symbol).toBe("AAPL");
@@ -888,13 +1103,14 @@ describe("ReferenceClient", () => {
           reason: "SPLIT",
         },
       ];
-      const mockResponse = generateCSVResponse(csvData);
+      const mockResponse = generateReferenceResponse(csvData);
 
-      vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       const result = await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(result.adjustments).toHaveLength(2);
@@ -902,8 +1118,8 @@ describe("ReferenceClient", () => {
     });
 
     it("should include date range when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
@@ -913,25 +1129,27 @@ describe("ReferenceClient", () => {
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/adjustment_factors.get_range",
         expect.objectContaining({
           start: "2024-01-01",
           end: "2024-12-31",
+          compression: "zstd",
         })
       );
     });
 
     it("should use default stype_in", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "AAPL",
+        start_date: "2024-01-01",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/adjustment_factors.get_range",
         expect.objectContaining({
           stype_in: "raw_symbol",
         })
@@ -939,17 +1157,18 @@ describe("ReferenceClient", () => {
     });
 
     it("should use custom stype_in when provided", async () => {
-      const mockResponse = generateCSVResponse([]);
-      const getSpy = vi.spyOn(mockHTTP, "get").mockResolvedValue(mockResponse);
+      const mockResponse = generateReferenceResponse([]);
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary").mockResolvedValue(mockResponse);
 
       await referenceClient.getAdjustmentFactors({
         dataset: "XNAS.ITCH",
         symbols: "12345",
+        start_date: "2024-01-01",
         stype_in: "instrument_id",
       });
 
       expect(getSpy).toHaveBeenCalledWith(
-        "/v0/timeseries.get_range",
+        "/v0/adjustment_factors.get_range",
         expect.objectContaining({
           stype_in: "instrument_id",
         })
@@ -959,14 +1178,27 @@ describe("ReferenceClient", () => {
     it("should propagate HTTP errors with context", async () => {
       const error = new Error("HTTP 500: Internal Server Error");
 
-      vi.spyOn(mockHTTP, "get").mockRejectedValue(error);
+      vi.spyOn(mockHTTP, "postFormBinary").mockRejectedValue(error);
 
       await expect(
         referenceClient.getAdjustmentFactors({
           dataset: "XNAS.ITCH",
           symbols: "AAPL",
+          start_date: "2024-01-01",
         })
       ).rejects.toThrow("Failed to get adjustment factors");
+    });
+
+    it("should require start_date before calling the API", async () => {
+      const getSpy = vi.spyOn(mockHTTP, "postFormBinary");
+
+      await expect(
+        referenceClient.getAdjustmentFactors({
+          dataset: "XNAS.ITCH",
+          symbols: "AAPL",
+        } as any)
+      ).rejects.toThrow("start_date is required");
+      expect(getSpy).not.toHaveBeenCalled();
     });
   });
 });

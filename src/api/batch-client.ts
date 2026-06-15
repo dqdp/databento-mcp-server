@@ -7,11 +7,15 @@ import { DataBentoHTTP, parseJSON } from "../http/databento-http.js";
 import type {
   BatchJobRequest,
   BatchJobInfo,
+  BatchFileInfo,
   ListJobsParams,
   BatchDownloadInfo,
   BatchDownloadResult,
-  BatchJobState,
 } from "../types/batch.js";
+
+function getBatchDownloadSize(job: BatchJobInfo): number | undefined {
+  return job.package_size ?? job.actual_size ?? job.total_size;
+}
 
 /**
  * Batch API Client
@@ -102,18 +106,7 @@ export class BatchClient {
     }
 
     try {
-      // First, get the job info to check status
-      const jobs = await this.listJobs();
-      const job = jobs.find((j) => j.id === jobId);
-
-      if (!job) {
-        return {
-          job_id: jobId,
-          state: "expired",
-          message: `Job ${jobId} not found. It may have expired or does not exist.`,
-          error: "Job not found",
-        };
-      }
+      const job = await this.getJobDetails(jobId);
 
       // Check job state
       if (job.state !== "done") {
@@ -124,37 +117,77 @@ export class BatchClient {
         };
       }
 
-      // Job is done, construct download info
+      const files = await this.listFiles(jobId);
+      const filenames = files.map((file) => file.filename).filter(Boolean);
+      const downloadUrlForFile = (file: BatchFileInfo) => file.urls?.https || file.download_url;
+      const downloadUrls = files
+        .map(downloadUrlForFile)
+        .filter((url): url is string => Boolean(url));
+      const primaryDownloadUrl =
+        files
+          .filter((file) => file.filename.split("/").pop()?.toLowerCase() !== "metadata.json")
+          .map(downloadUrlForFile)
+          .find((url): url is string => Boolean(url)) ?? downloadUrls[0];
+      const fileCount = job.file_count ?? files.length;
+
+      // Job is done, return API-provided download metadata.
       const downloadInfo: BatchDownloadInfo = {
         id: job.id,
         state: job.state,
-        download_url: `${this.http.getBaseUrl()}/v0/batch.download/${jobId}`,
-        total_size: job.total_size,
+        ...(primaryDownloadUrl ? { download_url: primaryDownloadUrl } : {}),
+        ...(downloadUrls.length > 0 ? { download_urls: downloadUrls } : {}),
+        ...(filenames.length > 0 ? { filenames } : {}),
+        files,
+        total_size: getBatchDownloadSize(job),
         ts_expiration: job.ts_expiration,
         record_count: job.record_count,
-        file_count: job.file_count,
+        file_count: fileCount,
       };
-
-      // If job has split files, list them
-      if (job.file_count && job.file_count > 1) {
-        downloadInfo.filenames = this.generateFilenames(job);
-      }
+      const hasDownloadableUrls = downloadUrls.length > 0;
 
       return {
         job_id: jobId,
         state: job.state,
-        message: `Job completed successfully. ${job.file_count || 1} file(s) ready for download.`,
+        message: hasDownloadableUrls
+          ? `Job completed successfully. ${fileCount} file(s) ready for download.`
+          : "Job completed successfully, but Databento did not return downloadable file URLs.",
         download_info: downloadInfo,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        job_id: jobId,
-        state: "expired",
-        message: `Failed to get download info: ${errorMessage}`,
-        error: errorMessage,
-      };
+      if (/\b404\b|not found/i.test(errorMessage)) {
+        return {
+          job_id: jobId,
+          state: "expired",
+          message: `Job ${jobId} not found. It may have expired or does not exist.`,
+          error: "Job not found",
+        };
+      }
+
+      throw error instanceof Error ? error : new Error(errorMessage);
     }
+  }
+
+  /**
+   * Get current metadata for a specific batch job.
+   */
+  private async getJobDetails(jobId: string): Promise<BatchJobInfo> {
+    const response = await this.http.get("/v0/batch.get_job_details", { job_id: jobId });
+    return parseJSON<BatchJobInfo>(response);
+  }
+
+  /**
+   * List API-provided file metadata for a completed batch job.
+   */
+  private async listFiles(jobId: string): Promise<BatchFileInfo[]> {
+    const response = await this.http.get("/v0/batch.list_files", { job_id: jobId });
+    const parsed = parseJSON<BatchFileInfo[] | { files?: BatchFileInfo[] }>(response);
+
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+
+    return parsed.files ?? [];
   }
 
   /**
@@ -175,60 +208,6 @@ export class BatchClient {
       default:
         return `Job ${job.id} status: ${job.state}`;
     }
-  }
-
-  /**
-   * Generate likely filenames for a split job
-   * Note: This is an approximation. Actual filenames should come from the API.
-   */
-  private generateFilenames(job: BatchJobInfo): string[] {
-    const filenames: string[] = [];
-    const extension = this.getFileExtension(job.encoding, job.compression);
-
-    if (job.file_count) {
-      for (let i = 0; i < job.file_count; i++) {
-        filenames.push(`${job.id}_${i}${extension}`);
-      }
-    }
-
-    return filenames;
-  }
-
-  /**
-   * Get file extension based on encoding and compression
-   */
-  private getFileExtension(encoding: string, compression: string): string {
-    let ext = "";
-
-    // Base extension from encoding
-    switch (encoding) {
-      case "dbn":
-        ext = ".dbn";
-        break;
-      case "csv":
-        ext = ".csv";
-        break;
-      case "json":
-        ext = ".json";
-        break;
-      default:
-        ext = ".bin";
-    }
-
-    // Add compression extension
-    switch (compression) {
-      case "zstd":
-        ext += ".zst";
-        break;
-      case "gzip":
-        ext += ".gz";
-        break;
-      case "none":
-        // No compression extension
-        break;
-    }
-
-    return ext;
   }
 
   /**

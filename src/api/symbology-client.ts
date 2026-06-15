@@ -7,6 +7,8 @@
 
 import { DataBentoHTTP, parseJSON } from "../http/databento-http.js";
 import {
+  SymbolMapping,
+  SymbolResolution,
   SymbologyResolveRequest,
   SymbologyResolveResponse,
   SymbolType,
@@ -67,7 +69,7 @@ export class SymbologyClient {
     }
 
     try {
-      const response = await this.http.post(endpoint, requestBody);
+      const response = await this.http.postForm(endpoint, requestBody);
       return this.parseResponse(response);
     } catch (error) {
       throw new Error(`Symbology resolution failed: ${error}`);
@@ -126,42 +128,62 @@ export class SymbologyClient {
     try {
       const data = parseJSON<any>(responseText);
 
-      // Handle different response formats from Databento API
-      // The API returns a map of input symbols to resolution results
-      const mappings: Record<string, string | string[]> = {};
+      // Databento returns an envelope with a `result` map. Older tests and
+      // some callers may still pass the map directly, so support both shapes.
+      const resultMap =
+        data &&
+        typeof data === "object" &&
+        data.result &&
+        typeof data.result === "object" &&
+        !Array.isArray(data.result)
+          ? data.result
+          : data;
 
-      // Process the response data
-      if (data && typeof data === "object") {
-        Object.entries(data).forEach(([inputSymbol, resolutions]) => {
-          if (Array.isArray(resolutions)) {
-            // Multiple resolutions (e.g., symbol changed over time)
-            const outputSymbols = resolutions.map((r: any) => {
-              if (typeof r === "string") {
-                return r;
-              } else if (r && typeof r === "object" && "s" in r) {
-                return r.s;
-              }
-              return String(r);
-            });
+      const partial = this.toStringArray(data?.partial);
+      const notFound = this.toStringArray(data?.not_found);
+      const mappings: Record<string, string | string[]> = {};
+      const symbols: SymbolMapping[] = [];
+
+      if (resultMap && typeof resultMap === "object") {
+        Object.entries(resultMap).forEach(([inputSymbol, resolutions]) => {
+          const parsed = this.parseResolutions(resolutions);
+
+          if (parsed.outputSymbols.length > 0) {
             mappings[inputSymbol] =
-              outputSymbols.length === 1 ? outputSymbols[0] : outputSymbols;
-          } else if (typeof resolutions === "string") {
-            // Single resolution
-            mappings[inputSymbol] = resolutions;
-          } else if (resolutions && typeof resolutions === "object") {
-            // Object with symbol field
-            if ("s" in resolutions) {
-              mappings[inputSymbol] = String(resolutions.s);
-            } else {
-              mappings[inputSymbol] = JSON.stringify(resolutions);
-            }
+              parsed.outputSymbols.length === 1
+                ? parsed.outputSymbols[0]
+                : parsed.outputSymbols;
+
+            symbols.push({
+              input_symbol: inputSymbol,
+              output_symbols: parsed.outputSymbols,
+              ...(parsed.intervals.length > 0
+                ? { intervals: parsed.intervals }
+                : {}),
+            });
           }
         });
       }
 
+      const partialErrors: Record<string, string> = {};
+      partial.forEach((symbol) => {
+        partialErrors[symbol] = "partial";
+      });
+      notFound.forEach((symbol) => {
+        partialErrors[symbol] = "not_found";
+      });
+
+      const hasPartialResults = partial.length > 0 || notFound.length > 0;
+
       return {
-        result: "success",
+        result: hasPartialResults ? "partial" : "success",
         mappings,
+        ...(symbols.length > 0 ? { symbols } : {}),
+        ...(partial.length > 0 ? { partial } : {}),
+        ...(notFound.length > 0 ? { not_found: notFound } : {}),
+        ...(Object.keys(partialErrors).length > 0
+          ? { partial_errors: partialErrors }
+          : {}),
       };
     } catch (error) {
       return {
@@ -170,5 +192,55 @@ export class SymbologyClient {
         error: `Failed to parse symbology response: ${error}`,
       };
     }
+  }
+
+  private parseResolutions(resolutions: any): {
+    outputSymbols: string[];
+    intervals: SymbolResolution[];
+  } {
+    const values = Array.isArray(resolutions) ? resolutions : [resolutions];
+    const outputSymbols: string[] = [];
+    const intervals: SymbolResolution[] = [];
+
+    values.forEach((resolution) => {
+      if (typeof resolution === "string") {
+        outputSymbols.push(resolution);
+        return;
+      }
+
+      if (resolution && typeof resolution === "object") {
+        if ("s" in resolution) {
+          outputSymbols.push(String(resolution.s));
+
+          if ("d0" in resolution) {
+            intervals.push({
+              d0: String(resolution.d0),
+              ...(resolution.d1 !== undefined
+                ? { d1: String(resolution.d1) }
+                : {}),
+              s: String(resolution.s),
+            });
+          }
+          return;
+        }
+
+        outputSymbols.push(JSON.stringify(resolution));
+        return;
+      }
+
+      if (resolution !== undefined && resolution !== null) {
+        outputSymbols.push(String(resolution));
+      }
+    });
+
+    return { outputSymbols, intervals };
+  }
+
+  private toStringArray(value: any): string[] {
+    if (!value) {
+      return [];
+    }
+
+    return Array.isArray(value) ? value.map(String) : [String(value)];
   }
 }

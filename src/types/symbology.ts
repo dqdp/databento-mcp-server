@@ -17,14 +17,6 @@ export enum SymbolType {
   Continuous = "continuous",
   /** Parent symbol for options and futures */
   Parent = "parent",
-  /** Nasdaq Integrated */
-  Nasdaq = "nasdaq",
-  /** CMS symbol for options */
-  Cms = "cms",
-  /** BATS/CBOE symbol */
-  Bats = "bats",
-  /** Smart symbology */
-  Smart = "smart",
 }
 
 /**
@@ -53,6 +45,8 @@ export interface SymbolMapping {
   input_symbol: string;
   /** Resolved output symbol(s) */
   output_symbols: string[];
+  /** Raw Databento resolution intervals for this symbol */
+  intervals?: SymbolResolution[];
   /** Date range for which the mapping is valid */
   date_range?: {
     start: string;
@@ -70,6 +64,10 @@ export interface SymbologyResolveResponse {
   mappings: Record<string, string | string[]>;
   /** Array of symbol mappings with metadata */
   symbols?: SymbolMapping[];
+  /** Symbols that Databento resolved only partially */
+  partial?: string[];
+  /** Symbols that Databento could not resolve */
+  not_found?: string[];
   /** Error message if result is error */
   error?: string;
   /** Partial errors for specific symbols */

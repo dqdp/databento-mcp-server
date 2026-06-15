@@ -3,6 +3,8 @@
  * Provides shared HTTP functionality for all Databento API clients
  */
 
+import * as zlib from "node:zlib";
+
 /**
  * Configuration for DataBento API requests
  */
@@ -101,30 +103,31 @@ export class DataBentoHTTP {
    */
   async postForm(endpoint: string, data: Record<string, any>): Promise<string> {
     const url = new URL(endpoint, this.config.baseUrl);
-
-    // Convert data to URLSearchParams for form encoding
-    const formData = new URLSearchParams();
-    Object.entries(data).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        // Handle arrays (like symbols)
-        if (Array.isArray(value)) {
-          formData.append(key, value.join(","));
-        } else {
-          formData.append(key, String(value));
-        }
-      }
-    });
-
-    const headers: Record<string, string> = {
-      Authorization: this.getAuthHeader(),
-      "User-Agent": "DataBento-MCP-Server/1.0",
-      "Content-Type": "application/x-www-form-urlencoded",
-    };
+    const body = buildFormBody(data);
 
     return this.makeRequest(url.toString(), {
       method: "POST",
-      headers,
-      body: formData.toString(),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    });
+  }
+
+  /**
+   * Make a POST request to the DataBento API with form-encoded body and
+   * return the raw response bytes. Reference API endpoints stream zstd JSONL.
+   */
+  async postFormBinary(endpoint: string, data: Record<string, any>): Promise<Buffer> {
+    const url = new URL(endpoint, this.config.baseUrl);
+    const body = buildFormBody(data);
+
+    return this.makeBinaryRequest(url.toString(), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
     });
   }
 
@@ -135,6 +138,26 @@ export class DataBentoHTTP {
     url: string,
     options: RequestInit
   ): Promise<string> {
+    const response = await this.fetchWithRetry(url, options);
+    return response.text();
+  }
+
+  /**
+   * Make HTTP request with retry logic and return the raw response body.
+   */
+  private async makeBinaryRequest(
+    url: string,
+    options: RequestInit
+  ): Promise<Buffer> {
+    const response = await this.fetchWithRetry(url, options);
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  }
+
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit
+  ): Promise<Response> {
     for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
       try {
         const response = await fetch(url, {
@@ -154,7 +177,7 @@ export class DataBentoHTTP {
           );
         }
 
-        return await response.text();
+        return response;
       } catch (error) {
         // If this is the last attempt, throw the error
         if (attempt === this.config.retryAttempts) {
@@ -186,6 +209,22 @@ export class DataBentoHTTP {
   getBaseUrl(): string {
     return this.config.baseUrl;
   }
+}
+
+function buildFormBody(data: Record<string, any>): string {
+  const formData = new URLSearchParams();
+
+  Object.entries(data).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      if (Array.isArray(value)) {
+        formData.append(key, value.join(","));
+      } else {
+        formData.append(key, String(value));
+      }
+    }
+  });
+
+  return formData.toString();
 }
 
 /**
@@ -246,4 +285,36 @@ export function parseJSON<T = any>(jsonText: string): T {
   } catch (error) {
     throw new Error(`Failed to parse JSON response: ${error}`);
   }
+}
+
+/**
+ * Parse newline-delimited JSON response.
+ */
+export function parseJSONL<T = Record<string, unknown>>(jsonlText: string): T[] {
+  const lines = jsonlText
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.map((line) => parseJSON<T>(line));
+}
+
+/**
+ * Decompress zstd bytes returned by Databento Reference API endpoints.
+ */
+export function decompressZstd(data: Buffer): Buffer {
+  const zstdDecompressSync = (
+    zlib as typeof zlib & {
+      zstdDecompressSync?: (buffer: Buffer) => Buffer;
+    }
+  ).zstdDecompressSync;
+
+  if (!zstdDecompressSync) {
+    throw new Error(
+      "This Node.js runtime does not support zstd decompression. Use a Node.js version with node:zlib zstd support."
+    );
+  }
+
+  return zstdDecompressSync(data);
 }

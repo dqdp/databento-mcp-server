@@ -8,7 +8,13 @@
  */
 export interface SecurityRecord {
   /** Instrument ID assigned by DataBento */
-  instrument_id: number;
+  instrument_id?: number;
+  /** Security ID assigned by Databento Reference API */
+  security_id?: string;
+  /** Listing ID assigned by Databento Reference API */
+  listing_id?: string;
+  /** Issuer ID assigned by Databento Reference API */
+  issuer_id?: string;
   /** Trading symbol */
   symbol: string;
   /** Dataset code */
@@ -42,7 +48,11 @@ export interface SecurityRecord {
  */
 export interface CorporateAction {
   /** Instrument ID */
-  instrument_id: number;
+  instrument_id?: number;
+  /** Security ID assigned by Databento Reference API */
+  security_id?: string;
+  /** Event ID assigned by Databento Reference API */
+  event_id?: string;
   /** Trading symbol */
   symbol: string;
   /** Dataset code */
@@ -76,7 +86,11 @@ export interface CorporateAction {
  */
 export interface AdjustmentFactor {
   /** Instrument ID */
-  instrument_id: number;
+  instrument_id?: number;
+  /** Security ID assigned by Databento Reference API */
+  security_id?: string;
+  /** Event ID assigned by Databento Reference API */
+  event_id?: string;
   /** Trading symbol */
   symbol: string;
   /** Dataset code */
@@ -97,17 +111,17 @@ export interface AdjustmentFactor {
  * Request parameters for security search
  */
 export interface SecuritySearchParams {
-  /** Dataset code (e.g., 'GLBX.MDP3') */
-  dataset: string;
+  /** Optional compatibility label; Databento Reference API does not require a dataset */
+  dataset?: string;
   /** Symbols to search (comma-separated or array) */
   symbols: string | string[];
-  /** Start date (ISO format YYYY-MM-DD) */
+  /** Optional start date (ISO format YYYY-MM-DD); omitted requests the latest snapshot */
   start_date?: string;
-  /** End date (ISO format YYYY-MM-DD) */
+  /** End date (ISO format YYYY-MM-DD), used only with start_date */
   end_date?: string;
   /** Symbol type (default: 'raw_symbol') */
   stype_in?: string;
-  /** Maximum number of results */
+  /** Local maximum number of results to return */
   limit?: number;
 }
 
@@ -115,17 +129,17 @@ export interface SecuritySearchParams {
  * Request parameters for corporate actions
  */
 export interface CorporateActionsParams {
-  /** Dataset code */
-  dataset: string;
+  /** Optional compatibility label; Databento Reference API does not require a dataset */
+  dataset?: string;
   /** Symbols to query */
   symbols: string | string[];
   /** Start date (ISO format YYYY-MM-DD) */
-  start_date?: string;
+  start_date: string;
   /** End date (ISO format YYYY-MM-DD) */
   end_date?: string;
   /** Symbol type */
   stype_in?: string;
-  /** Filter by action types (e.g., ['DIVIDEND', 'SPLIT']) */
+  /** Databento corporate action event filters (e.g., ['DIV', 'FSPLT', 'RSPLT']) */
   action_types?: string[];
 }
 
@@ -133,12 +147,12 @@ export interface CorporateActionsParams {
  * Request parameters for adjustment factors
  */
 export interface AdjustmentFactorsParams {
-  /** Dataset code */
-  dataset: string;
+  /** Optional compatibility label; Databento Reference API does not require a dataset */
+  dataset?: string;
   /** Symbols to query */
   symbols: string | string[];
   /** Start date (ISO format YYYY-MM-DD) */
-  start_date?: string;
+  start_date: string;
   /** End date (ISO format YYYY-MM-DD) */
   end_date?: string;
   /** Symbol type */

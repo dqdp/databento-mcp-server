@@ -13,6 +13,8 @@ export type BatchJobState =
   | "done"        // Job completed successfully
   | "expired";    // Job expired (files no longer available)
 
+export type BatchListJobState = Exclude<BatchJobState, "received">;
+
 /**
  * Data encoding formats
  */
@@ -30,10 +32,7 @@ export type SymbologyType =
   | "instrument_id"
   | "raw_symbol"
   | "continuous"
-  | "parent"
-  | "nasdaq"
-  | "cms"
-  | "isin";
+  | "parent";
 
 /**
  * Data schemas
@@ -88,7 +87,7 @@ export interface BatchJobInfo {
   bill_id: string;           // Billing account ID
   cost_usd: string;          // Job cost in USD
   dataset: string;           // Dataset code
-  symbols: string[];         // Symbol list
+  symbols: string[] | string; // Symbol list; Databento may return comma-separated strings
   stype_in: SymbologyType;   // Input symbology type
   stype_out: SymbologyType;  // Output symbology type
   schema: DataSchema;        // Data schema
@@ -109,15 +108,32 @@ export interface BatchJobInfo {
   ts_expiration?: string;    // When job expires (ISO 8601)
   record_count?: number;     // Total records in job
   file_count?: number;       // Number of output files
-  total_size?: number;       // Total size in bytes
+  actual_size?: number;      // Actual uncompressed or payload size in bytes
+  package_size?: number;     // Packaged downloadable size in bytes
+  total_size?: number;       // Backward-compatible total size in bytes
   package_hash?: string;     // Hash of the complete package
+}
+
+/**
+ * File metadata for a completed batch job.
+ */
+export interface BatchFileInfo {
+  filename: string;           // File name returned by the Batch API
+  size?: number;              // File size in bytes
+  hash?: string;              // Content hash, usually sha256-prefixed
+  urls?: {
+    https?: string;           // HTTPS download URL
+    ftp?: string;             // FTP download URL
+    [key: string]: string | undefined;
+  };
+  download_url?: string;      // Backward-compatible alternate URL field
 }
 
 /**
  * Job list filter parameters
  */
 export interface ListJobsParams {
-  states?: BatchJobState[];  // Filter by job states
+  states?: BatchListJobState[];  // Filter by job states supported by batch.list_jobs
   since?: string;            // Filter jobs since timestamp (ISO 8601)
 }
 
@@ -128,7 +144,9 @@ export interface BatchDownloadInfo {
   id: string;                // Job ID
   state: BatchJobState;      // Job state
   download_url?: string;     // Download URL (if state is "done")
+  download_urls?: string[];   // HTTPS download URLs for available files
   filenames?: string[];      // List of available files
+  files?: BatchFileInfo[];    // File metadata returned by the Batch API
   total_size?: number;       // Total download size in bytes
   ts_expiration?: string;    // When download expires
   record_count?: number;     // Total records

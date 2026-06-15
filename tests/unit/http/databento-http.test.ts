@@ -9,6 +9,7 @@ import {
   DATABENTO_CONFIG,
   parseCSV,
   parseJSON,
+  parseJSONL,
   buildQueryParams,
 } from '../../../src/http/databento-http';
 
@@ -17,12 +18,16 @@ const mockFetch = vi.fn();
 global.fetch = mockFetch as any;
 
 // Helper to create mock Response
-function createMockResponse(body: string, status = 200, statusText = 'OK') {
+function createMockResponse(body: string | Buffer, status = 200, statusText = 'OK') {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText,
-    text: vi.fn().mockResolvedValue(body),
+    text: vi.fn().mockResolvedValue(buffer.toString('utf8')),
+    arrayBuffer: vi.fn().mockResolvedValue(
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+    ),
   } as any;
 }
 
@@ -425,6 +430,27 @@ describe('DataBentoHTTP', () => {
       const options = mockFetch.mock.calls[0][1];
       expect(options.headers['User-Agent']).toBe('DataBento-MCP-Server/1.0');
     });
+
+    it('should return raw bytes from binary form POST requests', async () => {
+      const client = new DataBentoHTTP(VALID_API_KEY);
+      const responseBody = Buffer.from('{"symbol":"AAPL"}\n', 'utf8');
+
+      mockFetch.mockResolvedValue(createMockResponse(responseBody));
+
+      const result = await client.postFormBinary('/v0/security_master.get_last', {
+        symbols: 'AAPL',
+        compression: 'zstd',
+      });
+
+      expect(result).toEqual(responseBody);
+
+      const options = mockFetch.mock.calls[0][1];
+      expect(options.headers['Content-Type']).toBe(
+        'application/x-www-form-urlencoded'
+      );
+      expect(options.body).toContain('symbols=AAPL');
+      expect(options.body).toContain('compression=zstd');
+    });
   });
 
   describe('Error Handling', () => {
@@ -796,6 +822,20 @@ data,456
         const result = parseJSON(json);
 
         expect(result).toEqual({ active: true, disabled: false });
+      });
+    });
+
+    describe('parseJSONL', () => {
+      it('should parse newline-delimited JSON records', () => {
+        const jsonl = '{"symbol":"AAPL"}\n{"symbol":"MSFT"}\n';
+
+        const result = parseJSONL(jsonl);
+
+        expect(result).toEqual([{ symbol: 'AAPL' }, { symbol: 'MSFT' }]);
+      });
+
+      it('should return an empty array for empty JSONL', () => {
+        expect(parseJSONL('')).toEqual([]);
       });
     });
 

@@ -58,9 +58,9 @@ describe('TimeseriesClient', () => {
         symbols: 'ES.c.0',
         schema: 'ohlcv-1h',
         start: '2024-01-01',
-        end: '2024-01-01',
         stype_in: 'raw_symbol',
         stype_out: 'instrument_id',
+        encoding: 'csv',
       });
 
       expect(result).toHaveProperty('data');
@@ -69,7 +69,7 @@ describe('TimeseriesClient', () => {
       expect(result).toHaveProperty('symbols', ['ES.c.0']);
       expect(result.dateRange).toEqual({
         start: '2024-01-01',
-        end: '2024-01-01',
+        end: 'forward_filled',
       });
     });
 
@@ -376,7 +376,7 @@ describe('TimeseriesClient', () => {
       });
 
       // Verify ISO timestamps are preserved for intraday queries
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-15T12:00:00Z');
       expect(call[1].end).toBe('2024-01-15T23:59:59Z');
     });
@@ -396,12 +396,12 @@ describe('TimeseriesClient', () => {
       });
 
       // Verify ISO timestamps from Date.toISOString() are preserved
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-01T12:00:00.000Z');
       expect(call[1].end).toBe('2024-01-31T12:00:00.000Z');
     });
 
-    it('should default end date to start date if not provided', async () => {
+    it('should omit end date when not provided', async () => {
       vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 
       const result = await client.getRange({
@@ -415,9 +415,11 @@ describe('TimeseriesClient', () => {
         '/v0/timeseries.get_range',
         expect.objectContaining({
           start: '2024-01-01',
-          end: '2024-01-01',
+          encoding: 'csv',
         })
       );
+      expect(vi.mocked(mockHttp.get).mock.calls[0][1]).not.toHaveProperty('end');
+      expect(result.dateRange.end).toBe('forward_filled');
     });
   });
 
@@ -736,7 +738,7 @@ value1, value2 ,value3 `;
   });
 
   describe('Encoding Options', () => {
-    it('should support CSV encoding (default)', async () => {
+    it('should request CSV encoding by default', async () => {
       vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 
       await client.getRange({
@@ -744,7 +746,6 @@ value1, value2 ,value3 `;
         symbols: 'ES.c.0',
         schema: Schema.OHLCV_1H,
         start: '2024-01-01',
-        encoding: Encoding.CSV,
       });
 
       expect(mockHttp.get).toHaveBeenCalledWith(
@@ -753,38 +754,28 @@ value1, value2 ,value3 `;
       );
     });
 
-    it('should support JSON encoding', async () => {
-      vi.mocked(mockHttp.get).mockResolvedValueOnce('[]');
-
-      const result = await client.getRange({
-        dataset: 'GLBX.MDP3',
-        symbols: 'ES.c.0',
-        schema: Schema.OHLCV_1H,
-        start: '2024-01-01',
-        encoding: Encoding.JSON,
-      });
-
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        '/v0/timeseries.get_range',
-        expect.objectContaining({ encoding: 'json' })
-      );
+    it('should reject JSON encoding because getRange parses CSV responses', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          encoding: Encoding.JSON,
+        })
+      ).rejects.toThrow('TimeseriesClient.getRange only supports csv encoding');
     });
 
-    it('should support DBN encoding', async () => {
-      vi.mocked(mockHttp.get).mockResolvedValueOnce('binary data');
-
-      const result = await client.getRange({
-        dataset: 'GLBX.MDP3',
-        symbols: 'ES.c.0',
-        schema: Schema.OHLCV_1H,
-        start: '2024-01-01',
-        encoding: Encoding.DBN,
-      });
-
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        '/v0/timeseries.get_range',
-        expect.objectContaining({ encoding: 'dbn' })
-      );
+    it('should reject DBN encoding because getRange parses CSV responses', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          encoding: Encoding.DBN,
+        })
+      ).rejects.toThrow('TimeseriesClient.getRange only supports csv encoding');
     });
   });
 
@@ -818,13 +809,10 @@ value1, value2 ,value3 `;
       expect(stypes).toHaveLength(4);
     });
 
-    it('should return all available encodings', () => {
+    it('should return the supported getRange encodings', () => {
       const encodings = TimeseriesClient.getAvailableEncodings();
 
-      expect(encodings).toContain(Encoding.CSV);
-      expect(encodings).toContain(Encoding.JSON);
-      expect(encodings).toContain(Encoding.DBN);
-      expect(encodings).toHaveLength(3);
+      expect(encodings).toEqual([Encoding.CSV]);
     });
   });
 
@@ -938,7 +926,7 @@ value1, value2 ,value3 `;
         start: '2024-02-30T12:00:00Z',  // Auto-converts to Mar 1
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-02-30T12:00:00Z');  // Preserved as-is
     });
 
@@ -965,7 +953,7 @@ value1, value2 ,value3 `;
         end: '2024-01-16',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-15');
       expect(call[1].end).toBe('2024-01-16');
     });
@@ -981,7 +969,7 @@ value1, value2 ,value3 `;
         end: '2024-01-15T18:00:00.456Z',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-15T12:00:00.123Z');
       expect(call[1].end).toBe('2024-01-15T18:00:00.456Z');
     });
@@ -997,7 +985,7 @@ value1, value2 ,value3 `;
         end: '2024-01-15T18:00:00-08:00',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-15T12:00:00+05:00');
       expect(call[1].end).toBe('2024-01-15T18:00:00-08:00');
     });
@@ -1013,7 +1001,7 @@ value1, value2 ,value3 `;
         end: '2024-12-31',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].start).toBe('2024-01-01');
       expect(call[1].end).toBe('2024-12-31');
     });
@@ -1053,7 +1041,7 @@ value1, value2 ,value3 `;
         start: '2024-01-01',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].symbols).toBe('A');
     });
 
@@ -1067,7 +1055,7 @@ value1, value2 ,value3 `;
         start: '2024-01-01',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].symbols).toBe('ES.c.0');
     });
 
@@ -1081,7 +1069,7 @@ value1, value2 ,value3 `;
         start: '2024-01-01',
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].symbols).toBe('ES.c.0,NQ.c.0');
     });
 
@@ -1135,7 +1123,7 @@ value1, value2 ,value3 `;
         limit: 1,
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].limit).toBe(1);
     });
 
@@ -1150,7 +1138,7 @@ value1, value2 ,value3 `;
         limit: 1000000,
       });
 
-      const call = vi.mocked(mockHttp.get).mock.calls[0];
+      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
       expect(call[1].limit).toBe(1000000);
     });
   });

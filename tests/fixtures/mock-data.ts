@@ -83,6 +83,8 @@ export function generateBatchJobInfo(
       overrides?.ts_expiration || (state === "done" ? "2024-02-01T00:00:00Z" : undefined),
     record_count: overrides?.record_count || (state === "done" ? 10000 : undefined),
     file_count: overrides?.file_count || (state === "done" ? 1 : undefined),
+    actual_size: overrides?.actual_size,
+    package_size: overrides?.package_size,
     total_size: overrides?.total_size || (state === "done" ? 1024000 : undefined),
     package_hash: overrides?.package_hash,
   };
