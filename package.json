@@ -22,6 +22,7 @@
     "start:http": "node dist/mcp/mcp/http.js",
     "smoke:mcp": "tsx scripts/smoke-mcp-stdio.ts",
     "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts",
+    "smoke:skills": "tsx scripts/smoke-installed-skills.ts",
     "install:skills": "bash scripts/install-skills.sh",
     "prepublishOnly": "npm run build",
     "test": "vitest",

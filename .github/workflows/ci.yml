@@ -52,11 +52,4 @@ jobs:
           MCP_REMOTE_AUTH_TOKEN: ci-http-smoke-token
 
       - name: Smoke installed skills
-        run: |
-          HOME="$RUNNER_TEMP/databento-skills-home" npm run install:skills
-          set +e
-          output="$(node "$RUNNER_TEMP/databento-skills-home/.claude/skills/databento/scripts/get-quote.js" ES 2>&1)"
-          status=$?
-          set -e
-          test "$status" -eq 1
-          echo "$output" | grep -F "DATABENTO_API_KEY environment variable is required"
+        run: npm run smoke:skills

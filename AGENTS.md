@@ -19,7 +19,7 @@ Completed baseline:
 - The MCP TypeScript SDK is updated and verified.
 - Stdio MCP smoke and Vitest integration coverage are active.
 - Databento timeseries, symbology, reference, and batch contract fixes are in place.
-- GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, stdio smoke, and Streamable HTTP smoke.
+- GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, stdio smoke, Streamable HTTP smoke, and installed-skill smoke.
 - Package contents are allowlisted and verified with `npm pack --dry-run`.
 - Claude Code skill packaging uses `SKILL.md`, and installed skill runtime imports are verified.
 
@@ -30,6 +30,7 @@ npm run test:once
 npm run build
 npm run smoke:mcp
 npm run smoke:mcp:http
+npm run smoke:skills
 npm audit --omit=dev
 npm pack --dry-run --ignore-scripts --json --cache /tmp/databento-mcp-npm-cache
 ```
@@ -123,6 +124,7 @@ npm run test:once
 npm run build
 npm run smoke:mcp
 npm run smoke:mcp:http
+npm run smoke:skills
 ```
 
 For packaging and dependency checks:
@@ -196,6 +198,7 @@ The default PR workflow should run:
 - `npm run build`
 - `npm run smoke:mcp`
 - `npm run smoke:mcp:http`
+- `npm run smoke:skills`
 
 Use Node 22 and 24 in the initial matrix. Keep `DATABENTO_API_KEY` test-shaped for normal CI, for example `db-test-key`.
 

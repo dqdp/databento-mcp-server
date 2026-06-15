@@ -202,6 +202,16 @@ Verify installation:
 node ~/.claude/skills/databento/scripts/get-quote.js ES
 ```
 
+Run the automated installed-skill smoke without touching your real Claude skills:
+```bash
+npm run smoke:skills
+```
+
+The smoke command creates a temporary `HOME`, runs the installer there, verifies
+`SKILL.md`, manifest, all installed scripts, copied shared runtime files, and
+the master manifest merge, then checks every installed script fails cleanly
+without `DATABENTO_API_KEY`.
+
 ### Environment Variables
 
 | Variable | Required | Default | Description |

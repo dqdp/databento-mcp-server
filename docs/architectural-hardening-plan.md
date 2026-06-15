@@ -274,6 +274,7 @@ npm run test:once
 npm run build
 npm run smoke:mcp
 npm run smoke:mcp:http
+npm run smoke:skills
 npm audit --omit=dev
 npm pack --dry-run --ignore-scripts --json --cache /tmp/databento-mcp-npm-cache
 ```
