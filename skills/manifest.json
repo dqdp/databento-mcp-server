@@ -6,7 +6,7 @@
   "skills": [
     {
       "name": "databento",
-      "path": "databento/skill.md",
+      "path": "databento/SKILL.md",
       "description": "Professional market data access via DataBento API",
       "version": "1.0.0",
       "type": "data-api",

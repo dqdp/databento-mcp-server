@@ -392,6 +392,20 @@ describe('DataBentoHTTP', () => {
       expect(requestTimes[1]! - requestTimes[0]!).toBe(1000);
       expect(requestTimes[2]! - requestTimes[1]!).toBe(2000);
     });
+
+    it('should not retry form POST requests when retry is disabled', async () => {
+      const client = new DataBentoHTTP(VALID_API_KEY);
+
+      mockFetch.mockResolvedValue(
+        createMockResponse('Accepted before timeout is unknown', 500, 'Internal Server Error')
+      );
+
+      await expect(
+        client.postForm('/v0/batch.submit_job', { dataset: 'GLBX.MDP3' }, { retry: false })
+      ).rejects.toThrow(/failed after 1 attempts/);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('Authentication', () => {

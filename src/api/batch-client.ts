@@ -59,7 +59,9 @@ export class BatchClient {
     if (params.ts_out !== undefined) formData.ts_out = params.ts_out;
 
     // Submit the job via form-encoded POST
-    const response = await this.http.postForm("/v0/batch.submit_job", formData);
+    const response = await this.http.postForm("/v0/batch.submit_job", formData, {
+      retry: false,
+    });
 
     // Parse and return job info
     const jobInfo = parseJSON<BatchJobInfo>(response);

@@ -22,6 +22,10 @@ export const DATABENTO_CONFIG: DataBentoConfig = {
   retryDelayMs: 1000, // Base delay for exponential backoff
 };
 
+interface RequestOptions {
+  retry?: boolean;
+}
+
 /**
  * DataBento API HTTP Client
  * Handles authentication, retries, and error handling for all Databento API requests
@@ -101,17 +105,25 @@ export class DataBentoHTTP {
    * @param data - Form data as key-value pairs
    * @returns Response text (JSON response)
    */
-  async postForm(endpoint: string, data: Record<string, any>): Promise<string> {
+  async postForm(
+    endpoint: string,
+    data: Record<string, any>,
+    requestOptions?: RequestOptions
+  ): Promise<string> {
     const url = new URL(endpoint, this.config.baseUrl);
     const body = buildFormBody(data);
 
-    return this.makeRequest(url.toString(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
+    return this.makeRequest(
+      url.toString(),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
       },
-      body,
-    });
+      requestOptions
+    );
   }
 
   /**
@@ -136,9 +148,10 @@ export class DataBentoHTTP {
    */
   private async makeRequest(
     url: string,
-    options: RequestInit
+    options: RequestInit,
+    requestOptions?: RequestOptions
   ): Promise<string> {
-    const response = await this.fetchWithRetry(url, options);
+    const response = await this.fetchWithRetry(url, options, requestOptions);
     return response.text();
   }
 
@@ -156,9 +169,13 @@ export class DataBentoHTTP {
 
   private async fetchWithRetry(
     url: string,
-    options: RequestInit
+    options: RequestInit,
+    requestOptions?: RequestOptions
   ): Promise<Response> {
-    for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
+    const retryAttempts =
+      requestOptions?.retry === false ? 1 : this.config.retryAttempts;
+
+    for (let attempt = 1; attempt <= retryAttempts; attempt++) {
       try {
         const response = await fetch(url, {
           ...options,
@@ -180,9 +197,9 @@ export class DataBentoHTTP {
         return response;
       } catch (error) {
         // If this is the last attempt, throw the error
-        if (attempt === this.config.retryAttempts) {
+        if (attempt === retryAttempts) {
           throw new Error(
-            `DataBento API request failed after ${this.config.retryAttempts} attempts: ${error}`
+            `DataBento API request failed after ${retryAttempts} attempts: ${error}`
           );
         }
 

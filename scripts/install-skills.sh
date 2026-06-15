@@ -52,9 +52,9 @@ for script_file in "$TARGET_DIR"/scripts/*.js; do
   rm -f "$script_file.bak"
 done
 
-# Copy skill.md
-echo "📄 Copying skill.md..."
-cp "$SKILLS_SRC/databento/skill.md" "$TARGET_DIR/"
+# Copy SKILL.md
+echo "📄 Copying SKILL.md..."
+cp "$SKILLS_SRC/databento/SKILL.md" "$TARGET_DIR/"
 
 # Copy manifest.json
 echo "📋 Copying manifest.json..."
@@ -80,11 +80,11 @@ if [ -f "$MASTER_MANIFEST" ]; then
   if command -v jq &> /dev/null; then
     # Use jq to merge databento skill into master manifest (idempotent)
     # Remove existing databento entry if present, then add the new one
-    jq --arg skillPath "databento/skill.md" \
+    jq --arg skillPath "databento/SKILL.md" \
        'del(.skills[] | select(.name == "databento")) |
         .skills += [{
           "name": "databento",
-          "path": "databento/skill.md",
+          "path": "databento/SKILL.md",
           "description": "Professional market data access via DataBento API",
           "version": "1.0.0",
           "type": "data-api",

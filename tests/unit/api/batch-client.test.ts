@@ -45,7 +45,8 @@ describe("BatchClient", () => {
           symbols: jobRequest.symbols,
           schema: jobRequest.schema,
           start: jobRequest.start,
-        })
+        }),
+        { retry: false }
       );
     });
 
@@ -82,7 +83,8 @@ describe("BatchClient", () => {
           split_symbols: true,
           limit: 5000,
           ts_out: true,
-        })
+        }),
+        { retry: false }
       );
     });
 
@@ -198,7 +200,8 @@ describe("BatchClient", () => {
         "/v0/batch.submit_job",
         expect.objectContaining({
           symbols: ["ES.FUT", "NQ.FUT", "YM.FUT"],
-        })
+        }),
+        { retry: false }
       );
     });
 

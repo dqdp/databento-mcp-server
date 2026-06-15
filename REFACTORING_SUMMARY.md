@@ -32,7 +32,7 @@ databento-mcp-server/
 │   └── index.ts
 ├── skills/        # Claude Code skills
 │   └── databento/
-│       ├── skill.md
+│       ├── SKILL.md
 │       ├── scripts/ (8 executable scripts)
 │       └── manifest.json
 ├── scripts/
@@ -46,7 +46,7 @@ databento-mcp-server/
 ### 2. New Files Created
 
 #### Skills
-- `skills/databento/skill.md` - Skill documentation with usage examples
+- `skills/databento/SKILL.md` - Skill documentation with usage examples
 - `skills/databento/scripts/get-quote.ts` - Real-time futures quotes
 - `skills/databento/scripts/get-historical.ts` - Historical bars
 - `skills/databento/scripts/get-session.ts` - Session information

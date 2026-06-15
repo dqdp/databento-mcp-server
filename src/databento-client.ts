@@ -66,9 +66,8 @@ export class DataBentoClient {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
 
-    const today = new Date();
-    const endDate = new Date(today);
-    const startDate = new Date(today);
+    const endDate = new Date();
+    const startDate = new Date(endDate);
     startDate.setDate(startDate.getDate() - 7); // 7-day lookback for weekends
 
     const params = {
@@ -77,7 +76,7 @@ export class DataBentoClient {
       stype_in: "continuous",
       stype_out: "instrument_id",
       start: startDate.toISOString().split("T")[0],
-      end: endDate.toISOString().split("T")[0],
+      end: endDate.toISOString(),
       schema: "mbp-1", // Market by price level 1 (best bid/ask)
       encoding: "csv",
       limit: 100,
@@ -157,7 +156,7 @@ export class DataBentoClient {
       stype_in: "continuous",
       stype_out: "instrument_id",
       start: startDate.toISOString().split("T")[0],
-      end: endDate.toISOString().split("T")[0],
+      end: endDate.toISOString(),
       schema: schema,
       encoding: "csv",
       limit: 1000,
@@ -200,7 +199,7 @@ export class DataBentoClient {
 
     // Handle H4 aggregation if needed
     if (timeframe === "H4") {
-      return this.aggregateToH4(bars);
+      return this.aggregateToH4(bars).slice(-count);
     }
 
     // Return last N bars

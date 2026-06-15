@@ -949,7 +949,7 @@ databento-mcp-server/
 │   └── index.ts              # MCP server entry point & 17 tool definitions
 ├── skills/                   # Claude Code Skills
 │   ├── databento/
-│   │   ├── skill.md          # Skill documentation
+│   │   ├── SKILL.md          # Skill documentation
 │   │   ├── scripts/          # 8 executable skill scripts
 │   │   │   ├── get-quote.ts
 │   │   │   ├── get-historical.ts

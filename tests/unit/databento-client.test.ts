@@ -28,6 +28,10 @@ describe('DataBentoClient', () => {
     mockHttpGet = (client as any).http.get;
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   describe('Constructor', () => {
     it('should create instance with API key', () => {
       expect(client).toBeInstanceOf(DataBentoClient);
@@ -93,6 +97,21 @@ describe('DataBentoClient', () => {
           symbols: 'NQ.c.0',
         })
       );
+    });
+
+    it('should send quote end as the current ISO timestamp', async () => {
+      vi.useFakeTimers();
+      const now = new Date('2024-03-15T18:30:00.000Z');
+      vi.setSystemTime(now);
+      mockHttpGet.mockResolvedValue(mockQuoteResponse);
+
+      await client.getQuote('ES');
+
+      const callArgs = mockHttpGet.mock.calls[0][1];
+      expect(callArgs.end).toBe(now.toISOString());
+      expect(callArgs.end).toContain('T');
+
+      vi.useRealTimers();
     });
 
     it('should use historical API during NY session', async () => {
@@ -310,6 +329,35 @@ describe('DataBentoClient', () => {
       expect(bars[1].volume).toBe(1400); // Only 1 hour in the partial chunk
     });
 
+    it('should return the requested number of H4 bars after aggregation', async () => {
+      const startNs = 1609459200000000000n;
+      const hourNs = 3600000000000n;
+      const rows = Array.from({ length: 12 }, (_, index) => {
+        const tsEvent = startNs + BigInt(index) * hourNs;
+        const open = (4500 + index) * 1_000_000_000;
+        return [
+          tsEvent.toString(),
+          '1',
+          '1',
+          '1234',
+          open,
+          open + 1_000_000_000,
+          open - 1_000_000_000,
+          open + 500_000_000,
+          1000 + index,
+        ].join(',');
+      });
+      const response = `ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n${rows.join('\n')}`;
+
+      mockHttpGet.mockResolvedValue(response);
+
+      const bars = await client.getHistoricalBars('ES', 'H4', 2);
+
+      expect(bars).toHaveLength(2);
+      expect(bars[0].timestamp.getTime()).toBe(1609473600000);
+      expect(bars[1].timestamp.getTime()).toBe(1609488000000);
+    });
+
     it('should throw error for invalid symbol', async () => {
       await expect(
         client.getHistoricalBars('INVALID' as any, '1h', 10)
@@ -348,6 +396,21 @@ describe('DataBentoClient', () => {
 
       // Should request at least 2 days + 7 day buffer for weekends
       expect(daysDiff).toBeGreaterThanOrEqual(9);
+    });
+
+    it('should send historical bars end as the current ISO timestamp', async () => {
+      vi.useFakeTimers();
+      const now = new Date('2024-03-15T18:30:00.000Z');
+      vi.setSystemTime(now);
+      mockHttpGet.mockResolvedValue(mockBarsResponse);
+
+      await client.getHistoricalBars('ES', '1h', 3);
+
+      const callArgs = mockHttpGet.mock.calls[0][1];
+      expect(callArgs.end).toBe(now.toISOString());
+      expect(callArgs.end).toContain('T');
+
+      vi.useRealTimers();
     });
 
     it('should calculate correct date range for H4 timeframe', async () => {

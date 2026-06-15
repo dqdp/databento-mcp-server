@@ -9,6 +9,17 @@ if (!DATABENTO_API_KEY) {
   process.exit(1);
 }
 
+function countBatchSymbols(symbols: string[] | string): number {
+  if (Array.isArray(symbols)) {
+    return symbols.length;
+  }
+
+  return symbols
+    .split(",")
+    .map((symbol) => symbol.trim())
+    .filter(Boolean).length;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || "list";
@@ -42,7 +53,7 @@ async function main() {
           state: jobInfo.state,
           dataset: jobInfo.dataset,
           schema: jobInfo.schema,
-          symbols_count: jobInfo.symbols.length,
+          symbols_count: countBatchSymbols(jobInfo.symbols),
           cost_usd: jobInfo.cost_usd,
           message: "Use 'batch list' or 'batch download <job_id>' to check status",
         }, null, 2));
@@ -66,7 +77,7 @@ async function main() {
             state: job.state,
             dataset: job.dataset,
             schema: job.schema,
-            symbols_count: job.symbols.length,
+            symbols_count: countBatchSymbols(job.symbols),
             cost_usd: job.cost_usd,
           })),
         };

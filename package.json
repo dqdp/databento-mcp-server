@@ -8,7 +8,7 @@
   },
   "files": [
     "dist/",
-    "skills/databento/skill.md",
+    "skills/databento/SKILL.md",
     "skills/manifest.json",
     "scripts/install-skills.sh"
   ],

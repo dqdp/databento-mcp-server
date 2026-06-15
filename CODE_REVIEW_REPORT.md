@@ -714,7 +714,7 @@ All public methods have JSDoc comments.
 **Effort**: Low
 
 #### ⚠️ **Skills Usage Examples**
-**Issue**: `skills/databento/skill.md` lacks concrete CLI examples
+**Issue**: `skills/databento/SKILL.md` lacks concrete CLI examples
 
 **Current**:
 ```markdown
