@@ -7,7 +7,7 @@ Professional market data access via DataBento API, available as both an MCP serv
 **Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
 This project now supports two deployment modes:
-- **MCP Server**: For Claude Desktop and other MCP clients (18 tools)
+- **MCP Server**: For Claude Desktop and other MCP clients (17 tools)
 - **Claude Code Skills**: Native skills for Claude Code CLI (8 skill scripts)
 
 Both modes share the same core functionality:
@@ -34,7 +34,9 @@ Choose the deployment that fits your workflow best!
 
 ### Prerequisites
 
-- Node.js v18+ or compatible runtime
+- Node.js v22.15+ or compatible runtime with `node:zlib` zstd support. For
+  Claude Desktop on macOS, an absolute Node.js path is recommended because GUI
+  apps may not inherit your shell `PATH`.
 - DataBento API key ([get one here](https://databento.com))
 - **For MCP**: Claude Desktop or compatible MCP client
 - **For Skills**: Claude Code CLI
@@ -76,13 +78,23 @@ Build the MCP server:
 npm run build:mcp
 ```
 
-Add to your Claude Desktop MCP configuration (`~/.claude/mcp.json`):
+Run the local MCP stdio smoke test:
+```bash
+npm run smoke:mcp
+```
+
+Add the server to your Claude Desktop configuration:
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+Use `which node` to find the Node.js path on your machine. On Apple Silicon
+macOS with Homebrew, this is often `/opt/homebrew/bin/node`.
 
 ```json
 {
   "mcpServers": {
     "databento": {
-      "command": "node",
+      "command": "/opt/homebrew/bin/node",
       "args": ["/Users/yourusername/Dev/databento-mcp-server/dist/mcp/mcp/index.js"],
       "env": {
         "DATABENTO_API_KEY": "db-your-api-key-here"
@@ -92,7 +104,9 @@ Add to your Claude Desktop MCP configuration (`~/.claude/mcp.json`):
 }
 ```
 
-Or use `npx` directly (if published to npm):
+Restart Claude Desktop after editing the configuration file.
+
+Or use `npx` directly if this package is published to npm:
 ```json
 {
   "mcpServers": {
@@ -109,15 +123,22 @@ Or use `npx` directly (if published to npm):
 
 ### Option 2: Claude Code Skills
 
-Build and install skills:
+Install skills:
 ```bash
 npm run install:skills
 ```
 
 This will:
-- Compile the skills from TypeScript
-- Copy them to `~/.claude/skills/databento/`
+- Build skill scripts first when `dist/skills` is missing in a source checkout
+- Copy the prebuilt skill scripts to `~/.claude/skills/databento/`
 - Make scripts executable
+
+When working from a source checkout after changing skill TypeScript, you can also rebuild explicitly:
+
+```bash
+npm run build:skills
+npm run install:skills
+```
 
 Set your API key environment variable:
 ```bash
@@ -139,7 +160,7 @@ node ~/.claude/skills/databento/scripts/get-quote.js ES
 
 ## Available Tools
 
-The MCP server provides 18 tools organized into 6 categories:
+The MCP server provides 17 tools organized into 6 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
@@ -278,18 +299,11 @@ Stream historical market data with flexible schemas and date ranges. Supports al
   "schema": "trades",
   "symbols": ["ES.c.0"],
   "dateRange": {
-    "start": "2024-10-01T00:00:00Z",
-    "end": "2024-10-02T00:00:00Z"
+    "start": "2024-10-01",
+    "end": "2024-10-02"
   },
   "recordCount": 1000,
-  "data": [
-    {
-      "ts_event": "2024-10-01T09:30:00.123456789Z",
-      "price": 5845.25,
-      "size": 10,
-      "side": "B"
-    }
-  ]
+  "data": "ts_event,ts_recv,ts_in_delta,publisher_id,instrument_id,price,size,action,side,flags,depth,ts_in_delta,sequence\n2024-10-01T09:30:00.123456789Z,2024-10-01T09:30:00.123456999Z,210,1,123456,5845.25,10,T,B,0,0,210,1\n"
 }
 ```
 
@@ -318,7 +332,6 @@ Resolve symbols to instrument IDs or other symbol types across a date range.
 - `instrument_id` - Databento instrument ID
 - `continuous` - Continuous futures (c.0, c.1, etc.)
 - `parent` - Parent symbol
-- `nasdaq`, `cms`, `bats`, `smart` - Venue-specific symbology
 
 **Output:**
 ```json
@@ -332,14 +345,27 @@ Resolve symbols to instrument IDs or other symbol types across a date range.
   },
   "symbol_count": 2,
   "result": "partial",
-  "mappings": [
+  "mappings": {
+    "ES.c.0": "123456"
+  },
+  "symbols": [
     {
       "input_symbol": "ES.c.0",
-      "output_symbol": "123456",
-      "start_date": "2024-10-01",
-      "end_date": "2024-10-02"
+      "output_symbols": ["123456"],
+      "intervals": [
+        {
+          "start_date": "2024-10-01",
+          "end_date": "2024-10-02",
+          "symbol": "123456"
+        }
+      ]
     }
-  ]
+  ],
+  "partial": ["NQ.c.0"],
+  "not_found": [],
+  "partial_errors": {
+    "NQ.c.0": "partial"
+  }
 }
 ```
 
@@ -606,16 +632,42 @@ Get download information for a completed batch job. Returns download URLs and me
 {
   "job_id": "abc123def456",
   "state": "done",
-  "files": [
-    {
-      "filename": "20241001.csv.zst",
-      "size_bytes": 22500000,
-      "hash": "sha256:abc123...",
-      "download_url": "https://download.databento.com/..."
-    }
-  ],
-  "total_size_bytes": 45000000,
-  "expiration": "2024-10-10T10:00:00Z"
+  "message": "Job completed successfully. 2 file(s) ready for download.",
+  "download_info": {
+    "id": "abc123def456",
+    "state": "done",
+    "download_url": "https://api.databento.com/v0/batch/download/user/abc123def456/glbx-mdp3-20241001.trades.csv.zst",
+    "download_urls": [
+      "https://api.databento.com/v0/batch/download/user/abc123def456/metadata.json",
+      "https://api.databento.com/v0/batch/download/user/abc123def456/glbx-mdp3-20241001.trades.csv.zst"
+    ],
+    "filenames": [
+      "metadata.json",
+      "glbx-mdp3-20241001.trades.csv.zst"
+    ],
+    "files": [
+      {
+        "filename": "metadata.json",
+        "size": 1102,
+        "hash": "sha256:abc123...",
+        "urls": {
+          "https": "https://api.databento.com/v0/batch/download/user/abc123def456/metadata.json"
+        }
+      },
+      {
+        "filename": "glbx-mdp3-20241001.trades.csv.zst",
+        "size": 44000000,
+        "hash": "sha256:def456...",
+        "urls": {
+          "https": "https://api.databento.com/v0/batch/download/user/abc123def456/glbx-mdp3-20241001.trades.csv.zst"
+        }
+      }
+    ],
+    "total_size": 45000000,
+    "ts_expiration": "2024-10-10T10:00:00Z",
+    "record_count": 500000,
+    "file_count": 2
+  }
 }
 ```
 
@@ -627,10 +679,12 @@ Get download information for a completed batch job. Returns download URLs and me
 
 Search security master database for instrument metadata.
 
+`start_date` is optional. If it is omitted, the tool uses the latest security master snapshot; `limit` is applied locally to the MCP response.
+
 **Input:**
 ```json
 {
-  "dataset": "GLBX.MDP3",
+  "dataset": "reference",
   "symbols": "ES.c.0,NQ.c.0",
   "start_date": "2024-10-01",
   "end_date": "2024-10-02",
@@ -641,7 +695,7 @@ Search security master database for instrument metadata.
 **Output:**
 ```json
 {
-  "dataset": "GLBX.MDP3",
+  "dataset": "reference",
   "symbols": "ES.c.0,NQ.c.0",
   "date_range": {
     "start": "2024-10-01",
@@ -669,33 +723,35 @@ Search security master database for instrument metadata.
 
 Get corporate actions (dividends, splits, etc.) for symbols.
 
+`action_types` maps to Databento corporate action `events` filters, such as `DIV`, `FSPLT`, and `RSPLT`.
+
 **Input:**
 ```json
 {
-  "dataset": "XNAS.ITCH",
+  "dataset": "reference",
   "symbols": "AAPL,MSFT",
   "start_date": "2024-01-01",
   "end_date": "2024-12-31",
-  "action_types": ["dividend", "split"]
+  "action_types": ["DIV", "FSPLT"]
 }
 ```
 
 **Output:**
 ```json
 {
-  "dataset": "XNAS.ITCH",
+  "dataset": "reference",
   "symbols": "AAPL,MSFT",
   "date_range": {
     "start": "2024-01-01",
     "end": "2024-12-31"
   },
   "record_count": 5,
-  "action_types_filter": ["dividend", "split"],
+  "action_types_filter": ["DIV", "FSPLT"],
   "corporate_actions": [
     {
-      "instrument_id": "789012",
-      "raw_symbol": "AAPL",
-      "action_type": "dividend",
+      "security_id": "S-33449",
+      "symbol": "AAPL",
+      "action_type": "DIV",
       "ex_date": "2024-05-10",
       "record_date": "2024-05-13",
       "payment_date": "2024-05-16",
@@ -713,7 +769,7 @@ Get price adjustment factors for backadjusted prices.
 **Input:**
 ```json
 {
-  "dataset": "XNAS.ITCH",
+  "dataset": "reference",
   "symbols": "AAPL",
   "start_date": "2024-01-01",
   "end_date": "2024-12-31"
@@ -723,7 +779,7 @@ Get price adjustment factors for backadjusted prices.
 **Output:**
 ```json
 {
-  "dataset": "XNAS.ITCH",
+  "dataset": "reference",
   "symbols": "AAPL",
   "date_range": {
     "start": "2024-01-01",
@@ -732,12 +788,12 @@ Get price adjustment factors for backadjusted prices.
   "record_count": 2,
   "adjustments": [
     {
-      "instrument_id": "789012",
-      "raw_symbol": "AAPL",
-      "adjustment_date": "2024-05-10",
-      "adjustment_type": "dividend",
+      "security_id": "S-33449",
+      "symbol": "AAPL",
+      "effective_date": "2024-05-10",
       "price_factor": 0.998654,
-      "volume_factor": 1.0
+      "volume_factor": 1.0,
+      "action_type": "DIV"
     }
   ]
 }
@@ -890,7 +946,7 @@ databento-mcp-server/
 │       ├── symbology.ts
 │       └── reference.ts
 ├── mcp/                      # MCP Server specific code
-│   └── index.ts              # MCP server entry point & 18 tool definitions
+│   └── index.ts              # MCP server entry point & 17 tool definitions
 ├── skills/                   # Claude Code Skills
 │   ├── databento/
 │   │   ├── skill.md          # Skill documentation
@@ -953,7 +1009,7 @@ npm run build:skills
 1. Create new script in `skills/databento/scripts/`
 2. Import and use shared clients from `src/`
 3. Update `skills/manifest.json` with new script
-4. Rebuild and install: `npm run install:skills`
+4. Rebuild and install: `npm run build:skills && npm run install:skills`
 
 **For Shared Functionality:**
 1. Add logic to appropriate client in `src/api/`
