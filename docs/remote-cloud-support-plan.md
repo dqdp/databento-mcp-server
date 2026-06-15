@@ -2,11 +2,13 @@
 
 ## Status
 
-Remote/cloud support is not implemented yet.
+Remote/cloud MVP support is implemented in this branch as a Streamable HTTP
+entrypoint with bearer auth, host/origin validation, body limits, stateful
+in-memory sessions, and remote batch tools disabled by default.
 
-The repository currently supports local Claude Desktop through stdio. The local
-track is stable and should remain the default path. Remote/cloud support is a
-separate follow-up track and must not weaken the local stdio entrypoint.
+The repository still supports local Claude Desktop through stdio. The local
+track is stable and remains the default path. Remote/cloud support is a
+separate track and must not weaken the local stdio entrypoint.
 
 ## Goal
 
@@ -64,7 +66,7 @@ Relevant SDK shape from Context7:
 Keep one shared MCP server factory:
 
 ```ts
-createDatabentoMcpServer(clients)
+createDatabentoMcpServer(clients, options?)
 ```
 
 Add a separate HTTP entrypoint, for example:
@@ -88,10 +90,10 @@ Suggested environment variables:
 MCP_HTTP_HOST=127.0.0.1
 MCP_HTTP_PORT=3000
 MCP_HTTP_PATH=/mcp
-MCP_REMOTE_AUTH_TOKEN=<required-for-non-localhost>
+MCP_REMOTE_AUTH_TOKEN=<required-for-remote-or-proxy-exposure>
 MCP_REMOTE_ENABLE_BATCH=false
 MCP_ALLOWED_HOSTS=localhost,127.0.0.1
-MCP_ALLOWED_ORIGINS=http://localhost:3000
+MCP_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 TRUST_PROXY=false
 ```
 
@@ -130,6 +132,17 @@ Origin validation:
   `MCP_ALLOWED_ORIGINS`.
 - Disallowed `Origin`: HTTP 403 with `{ "error": "forbidden" }`.
 
+Proxy/TLS validation:
+
+- Local development on `localhost`, `127.0.0.1`, or `::1` can run without
+  `MCP_REMOTE_AUTH_TOKEN` only when allowed hosts and origins are also local and
+  `TRUST_PROXY=false`.
+- Any public allowed host, public allowed origin, non-local bind, or
+  `TRUST_PROXY=true` requires `MCP_REMOTE_AUTH_TOKEN`.
+- Remote/proxy exposure requires `TRUST_PROXY=true`.
+- With `TRUST_PROXY=true`, reject requests unless `X-Forwarded-Proto` starts
+  with `https`.
+
 Batch tool filtering:
 
 - When `MCP_REMOTE_ENABLE_BATCH=false`, omit batch tools from remote
@@ -151,7 +164,7 @@ Configuration validation:
 - Invalid `MCP_HTTP_PORT`: fail startup.
 - `MCP_HTTP_PATH` missing a leading `/`: fail startup.
 - Empty `MCP_ALLOWED_HOSTS`: fail startup.
-- Non-local bind without `MCP_REMOTE_AUTH_TOKEN`: fail startup.
+- Remote/proxy exposure without `MCP_REMOTE_AUTH_TOKEN`: fail startup.
 - Invalid boolean values such as `MCP_REMOTE_ENABLE_BATCH=maybe`: fail startup.
 
 NPM scripts:
@@ -159,7 +172,7 @@ NPM scripts:
 ```json
 {
   "dev:http": "tsx mcp/http.ts",
-  "start:http": "node dist/mcp/http.js",
+  "start:http": "node dist/mcp/mcp/http.js",
   "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts"
 }
 ```
@@ -173,7 +186,7 @@ Auth:
   localhost.
 - Compare tokens with a timing-safe comparison.
 - Never log token values.
-- Fail closed when `MCP_REMOTE_AUTH_TOKEN` is missing for remote binds.
+- Fail closed when `MCP_REMOTE_AUTH_TOKEN` is missing for remote/proxy exposure.
 - Do not add OAuth in the MVP. OAuth belongs to a future multi-user track.
 
 Tool exposure:

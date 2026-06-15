@@ -7,7 +7,7 @@ Professional market data access via DataBento API, available as both an MCP serv
 **Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
 This project now supports two deployment modes:
-- **MCP Server**: For Claude Desktop and other MCP clients (17 tools)
+- **MCP Server**: Local stdio for Claude Desktop (17 tools) and a remote Streamable HTTP MVP
 - **Claude Code Skills**: Native skills for Claude Code CLI (8 skill scripts)
 
 Both modes share the same core functionality:
@@ -121,7 +121,54 @@ Or use `npx` directly if this package is published to npm:
 }
 ```
 
-### Option 2: Claude Code Skills
+### Option 2: Remote MCP Streamable HTTP
+
+The remote HTTP server is intended for self-hosted, single-user deployments.
+Keep the local stdio configuration above as the default path for Claude Desktop.
+
+Build and smoke test the HTTP entrypoint:
+```bash
+npm run build:mcp
+npm run smoke:mcp:http
+```
+
+Run locally:
+```bash
+export DATABENTO_API_KEY="db-your-api-key-here"
+export MCP_REMOTE_AUTH_TOKEN="change-this-token"
+export MCP_HTTP_HOST=127.0.0.1
+export MCP_HTTP_PORT=3000
+npm run start:http
+```
+
+The HTTP endpoint defaults to `http://127.0.0.1:3000/mcp`. Remote clients must
+send:
+```text
+Authorization: Bearer <MCP_REMOTE_AUTH_TOKEN>
+```
+
+For non-local deployments, put the Node server behind HTTPS/TLS termination
+from your platform or reverse proxy. Configure:
+```text
+MCP_HTTP_HOST=0.0.0.0
+MCP_ALLOWED_HOSTS=your.domain.example
+MCP_ALLOWED_ORIGINS=https://your.client.origin.example
+MCP_REMOTE_AUTH_TOKEN=<strong-random-token>
+TRUST_PROXY=true
+```
+
+With `TRUST_PROXY=true`, the server rejects requests unless the trusted reverse
+proxy forwards `X-Forwarded-Proto: https`.
+
+Remote batch tools are disabled by default. Set
+`MCP_REMOTE_ENABLE_BATCH=true` only when you explicitly want remote clients to
+submit and inspect batch jobs.
+
+The first remote implementation is stateful and single-instance. Horizontal
+scaling needs sticky sessions, stateless transport, or shared session storage
+before multiple instances are safe.
+
+### Option 3: Claude Code Skills
 
 Install skills:
 ```bash
@@ -157,6 +204,15 @@ node ~/.claude/skills/databento/scripts/get-quote.js ES
 |----------|----------|---------|-------------|
 | `DATABENTO_API_KEY` | ✅ | - | Your DataBento API key (starts with `db-`) |
 | `DATABENTO_DATASET` | ❌ | `GLBX.MDP3` | CME dataset for futures data |
+| `MCP_HTTP_HOST` | HTTP only | `127.0.0.1` | Bind host for the Streamable HTTP MCP server |
+| `MCP_HTTP_PORT` | HTTP only | `3000` | Bind port for the Streamable HTTP MCP server |
+| `MCP_HTTP_PATH` | HTTP only | `/mcp` | MCP Streamable HTTP endpoint path |
+| `MCP_REMOTE_AUTH_TOKEN` | Remote HTTP | - | Bearer token required for remote/proxy exposure and recommended for all HTTP use |
+| `MCP_REMOTE_ENABLE_BATCH` | ❌ | `false` | Enables remote batch tools when set to `true` |
+| `MCP_ALLOWED_HOSTS` | HTTP only | `localhost,127.0.0.1` | Comma-separated allowed `Host` hostnames |
+| `MCP_ALLOWED_ORIGINS` | HTTP only | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowed browser `Origin` values |
+| `MCP_HTTP_BODY_LIMIT_BYTES` | HTTP only | `1048576` | Maximum JSON request body size |
+| `TRUST_PROXY` | Remote HTTP | `false` | Require trusted proxy `X-Forwarded-Proto: https` for remote/proxy exposure |
 
 ## Available Tools
 
@@ -1048,9 +1104,21 @@ Ensure your `.env` file contains a valid API key starting with `db-`.
 - Verify your DataBento account has CME futures access
 - Check API key permissions
 
-### "HTTP 401" errors
+### Remote MCP HTTP 401 errors
 
-Your API key is invalid or expired. Get a new one from databento.com.
+For the Streamable HTTP MCP server, `401` means the `Authorization` header is
+missing, malformed, or does not match `MCP_REMOTE_AUTH_TOKEN`.
+
+Send:
+```text
+Authorization: Bearer <MCP_REMOTE_AUTH_TOKEN>
+```
+
+### Databento API 401 errors
+
+If a tool call reaches Databento and the upstream API returns `401`, your
+`DATABENTO_API_KEY` is invalid, expired, or lacks access. Get a new one from
+databento.com or check account permissions.
 
 ## License
 

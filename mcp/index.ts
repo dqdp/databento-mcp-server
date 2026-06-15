@@ -47,6 +47,16 @@ export interface DatabentoMcpClients {
   batchClient: Pick<BatchClient, "submitJob" | "listJobs" | "getDownloadInfo">;
 }
 
+export const REMOTE_BATCH_TOOL_NAMES = ["batch_submit_job", "batch_list_jobs", "batch_download"] as const;
+
+export interface DatabentoMcpServerOptions {
+  disabledTools?: Iterable<string>;
+}
+
+function normalizeDisabledTools(disabledTools: Iterable<string> | undefined): Set<string> {
+  return new Set(disabledTools ?? []);
+}
+
 export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpClients {
   const http = new DataBentoHTTP(apiKey);
 
@@ -61,8 +71,10 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 }
 
 // List available tools
-export function listDatabentoTools(): Tool[] {
-  return [
+export function listDatabentoTools(options: DatabentoMcpServerOptions = {}): Tool[] {
+  const disabledTools = normalizeDisabledTools(options.disabledTools);
+  const tools: Tool[] = [
+
       {
         name: "get_futures_quote",
         description: "Get current price quote for ES or NQ futures contracts",
@@ -519,10 +531,14 @@ export function listDatabentoTools(): Tool[] {
         },
       },
   ];
+
+  return tools.filter((tool) => !disabledTools.has(tool.name));
 }
 
 // Handle tool calls
-function createCallToolHandler(clients: DatabentoMcpClients) {
+function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoMcpServerOptions = {}) {
+  const disabledTools = normalizeDisabledTools(options.disabledTools);
+
   return async (request: CallToolRequest): Promise<CallToolResult> => {
     const {
       databentoClient,
@@ -534,6 +550,18 @@ function createCallToolHandler(clients: DatabentoMcpClients) {
     } = clients;
     const { name } = request.params;
     const args = request.params.arguments ?? {};
+
+    if (disabledTools.has(name)) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: `Tool is disabled for this transport: ${name}` }, null, 2),
+          },
+        ],
+        isError: true,
+      };
+    }
 
     try {
       switch (name) {
@@ -1090,7 +1118,10 @@ function createCallToolHandler(clients: DatabentoMcpClients) {
   };
 }
 
-export function createDatabentoMcpServer(clients: DatabentoMcpClients): Server {
+export function createDatabentoMcpServer(
+  clients: DatabentoMcpClients,
+  options: DatabentoMcpServerOptions = {}
+): Server {
   const server = new Server(
     {
       name: "databento-mcp-server",
@@ -1105,11 +1136,11 @@ export function createDatabentoMcpServer(clients: DatabentoMcpClients): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      tools: listDatabentoTools(),
+      tools: listDatabentoTools(options),
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, createCallToolHandler(clients));
+  server.setRequestHandler(CallToolRequestSchema, createCallToolHandler(clients, options));
 
   return server;
 }

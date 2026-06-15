@@ -19,7 +19,7 @@ Completed baseline:
 - The MCP TypeScript SDK is updated and verified.
 - Stdio MCP smoke and Vitest integration coverage are active.
 - Databento timeseries, symbology, reference, and batch contract fixes are in place.
-- GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, and stdio smoke.
+- GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, stdio smoke, and Streamable HTTP smoke.
 - Package contents are allowlisted and verified with `npm pack --dry-run`.
 - Claude Code skill packaging uses `SKILL.md`, and installed skill runtime imports are verified.
 
@@ -29,18 +29,24 @@ Current local gate:
 npm run test:once
 npm run build
 npm run smoke:mcp
+npm run smoke:mcp:http
 npm audit --omit=dev
 npm pack --dry-run --ignore-scripts --json --cache /tmp/databento-mcp-npm-cache
 ```
 
-Remote/cloud support is not implemented yet. Treat it as a separate follow-up
-track documented in `docs/remote-cloud-support-plan.md`.
+Remote/cloud MVP support is implemented as a separate Streamable HTTP entrypoint
+documented in `docs/remote-cloud-support-plan.md`. Keep local stdio as the
+default Claude Desktop path.
 
 Remote/cloud MVP decisions:
 
 - Build single-user / single-tenant support first.
 - Use bearer token auth from `MCP_REMOTE_AUTH_TOKEN`; do not add OAuth in the
   MVP.
+- Require `MCP_REMOTE_AUTH_TOKEN` for any public allowed host, public allowed
+  origin, non-local bind, or `TRUST_PROXY=true`.
+- Use `TRUST_PROXY=true` for remote/proxy exposure and require
+  `X-Forwarded-Proto: https` on trusted-proxy requests.
 - Disable batch tools on remote by default with `MCP_REMOTE_ENABLE_BATCH=false`.
 - Use stateful Streamable HTTP for a single running instance.
 - Terminate HTTPS at the platform or reverse proxy.
@@ -88,16 +94,17 @@ Review workflow for completed implementation slices:
    - Test `tools/list`, `tools/call`, error responses, and no-argument tools.
 7. Done - GitHub CI:
    - Add a pull-request CI workflow after `npm run smoke:mcp` exists.
-   - Run `npm ci`, targeted/full tests, build, and stdio MCP smoke.
+   - Run `npm ci`, targeted/full tests, build, stdio MCP smoke, and HTTP MCP smoke.
    - Use a Node matrix matching local/support targets, initially Node 22 and 24.
    - Keep live Databento API checks out of the default PR gate.
 8. Done - Packaging:
    - Add a package allowlist or `.npmignore`.
    - Verify the published tarball contents.
-9. Next - Remote/cloud support:
+9. Done - Remote/cloud support MVP:
    - Follow `docs/remote-cloud-support-plan.md`.
-   - Add Streamable HTTP only after local stdio support is stable.
+   - Keep Streamable HTTP separate from local stdio support.
    - Require auth, HTTPS, and origin validation for remote deployment.
+   - Keep batch tools disabled on remote by default.
 
 ## Verification Commands
 
@@ -112,6 +119,8 @@ Then run the full local gate:
 ```bash
 npm run test:once
 npm run build
+npm run smoke:mcp
+npm run smoke:mcp:http
 ```
 
 For packaging and dependency checks:
@@ -157,6 +166,15 @@ Stdio smoke tests should verify that the built server works the same way Claude 
 6. Run at least one safe no-argument `tools/call`, such as `get_session_info`.
 7. Assert that the process stays alive and returns valid MCP responses.
 
+Streamable HTTP smoke tests should verify the built HTTP entrypoint:
+
+1. Build the MCP server.
+2. Start `node dist/mcp/mcp/http.js` on `127.0.0.1` with port `0`, a test-shaped `DATABENTO_API_KEY`, and `MCP_REMOTE_AUTH_TOKEN`.
+3. Assert unauthenticated HTTP requests return `401` before MCP handling.
+4. Connect with `StreamableHTTPClientTransport`.
+5. Run `initialize`, `tools/list`, and safe no-argument `get_session_info`.
+6. Assert remote `tools/list` does not expose batch tools by default.
+
 Live Databento smoke tests must be opt-in only:
 
 ```bash
@@ -175,6 +193,7 @@ The default PR workflow should run:
 - `npm run test:once`
 - `npm run build`
 - `npm run smoke:mcp`
+- `npm run smoke:mcp:http`
 
 Use Node 22 and 24 in the initial matrix. Keep `DATABENTO_API_KEY` test-shaped for normal CI, for example `db-test-key`.
 

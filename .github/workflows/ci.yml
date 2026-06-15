@@ -45,6 +45,12 @@ jobs:
         env:
           DATABENTO_API_KEY: db-test-key
 
+      - name: Smoke MCP Streamable HTTP
+        run: npm run smoke:mcp:http
+        env:
+          DATABENTO_API_KEY: db-test-key
+          MCP_REMOTE_AUTH_TOKEN: ci-http-smoke-token
+
       - name: Smoke installed skills
         run: |
           HOME="$RUNNER_TEMP/databento-skills-home" npm run install:skills
