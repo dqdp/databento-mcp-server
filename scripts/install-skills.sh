@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # DataBento Skills Installation Script
-# Builds and installs DataBento skills to ~/.claude/skills/
+# Installs prebuilt DataBento skills to ~/.claude/skills/
 
 set -e
 
@@ -35,10 +35,22 @@ mkdir -p "$TARGET_DIR/scripts"
 echo "📋 Copying compiled scripts..."
 if [ -d "$SKILLS_DIST/skills/databento/scripts" ]; then
   cp -r "$SKILLS_DIST/skills/databento/scripts/"* "$TARGET_DIR/scripts/"
+elif [ -f "$PROJECT_ROOT/tsconfig.skills.json" ] && [ -f "$PROJECT_ROOT/package.json" ]; then
+  echo "🔨 Compiled skills not found; building skills first..."
+  (cd "$PROJECT_ROOT" && npm run build:skills)
+  cp -r "$SKILLS_DIST/skills/databento/scripts/"* "$TARGET_DIR/scripts/"
 else
-  echo "❌ Error: Compiled skills not found. Run 'npm run build:skills' first."
+  echo "❌ Error: Compiled skills not found. Reinstall the published package or run this from a source checkout with build files."
   exit 1
 fi
+
+# The compiled files are emitted under dist/skills/skills/databento/scripts and
+# therefore import shared code as ../../../src. After installation, scripts live
+# in databento/scripts next to databento/src, so runtime imports must be local.
+for script_file in "$TARGET_DIR"/scripts/*.js; do
+  sed -i.bak 's#../../../src/#../src/#g' "$script_file"
+  rm -f "$script_file.bak"
+done
 
 # Copy skill.md
 echo "📄 Copying skill.md..."

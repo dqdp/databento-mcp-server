@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm run test:once
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke MCP stdio
+        run: npm run smoke:mcp
+        env:
+          DATABENTO_API_KEY: db-test-key
+
+      - name: Smoke installed skills
+        run: |
+          HOME="$RUNNER_TEMP/databento-skills-home" npm run install:skills
+          set +e
+          output="$(node "$RUNNER_TEMP/databento-skills-home/.claude/skills/databento/scripts/get-quote.js" ES 2>&1)"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          echo "$output" | grep -F "DATABENTO_API_KEY environment variable is required"

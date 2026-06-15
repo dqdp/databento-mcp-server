@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 import { ReferenceClient } from "../../../src/api/reference-client.js";
-import * as dotenv from "dotenv";
-
-dotenv.config();
 
 const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
 if (!DATABENTO_API_KEY) {

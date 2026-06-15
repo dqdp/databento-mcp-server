@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 import { DataBentoClient } from "../../../src/databento-client.js";
-import * as dotenv from "dotenv";
-
-dotenv.config();
 
 const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
 if (!DATABENTO_API_KEY) {

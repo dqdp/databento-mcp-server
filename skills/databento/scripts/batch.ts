@@ -2,9 +2,6 @@
 import { BatchClient } from "../../../src/api/batch-client.js";
 import { DataBentoHTTP } from "../../../src/http/databento-http.js";
 import type { BatchJobRequest, ListJobsParams } from "../../../src/types/batch.js";
-import * as dotenv from "dotenv";
-
-dotenv.config();
 
 const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
 if (!DATABENTO_API_KEY) {

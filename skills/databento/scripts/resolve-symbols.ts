@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 import { SymbologyClient } from "../../../src/api/symbology-client.js";
-import * as dotenv from "dotenv";
-
-dotenv.config();
 
 const DATABENTO_API_KEY = process.env.DATABENTO_API_KEY;
 if (!DATABENTO_API_KEY) {
@@ -44,6 +41,10 @@ async function main() {
       symbol_count: symbols.length,
       result: response.result,
       mappings: response.mappings,
+      symbols: response.symbols,
+      partial: response.partial,
+      not_found: response.not_found,
+      partial_errors: response.partial_errors,
     };
 
     console.log(JSON.stringify(result, null, 2));
