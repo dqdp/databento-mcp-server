@@ -8,36 +8,94 @@
 - Do not commit credentials. `DATABENTO_API_KEY` must stay in environment variables or local `.env` files.
 - Use the Context7 MCP server for current external library, protocol, and framework documentation before changing related code. Resolve the library ID first, then query the relevant docs.
 
+## Current Baseline
+
+As of 2026-06-16, the local Claude Desktop / stdio repair track is complete.
+
+Completed baseline:
+
+- Claude Desktop configuration docs use the current config paths and absolute-path guidance.
+- The MCP server handles omitted tool `arguments` with `request.params.arguments ?? {}`.
+- The MCP TypeScript SDK is updated and verified.
+- Stdio MCP smoke and Vitest integration coverage are active.
+- Databento timeseries, symbology, reference, and batch contract fixes are in place.
+- GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, and stdio smoke.
+- Package contents are allowlisted and verified with `npm pack --dry-run`.
+- Claude Code skill packaging uses `SKILL.md`, and installed skill runtime imports are verified.
+
+Current local gate:
+
+```bash
+npm run test:once
+npm run build
+npm run smoke:mcp
+npm audit --omit=dev
+npm pack --dry-run --ignore-scripts --json --cache /tmp/databento-mcp-npm-cache
+```
+
+Remote/cloud support is not implemented yet. Treat it as a separate follow-up
+track documented in `docs/remote-cloud-support-plan.md`.
+
+Remote/cloud MVP decisions:
+
+- Build single-user / single-tenant support first.
+- Use bearer token auth from `MCP_REMOTE_AUTH_TOKEN`; do not add OAuth in the
+  MVP.
+- Disable batch tools on remote by default with `MCP_REMOTE_ENABLE_BATCH=false`.
+- Use stateful Streamable HTTP for a single running instance.
+- Terminate HTTPS at the platform or reverse proxy.
+- Add body limits and request timeouts in the first remote PR; rate limiting can
+  follow as a hardening PR before production exposure.
+
+Review workflow for completed implementation slices:
+
+- After writing failing tests, run a local self-check that the tests encode the
+  intended contracts and avoid live Databento calls, batch submissions, and
+  fixed ports.
+- Do not run an intermediate review-agent gate unless the tests show that the
+  planned architecture no longer fits the SDK or repository shape.
+- After implementation, run targeted tests and then the full local gate.
+- After the full gate passes, launch two independent review agents with empty
+  context.
+- Give each reviewer concrete files and concrete review tasks.
+- Instruct reviewers to stay read-only, not run tests, not edit code, and not
+  expand scope beyond the written slice.
+- If either reviewer reports relevant P0/P1 findings, fix them, rerun tests and
+  the full gate, then rerun both clean-context reviewers.
+- Treat P2 findings as in-scope only when they are tightly related and low risk;
+  otherwise document them as follow-up.
+
 ## Repair Order
 
-1. Claude Desktop compatibility:
+1. Done - Claude Desktop compatibility:
    - Correct Claude Desktop configuration documentation.
    - Handle optional MCP `arguments` with `request.params.arguments ?? {}`.
    - Update and verify the MCP TypeScript SDK.
    - Add a stdio MCP smoke/integration test.
-2. Timeseries and CSV foundation:
+2. Done - Timeseries and CSV foundation:
    - Force `encoding: "csv"` wherever code parses CSV.
    - Do not send `end=start` when `end` is omitted.
-3. Symbology:
+3. Done - Symbology:
    - Parse real Databento `result` response shapes.
    - Preserve date intervals and expose partial/not-found results.
-4. Reference API:
+4. Done - Reference API:
    - Replace non-reference endpoint usage with official Reference API methods.
    - Update tests to use realistic Reference API responses.
-5. Batch:
+5. Done - Batch:
    - Replace fabricated download URLs and filenames with official batch file metadata.
-6. MCP integration tests:
+6. Done - MCP integration tests:
    - Re-enable or replace the disabled integration test.
    - Test `tools/list`, `tools/call`, error responses, and no-argument tools.
-7. GitHub CI:
+7. Done - GitHub CI:
    - Add a pull-request CI workflow after `npm run smoke:mcp` exists.
    - Run `npm ci`, targeted/full tests, build, and stdio MCP smoke.
    - Use a Node matrix matching local/support targets, initially Node 22 and 24.
    - Keep live Databento API checks out of the default PR gate.
-8. Packaging:
+8. Done - Packaging:
    - Add a package allowlist or `.npmignore`.
    - Verify the published tarball contents.
-9. Remote/cloud support:
+9. Next - Remote/cloud support:
+   - Follow `docs/remote-cloud-support-plan.md`.
    - Add Streamable HTTP only after local stdio support is stable.
    - Require auth, HTTPS, and origin validation for remote deployment.
 
