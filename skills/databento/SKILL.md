@@ -12,7 +12,73 @@ triggers:
 
 # DataBento Skill
 
-Access professional market data across all asset classes through the DataBento API. This skill provides real-time quotes, historical data, symbol resolution, batch downloads, metadata discovery, and reference data.
+Access professional market data through the Databento API from Claude Code. This
+skill is a Claude Code skill with shell scripts installed under
+`~/.claude/skills/databento`; it is not a Claude Desktop extension.
+
+Claude Desktop support is provided by the project MCP server, not by this skill.
+Connect Claude Desktop to the built MCP stdio server from the app configuration
+instead of installing this skill as a desktop extension.
+
+## Scope
+
+- Claude Code: use the commands below when the user asks for Databento market
+  data, metadata, symbology, reference data, or batch jobs.
+- Claude Desktop: use the MCP stdio server from this repository. This skill file
+  documents Claude Code commands only.
+- Live Databento API: most commands call Databento over the network and require a
+  valid `DATABENTO_API_KEY`.
+- Side effects: the `batch` command can submit Databento batch jobs. Treat
+  `batch submit` as a paid operation unless the user explicitly approves the
+  query scope and cost risk.
+
+## Prerequisites
+
+- Node.js `>=22.15.0`.
+- `DATABENTO_API_KEY` in the command environment.
+- Built skill scripts installed in `~/.claude/skills/databento/scripts`.
+
+```bash
+export DATABENTO_API_KEY="db-your-api-key-here"
+```
+
+## Command Contract
+
+| Script | Path | Command | Live API / side effects |
+| --- | --- | --- | --- |
+| `get-quote` | `databento/scripts/get-quote.js` | `node ~/.claude/skills/databento/scripts/get-quote.js ES` | Live Databento API read. Supports `ES` or `NQ`; default `ES`. |
+| `get-historical` | `databento/scripts/get-historical.js` | `node ~/.claude/skills/databento/scripts/get-historical.js ES 1d 20` | Live Databento API read. Args: symbol `ES`/`NQ`, timeframe `1h`/`H4`/`1d`, count `1..100`. |
+| `get-session` | `databento/scripts/get-session.js` | `node ~/.claude/skills/databento/scripts/get-session.js` | Local session calculation after env/key-format check; optional timestamp argument. |
+| `resolve-symbols` | `databento/scripts/resolve-symbols.js` | `node ~/.claude/skills/databento/scripts/resolve-symbols.js GLBX.MDP3 ES.FUT raw_symbol instrument_id 2026-06-16` | Live Databento API read. Args: dataset, comma-separated symbols, input type, output type, start date, optional end date. |
+| `timeseries` | `databento/scripts/timeseries.js` | `node ~/.claude/skills/databento/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. |
+| `metadata` | `databento/scripts/metadata.js` | `node ~/.claude/skills/databento/scripts/metadata.js list-datasets` | Live Databento API read. Commands: `list-datasets`, `list-schemas`, `list-publishers`, `list-fields`, `get-cost`, `get-dataset-range`. |
+| `batch` | `databento/scripts/batch.js` | `node ~/.claude/skills/databento/scripts/batch.js list` | Live Databento API. `list` and `download` read account/job metadata; `submit` creates a batch job and may be paid. |
+| `reference` | `databento/scripts/reference.js` | `node ~/.claude/skills/databento/scripts/reference.js search XNAS.ITCH AAPL 2026-06-16` | Live Databento API read. Commands: `search`, `corporate-actions`, `adjustments`. |
+
+### Multi-Command Argument Forms
+
+Use these positional forms when calling scripts that dispatch by subcommand:
+
+- `metadata list-datasets [start_date] [end_date]`
+- `metadata list-schemas [dataset]`
+- `metadata list-publishers [dataset]`
+- `metadata list-fields [schema] [encoding]`
+- `metadata get-cost dataset start`
+- `metadata get-dataset-range [dataset]`
+- `batch list [states]`
+- `batch submit dataset symbols schema start [end]`
+- `batch download <job_id>`
+- `reference search dataset symbols start_date [end_date] [limit]`
+- `reference corporate-actions dataset symbols start_date [end_date]`
+- `reference adjustments dataset symbols start_date [end_date]`
+
+For `reference` commands, the reference dataset argument is output metadata only;
+the underlying Reference API requests are scoped by symbols, symbol type, and
+date range rather than a Databento dataset request parameter.
+
+Confirm the dataset, symbols, schema, date range, and cost risk with the user
+before running `batch submit`, because it creates a Databento batch job and may
+be paid.
 
 ## When to Use This Skill
 
@@ -22,11 +88,6 @@ Access professional market data across all asset classes through the DataBento A
 - **Batch Operations**: Download large historical datasets efficiently
 - **Data Discovery**: Explore available datasets, schemas, and publishers
 - **Reference Data**: Access security master, corporate actions, and price adjustments
-
-## Prerequisites
-
-- DataBento API key (set `DATABENTO_API_KEY` environment variable)
-- Get your API key at https://databento.com
 
 ## Available Capabilities
 
@@ -70,19 +131,6 @@ Access security master database, corporate actions, and price adjustments.
 
 **Usage**: "Search securities for AAPL" or "Get dividends for MSFT" or "Fetch adjustment factors"
 
-## Configuration
-
-Set your DataBento API key:
-```bash
-export DATABENTO_API_KEY="db-your-api-key-here"
-```
-
-Or add to your `.env` file:
-```
-DATABENTO_API_KEY=db-your-api-key-here
-DATABENTO_DATASET=GLBX.MDP3
-```
-
 ## Examples
 
 **Get real-time quote**:
@@ -102,12 +150,6 @@ DATABENTO_DATASET=GLBX.MDP3
 
 **Reference data**:
 > "Get all dividend payments for AAPL in 2024"
-
-## Rate Limiting
-
-- Built-in rate limiting (5 requests/second for quotes)
-- 30-second cache for frequently accessed data
-- Automatic retry with exponential backoff
 
 ## Error Handling
 

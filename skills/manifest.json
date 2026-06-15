@@ -56,12 +56,12 @@
   ],
   "metadata": {
     "created": "2025-10-19",
-    "updated": "2025-10-19",
-    "repository": "https://github.com/yourusername/databento-mcp-server",
+    "updated": "2026-06-16",
+    "repository": "https://github.com/dqdp/databento-mcp-server",
     "compatibility": {
       "claude_code": ">=1.0.0",
-      "node": ">=18.0.0",
-      "module_type": "ES modules"
+      "node": ">=22.15.0",
+      "module_type": "CommonJS"
     }
   },
   "triggers": {

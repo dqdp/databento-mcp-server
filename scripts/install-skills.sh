@@ -11,6 +11,7 @@ echo "📦 Installing DataBento Skills..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 SKILLS_SRC="$PROJECT_ROOT/skills"
+SKILLS_MANIFEST="$PROJECT_ROOT/skills/manifest.json"
 SKILLS_DIST="$PROJECT_ROOT/dist/skills"
 CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
 TARGET_DIR="$CLAUDE_SKILLS_DIR/databento"
@@ -58,7 +59,7 @@ cp "$SKILLS_SRC/databento/SKILL.md" "$TARGET_DIR/"
 
 # Copy manifest.json
 echo "📋 Copying manifest.json..."
-cp "$SKILLS_SRC/manifest.json" "$TARGET_DIR/"
+cp "$SKILLS_MANIFEST" "$TARGET_DIR/"
 
 # Copy shared src files (needed at runtime)
 echo "📦 Copying shared source files..."
@@ -71,37 +72,35 @@ chmod +x "$TARGET_DIR/scripts/"*.js
 
 # Update master manifest if it exists
 MASTER_MANIFEST="$CLAUDE_SKILLS_DIR/manifest.json"
+INSTALLED_MANIFEST="$TARGET_DIR/manifest.json"
 if [ -f "$MASTER_MANIFEST" ]; then
   echo "📝 Updating master manifest..."
   # Backup existing manifest
   cp "$MASTER_MANIFEST" "$MASTER_MANIFEST.backup"
 
-  # Check if jq is available
-  if command -v jq &> /dev/null; then
-    # Use jq to merge databento skill into master manifest (idempotent)
-    # Remove existing databento entry if present, then add the new one
-    jq --arg skillPath "databento/SKILL.md" \
-       'del(.skills[] | select(.name == "databento")) |
-        .skills += [{
-          "name": "databento",
-          "path": "databento/SKILL.md",
-          "description": "Professional market data access via DataBento API",
-          "version": "1.0.0",
-          "type": "data-api",
-          "scripts": [
-            {"name": "get-quote", "path": "databento/scripts/get-quote.js", "description": "Get real-time futures quotes"},
-            {"name": "get-historical", "path": "databento/scripts/get-historical.js", "description": "Get historical OHLCV bars"},
-            {"name": "get-session", "path": "databento/scripts/get-session.js", "description": "Get trading session info"},
-            {"name": "resolve-symbols", "path": "databento/scripts/resolve-symbols.js", "description": "Resolve symbols"},
-            {"name": "timeseries", "path": "databento/scripts/timeseries.js", "description": "Get timeseries data"},
-            {"name": "metadata", "path": "databento/scripts/metadata.js", "description": "Query metadata"},
-            {"name": "batch", "path": "databento/scripts/batch.js", "description": "Manage batch jobs"},
-            {"name": "reference", "path": "databento/scripts/reference.js", "description": "Access reference data"}
-          ]
-        }]' "$MASTER_MANIFEST" > "$MASTER_MANIFEST.tmp" && mv "$MASTER_MANIFEST.tmp" "$MASTER_MANIFEST"
+  if command -v node > /dev/null 2>&1; then
+    node - "$MASTER_MANIFEST" "$INSTALLED_MANIFEST" <<'NODE'
+const fs = require("node:fs");
+
+const [masterManifestPath, installedManifestPath] = process.argv.slice(2);
+const masterManifest = JSON.parse(fs.readFileSync(masterManifestPath, "utf8"));
+const skillsManifest = JSON.parse(fs.readFileSync(installedManifestPath, "utf8"));
+const databentoSkill = skillsManifest.skills.find((skill) => skill.name === "databento");
+
+if (!databentoSkill) {
+  throw new Error("databento skill entry not found in installed manifest");
+}
+
+const existingSkills = Array.isArray(masterManifest.skills)
+  ? masterManifest.skills.filter((skill) => skill?.name !== "databento")
+  : [];
+
+masterManifest.skills = [...existingSkills, databentoSkill];
+fs.writeFileSync(masterManifestPath, `${JSON.stringify(masterManifest, null, 2)}\n`);
+NODE
     echo "✅ Master manifest updated with databento skill"
   else
-    echo "⚠️  jq not found. Please manually add databento to $MASTER_MANIFEST"
+    echo "⚠️  node not found. Please manually add databento to $MASTER_MANIFEST"
   fi
 fi
 
