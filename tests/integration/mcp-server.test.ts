@@ -12,6 +12,15 @@ function textPayload(result: any) {
   return JSON.parse(result.content[0].text);
 }
 
+function expectValidationError(result: any) {
+  expect(result.isError).toBe(true);
+  expect(textPayload(result)).toEqual(
+    expect.objectContaining({
+      error: expect.stringContaining("Invalid tool arguments"),
+    })
+  );
+}
+
 function createMockClients(): DatabentoMcpClients {
   return {
     databentoClient: {
@@ -136,6 +145,143 @@ describe("MCP server integration", () => {
           utcHour: 10,
         })
       );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("rejects invalid tool arguments at the MCP boundary before client calls", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      expectValidationError(
+        await client.callTool({
+          name: "get_futures_quote",
+          arguments: {},
+        })
+      );
+      expect(clients.databentoClient.getQuote).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "get_futures_quote",
+          arguments: {
+            symbol: "CL",
+          },
+        })
+      );
+      expect(clients.databentoClient.getQuote).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "get_historical_bars",
+          arguments: {
+            symbol: "ES",
+            timeframe: "1h",
+            count: 101,
+          },
+        })
+      );
+      expect(clients.databentoClient.getHistoricalBars).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "get_session_info",
+          arguments: {
+            timestamp: "not-a-date",
+          },
+        })
+      );
+      expect(clients.databentoClient.getSessionInfo).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "timeseries_get_range",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: "ES.c.0",
+            schema: "ohlcv-1h",
+            start: "2026-06-15",
+            limit: 0,
+          },
+        })
+      );
+      expect(clients.timeseriesClient.getRange).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "timeseries_get_range",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: "ES.c.0",
+            schema: "ohlcv-1h",
+            start: "2026-02-30",
+          },
+        })
+      );
+      expect(clients.timeseriesClient.getRange).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "symbology_resolve",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: ["ES.c.0"],
+            stype_in: "continuous",
+            stype_out: "instrument_id",
+            start_date: "2026-06-16",
+            end_date: "2026-06-15",
+          },
+        })
+      );
+      expect(clients.symbologyClient.resolve).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "metadata_get_cost",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            start: "2026-06-16",
+            end: "2026-06-15",
+          },
+        })
+      );
+      expect(clients.metadataClient.getCost).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "reference_get_corporate_actions",
+          arguments: {
+            symbols: "AAPL",
+            start_date: "2026-06-16",
+            end_date: "2026-06-15",
+          },
+        })
+      );
+      expect(clients.referenceClient.getCorporateActions).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "batch_submit_job",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: ["ES.c.0"],
+            schema: "trades",
+            start: "2026-06-16",
+            end: "2026-06-15",
+          },
+        })
+      );
+      expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
+
+      await expect(
+        client.callTool({
+          name: "get_session_info",
+          arguments: "not-an-object" as any,
+        })
+      ).rejects.toThrow(/expected record|Invalid input/);
+      expect(clients.databentoClient.getSessionInfo).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();

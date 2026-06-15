@@ -6,7 +6,7 @@ import {
   startRemoteMcpHttpServer,
   type StartedRemoteMcpHttpServer,
 } from "../../mcp/http.js";
-import { REMOTE_BATCH_TOOL_NAMES } from "../../mcp/index.js";
+import { REMOTE_BATCH_TOOL_NAMES, listDatabentoTools } from "../../mcp/index.js";
 
 let startedServer: StartedRemoteMcpHttpServer | undefined;
 
@@ -94,9 +94,13 @@ describe("MCP Streamable HTTP integration", () => {
     try {
       const tools = await client.listTools();
       const toolNames = tools.tools.map((tool) => tool.name);
+      const localBatchToolNames = listDatabentoTools()
+        .map((tool) => tool.name)
+        .filter((toolName) => toolName.startsWith("batch_"));
 
       expect(toolNames).toContain("get_session_info");
-      for (const batchToolName of REMOTE_BATCH_TOOL_NAMES) {
+      expect([...REMOTE_BATCH_TOOL_NAMES].sort()).toEqual([...localBatchToolNames].sort());
+      for (const batchToolName of localBatchToolNames) {
         expect(toolNames).not.toContain(batchToolName);
       }
 
@@ -116,12 +120,14 @@ describe("MCP Streamable HTTP integration", () => {
         })
       );
 
-      const hiddenBatchResult = await client.callTool({ name: "batch_list_jobs" });
-      expect(hiddenBatchResult.isError).toBe(true);
-      expectTextContent(hiddenBatchResult.content[0]);
-      expect(JSON.parse(hiddenBatchResult.content[0].text)).toEqual({
-        error: "Tool is disabled for this transport: batch_list_jobs",
-      });
+      for (const batchToolName of localBatchToolNames) {
+        const hiddenBatchResult = await client.callTool({ name: batchToolName });
+        expect(hiddenBatchResult.isError).toBe(true);
+        expectTextContent(hiddenBatchResult.content[0]);
+        expect(JSON.parse(hiddenBatchResult.content[0].text)).toEqual({
+          error: `Tool is disabled for this transport: ${batchToolName}`,
+        });
+      }
     } finally {
       await client.close();
       await transport.close();

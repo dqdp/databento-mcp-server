@@ -16,9 +16,11 @@ import { TimeseriesClient } from "../src/api/timeseries-client.js";
 import { ReferenceClient } from "../src/api/reference-client.js";
 import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
-import { Schema, SType } from "../src/types/timeseries.js";
-import { SymbolType } from "../src/types/symbology.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
+import {
+  listDatabentoToolContracts,
+  parseDatabentoToolArguments,
+} from "./tool-contracts.js";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -73,466 +75,20 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 // List available tools
 export function listDatabentoTools(options: DatabentoMcpServerOptions = {}): Tool[] {
   const disabledTools = normalizeDisabledTools(options.disabledTools);
-  const tools: Tool[] = [
 
-      {
-        name: "get_futures_quote",
-        description: "Get current price quote for ES or NQ futures contracts",
-        inputSchema: {
-          type: "object",
-          properties: {
-            symbol: {
-              type: "string",
-              enum: ["ES", "NQ"],
-              description: "Futures symbol (ES = E-mini S&P 500, NQ = E-mini Nasdaq-100)",
-            },
-          },
-          required: ["symbol"],
-        },
-      },
-      {
-        name: "get_session_info",
-        description: "Get current trading session information (Asian/London/NY)",
-        inputSchema: {
-          type: "object",
-          properties: {
-            timestamp: {
-              type: "string",
-              description: "Optional ISO timestamp (defaults to now)",
-            },
-          },
-        },
-      },
-      {
-        name: "get_historical_bars",
-        description: "Get historical OHLCV bars for futures contracts",
-        inputSchema: {
-          type: "object",
-          properties: {
-            symbol: {
-              type: "string",
-              enum: ["ES", "NQ"],
-              description: "Futures symbol",
-            },
-            timeframe: {
-              type: "string",
-              enum: ["1h", "H4", "1d"],
-              description: "Bar timeframe",
-            },
-            count: {
-              type: "number",
-              description: "Number of bars to retrieve",
-              minimum: 1,
-              maximum: 100,
-            },
-          },
-          required: ["symbol", "timeframe", "count"],
-        },
-      },
-      {
-        name: "symbology_resolve",
-        description: "Resolve symbols to instrument IDs or other symbol types across a date range",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)",
-            },
-            symbols: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of symbols to resolve (max 2000)",
-              maxItems: 2000,
-            },
-            stype_in: {
-              type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
-              description: "Input symbol type",
-              default: "raw_symbol",
-            },
-            stype_out: {
-              type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
-              description: "Output symbol type",
-              default: "instrument_id",
-            },
-            start_date: {
-              type: "string",
-              description: "Inclusive start date (YYYY-MM-DD)",
-              pattern: "^\\d{4}-\\d{2}-\\d{2}$",
-            },
-            end_date: {
-              type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, Databento forward-fills start_date based on resolution.",
-              pattern: "^\\d{4}-\\d{2}-\\d{2}$",
-            },
-          },
-          required: ["dataset", "symbols", "stype_in", "stype_out", "start_date"],
-        },
-      },
-      {
-        name: "timeseries_get_range",
-        description: "Get historical market data with flexible schemas and date ranges. Supports all Databento schemas (mbp-1, mbp-10, trades, ohlcv-1h, ohlcv-1d, etc.)",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., 'GLBX.MDP3' for CME, 'XNAS.ITCH' for Nasdaq)",
-            },
-            symbols: {
-              type: "string",
-              description: "Comma-separated list of instrument symbols (up to 2000)",
-            },
-            schema: {
-              type: "string",
-              enum: [
-                "mbp-1", "mbp-10", "mbo", "trades",
-                "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "ohlcv-eod",
-                "statistics", "definition", "imbalance", "status"
-              ],
-              description: "Data schema type",
-            },
-            start: {
-              type: "string",
-              description: "Start date (ISO 8601 or YYYY-MM-DD format)",
-            },
-            end: {
-              type: "string",
-              description: "Optional exclusive end date (ISO 8601 or YYYY-MM-DD). If omitted, Databento forward-fills start based on resolution.",
-            },
-            stype_in: {
-              type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
-              description: "Input symbology type, defaults to 'raw_symbol'",
-            },
-            stype_out: {
-              type: "string",
-              enum: ["raw_symbol", "instrument_id", "continuous", "parent"],
-              description: "Output symbology type, defaults to 'instrument_id'",
-            },
-            limit: {
-              type: "number",
-              description: "Maximum number of records to return",
-              minimum: 1,
-            },
-          },
-          required: ["dataset", "symbols", "schema", "start"],
-        },
-      },
-      {
-        name: "metadata_list_datasets",
-        description: "List all available Databento datasets with optional date range filtering",
-        inputSchema: {
-          type: "object",
-          properties: {
-            start_date: {
-              type: "string",
-              description: "Optional inclusive start date (YYYY-MM-DD)",
-            },
-            end_date: {
-              type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD)",
-            },
-          },
-        },
-      },
-      {
-        name: "metadata_list_schemas",
-        description: "List available data schemas for a specific dataset",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)",
-            },
-          },
-          required: ["dataset"],
-        },
-      },
-      {
-        name: "metadata_list_publishers",
-        description: "List publishers with their details, optionally filtered by dataset",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Optional dataset code to filter publishers",
-            },
-          },
-        },
-      },
-      {
-        name: "metadata_list_fields",
-        description: "List fields available for a specific schema with their types and descriptions",
-        inputSchema: {
-          type: "object",
-          properties: {
-            schema: {
-              type: "string",
-              description: "Schema name (e.g., trades, mbp-1, ohlcv-1d)",
-            },
-            encoding: {
-              type: "string",
-              description: "Optional encoding type (e.g., json, csv, dbn)",
-            },
-          },
-          required: ["schema"],
-        },
-      },
-      {
-        name: "metadata_get_cost",
-        description: "Calculate the cost in USD for a historical data query before downloading",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3)",
-            },
-            symbols: {
-              type: "string",
-              description: "Comma-separated list of symbols or single symbol",
-            },
-            schema: {
-              type: "string",
-              description: "Schema name (default: trades)",
-            },
-            start: {
-              type: "string",
-              description: "Inclusive start date/time (YYYY-MM-DD or ISO 8601)",
-            },
-            end: {
-              type: "string",
-              description: "Optional exclusive end date/time (YYYY-MM-DD or ISO 8601)",
-            },
-            mode: {
-              type: "string",
-              description: "Query mode (default: historical-streaming)",
-            },
-            stype_in: {
-              type: "string",
-              description: "Input symbology type (e.g., raw_symbol, continuous)",
-            },
-            stype_out: {
-              type: "string",
-              description: "Output symbology type (e.g., instrument_id, raw_symbol)",
-            },
-          },
-          required: ["dataset", "start"],
-        },
-      },
-      {
-        name: "metadata_get_dataset_range",
-        description: "Get the available date range for a dataset",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3)",
-            },
-          },
-          required: ["dataset"],
-        },
-      },
-      {
-        name: "batch_submit_job",
-        description: "Submit a batch data download job for large historical datasets. Returns job ID and status. Job processing is asynchronous.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)",
-            },
-            symbols: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of symbols (max 2000)",
-              maxItems: 2000,
-            },
-            schema: {
-              type: "string",
-              enum: ["trades", "tbbo", "mbp-1", "mbp-10", "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "definition", "statistics", "status", "imbalance"],
-              description: "Data record schema",
-            },
-            start: {
-              type: "string",
-              description: "Start date (YYYY-MM-DD or ISO 8601)",
-            },
-            end: {
-              type: "string",
-              description: "Optional end date (YYYY-MM-DD or ISO 8601)",
-            },
-            encoding: {
-              type: "string",
-              enum: ["dbn", "csv", "json"],
-              description: "Output encoding (default: dbn)",
-            },
-            compression: {
-              type: "string",
-              enum: ["none", "zstd", "gzip"],
-              description: "Compression type (default: zstd)",
-            },
-            stype_in: {
-              type: "string",
-              enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
-              description: "Input symbology type (default: raw_symbol)",
-            },
-            stype_out: {
-              type: "string",
-              enum: ["instrument_id", "raw_symbol", "continuous", "parent"],
-              description: "Output symbology type (default: instrument_id)",
-            },
-            split_duration: {
-              type: "string",
-              description: "Split files by duration (e.g., day, week, month)",
-            },
-            split_size: {
-              type: "number",
-              description: "Split files by size in bytes",
-            },
-            split_symbols: {
-              type: "boolean",
-              description: "Split files by symbol (default: false)",
-            },
-            limit: {
-              type: "number",
-              description: "Limit number of records",
-            },
-          },
-          required: ["dataset", "symbols", "schema", "start"],
-        },
-      },
-      {
-        name: "batch_list_jobs",
-        description: "List all batch jobs with their current status. Optionally filter by job states or time range.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            states: {
-              type: "array",
-              items: {
-                type: "string",
-                enum: ["queued", "processing", "done", "expired"],
-              },
-              description: "Filter by job states",
-            },
-            since: {
-              type: "string",
-              description: "Filter jobs since timestamp (ISO 8601)",
-            },
-          },
-        },
-      },
-      {
-        name: "batch_download",
-        description: "Get download information for a completed batch job. Returns download URLs and metadata. Does NOT stream file content through MCP.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            job_id: {
-              type: "string",
-              description: "Batch job identifier",
-            },
-          },
-          required: ["job_id"],
-        },
-      },
-      {
-        name: "reference_search_securities",
-        description: "Search security master database for instrument metadata",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Optional compatibility label for the response; Databento Reference API does not require a dataset",
-            },
-            symbols: {
-              type: "string",
-              description: "Comma-separated list of symbols",
-            },
-            start_date: {
-              type: "string",
-              description: "Optional start date (YYYY-MM-DD). If omitted, returns the latest security master snapshot.",
-            },
-            end_date: {
-              type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD). Used with start_date for a historical range.",
-            },
-            limit: {
-              type: "number",
-              description: "Local maximum number of records to include in the MCP response",
-            },
-          },
-          required: ["symbols"],
-        },
-      },
-      {
-        name: "reference_get_corporate_actions",
-        description: "Get corporate actions (dividends, splits, etc.) for symbols",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Optional compatibility label for output. Databento Reference API does not require a dataset.",
-            },
-            symbols: {
-              type: "string",
-              description: "Comma-separated list of symbols",
-            },
-            start_date: {
-              type: "string",
-              description: "Start date (YYYY-MM-DD)",
-            },
-            end_date: {
-              type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, returns all available data after start_date.",
-            },
-            action_types: {
-              type: "array",
-              items: { type: "string" },
-              description: "Databento corporate action event filters (e.g., ['DIV', 'FSPLT', 'RSPLT'])",
-            },
-          },
-          required: ["symbols", "start_date"],
-        },
-      },
-      {
-        name: "reference_get_adjustments",
-        description: "Get price adjustment factors for backadjusted prices",
-        inputSchema: {
-          type: "object",
-          properties: {
-            dataset: {
-              type: "string",
-              description: "Optional compatibility label for output. Databento Reference API does not require a dataset.",
-            },
-            symbols: {
-              type: "string",
-              description: "Comma-separated list of symbols",
-            },
-            start_date: {
-              type: "string",
-              description: "Start date (YYYY-MM-DD)",
-            },
-            end_date: {
-              type: "string",
-              description: "Optional exclusive end date (YYYY-MM-DD). If omitted, returns all available data after start_date.",
-            },
-          },
-          required: ["symbols", "start_date"],
-        },
-      },
-  ];
+  return listDatabentoToolContracts().filter((tool) => !disabledTools.has(tool.name));
+}
 
-  return tools.filter((tool) => !disabledTools.has(tool.name));
+function createToolErrorResult(error: string): CallToolResult {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ error }, null, 2),
+      },
+    ],
+    isError: true,
+  };
 }
 
 // Handle tool calls
@@ -549,18 +105,19 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       batchClient,
     } = clients;
     const { name } = request.params;
-    const args = request.params.arguments ?? {};
+    const rawArgs = request.params.arguments ?? {};
+    let args: Record<string, unknown> = {};
 
     if (disabledTools.has(name)) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: `Tool is disabled for this transport: ${name}` }, null, 2),
-          },
-        ],
-        isError: true,
-      };
+      return createToolErrorResult(`Tool is disabled for this transport: ${name}`);
+    }
+
+    const parsedArgs = parseDatabentoToolArguments(name, rawArgs);
+    if (parsedArgs.status === "invalid") {
+      return createToolErrorResult(parsedArgs.error);
+    }
+    if (parsedArgs.status === "valid") {
+      args = parsedArgs.arguments;
     }
 
     try {
@@ -1105,15 +662,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
     }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ error: errorMessage }, null, 2),
-          },
-        ],
-        isError: true,
-      };
+      return createToolErrorResult(errorMessage);
     }
   };
 }
