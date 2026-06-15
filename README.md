@@ -168,6 +168,10 @@ The first remote implementation is stateful and single-instance. Horizontal
 scaling needs sticky sessions, stateless transport, or shared session storage
 before multiple instances are safe.
 
+For deployment, reverse proxy, Claude Desktop/Claude app connection, token
+rotation, and troubleshooting steps, use the operations runbook:
+[`docs/remote-mcp-runbook.md`](docs/remote-mcp-runbook.md).
+
 ### Option 3: Claude Code Skills
 
 Install skills:

@@ -34,9 +34,11 @@ npm audit --omit=dev
 npm pack --dry-run --ignore-scripts --json --cache /tmp/databento-mcp-npm-cache
 ```
 
-Remote/cloud MVP support is implemented as a separate Streamable HTTP entrypoint
-documented in `docs/remote-cloud-support-plan.md`. Keep local stdio as the
-default Claude Desktop path.
+Remote/cloud MVP support is implemented as a separate Streamable HTTP entrypoint.
+Use `docs/remote-cloud-support-plan.md` for implementation contracts and
+`docs/remote-mcp-runbook.md` for operations, deployment, Claude client
+connection, token rotation, and troubleshooting. Keep local stdio as the default
+Claude Desktop path.
 
 Remote/cloud MVP decisions:
 
@@ -205,6 +207,11 @@ Before adding npm publish or release automation, first fix package contents and 
 
 - Local Claude Desktop support should use stdio transport.
 - Remote/cloud support should use Streamable HTTP, not stdio.
+- Do not document arbitrary remote HTTP servers as supported in
+  `claude_desktop_config.json`; use the Claude Connectors/custom connector UI
+  when available, or fall back to local stdio for Claude Desktop.
+- Use `docs/remote-mcp-runbook.md` for the current operator-facing remote MCP
+  setup steps.
 - README examples for Claude Desktop should use the current Claude Desktop config path:
   - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
   - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
