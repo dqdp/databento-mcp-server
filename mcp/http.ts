@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import http, {
   type IncomingHttpHeaders,
   type IncomingMessage,
@@ -19,6 +19,10 @@ import {
 } from "./index.js";
 
 export const DEFAULT_HTTP_BODY_LIMIT_BYTES = 1024 * 1024;
+export const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 120;
+export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+export const HEALTHZ_PATH = "/healthz";
+const SERVICE_VERSION = "1.0.0";
 const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000;
@@ -41,12 +45,15 @@ export interface RemoteMcpConfig {
   sessionIdleTtlMs: number;
   sessionCleanupIntervalMs: number;
   requestTimeoutMs: number;
+  rateLimitMaxRequests: number;
+  rateLimitWindowMs: number;
 }
 
 export interface RemoteMcpRequestLike {
   method?: string;
   url?: string;
   headers: HeaderBag;
+  remoteAddress?: string;
 }
 
 export type RemoteMcpValidationResult =
@@ -56,6 +63,29 @@ export type RemoteMcpValidationResult =
       status: number;
       body: { error: string };
     };
+
+export type RemoteMcpRateLimitResult =
+  | { ok: true }
+  | {
+      ok: false;
+      status: 429;
+      body: { error: "rate_limited" };
+      retryAfterSeconds: number;
+      keyType: "token" | "ip";
+    };
+
+export interface RemoteMcpRateLimiter {
+  check(request: Pick<RemoteMcpRequestLike, "headers" | "remoteAddress">): RemoteMcpRateLimitResult;
+}
+
+export type RemoteMcpLogEvent = {
+  level: "info" | "warn" | "error";
+  event: string;
+  timestamp?: string;
+  [key: string]: unknown;
+};
+
+export type RemoteMcpLogger = (event: RemoteMcpLogEvent) => void;
 
 interface RemoteMcpSession {
   server: McpServer;
@@ -68,6 +98,7 @@ export interface StartRemoteMcpHttpServerOptions {
   clients?: DatabentoMcpClients;
   config?: RemoteMcpConfig;
   createClients?: (apiKey: string) => DatabentoMcpClients;
+  logger?: RemoteMcpLogger;
 }
 
 export interface StartedRemoteMcpHttpServer {
@@ -84,6 +115,27 @@ class HttpRequestError extends Error {
   ) {
     super(body.error);
   }
+}
+
+function logRemoteMcpEvent(logger: RemoteMcpLogger | undefined, event: RemoteMcpLogEvent): void {
+  if (!logger) {
+    return;
+  }
+
+  try {
+    logger({
+      timestamp: event.timestamp ?? new Date().toISOString(),
+      ...event,
+    });
+  } catch {
+    // Logging must never change the HTTP/MCP control flow.
+  }
+}
+
+export function createStderrRemoteMcpLogger(): RemoteMcpLogger {
+  return (event) => {
+    process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+  };
 }
 
 function parseBoolean(name: string, value: string | undefined, defaultValue: boolean): boolean {
@@ -166,6 +218,10 @@ export function parseRemoteMcpConfig(env: EnvLike = process.env): RemoteMcpConfi
     throw new Error("MCP_HTTP_PATH must start with /");
   }
 
+  if (path === HEALTHZ_PATH) {
+    throw new Error(`MCP_HTTP_PATH must not be ${HEALTHZ_PATH}`);
+  }
+
   const authToken = env.MCP_REMOTE_AUTH_TOKEN?.trim() || undefined;
   const batchEnabled = parseBoolean("MCP_REMOTE_ENABLE_BATCH", env.MCP_REMOTE_ENABLE_BATCH, false);
   const allowedHosts = parseCsvList("MCP_ALLOWED_HOSTS", env.MCP_ALLOWED_HOSTS, DEFAULT_ALLOWED_HOSTS, true);
@@ -213,6 +269,16 @@ export function parseRemoteMcpConfig(env: EnvLike = process.env): RemoteMcpConfi
       "MCP_REQUEST_TIMEOUT_MS",
       env.MCP_REQUEST_TIMEOUT_MS,
       DEFAULT_REQUEST_TIMEOUT_MS
+    ),
+    rateLimitMaxRequests: parsePositiveInteger(
+      "MCP_RATE_LIMIT_MAX_REQUESTS",
+      env.MCP_RATE_LIMIT_MAX_REQUESTS,
+      DEFAULT_RATE_LIMIT_MAX_REQUESTS
+    ),
+    rateLimitWindowMs: parsePositiveInteger(
+      "MCP_RATE_LIMIT_WINDOW_MS",
+      env.MCP_RATE_LIMIT_WINDOW_MS,
+      DEFAULT_RATE_LIMIT_WINDOW_MS
     ),
   };
 }
@@ -267,9 +333,101 @@ function bodyLength(headers: HeaderBag): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function bearerTokenFromHeaders(headers: HeaderBag): string | undefined {
+  const authorization = getHeader(headers, "authorization");
+  return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+}
+
+function hashedRateLimitKey(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
+function closestForwardedForAddress(headers: HeaderBag): string | undefined {
+  const forwardedFor = getHeader(headers, "x-forwarded-for");
+  if (!forwardedFor) {
+    return undefined;
+  }
+
+  const addresses = forwardedFor
+    .split(",")
+    .map((address) => address.trim())
+    .filter((address) => address.length > 0);
+  return addresses[addresses.length - 1];
+}
+
+function rateLimitIdentity(
+  config: Pick<RemoteMcpConfig, "authToken" | "trustProxy">,
+  request: Pick<RemoteMcpRequestLike, "headers" | "remoteAddress">
+): {
+  key: string;
+  keyType: "token" | "ip";
+} {
+  const bearerToken = bearerTokenFromHeaders(request.headers);
+  if (bearerToken && config.authToken && tokenMatches(bearerToken, config.authToken)) {
+    return {
+      key: `token:${hashedRateLimitKey(bearerToken)}`,
+      keyType: "token",
+    };
+  }
+
+  const forwardedFor = config.trustProxy ? closestForwardedForAddress(request.headers) : undefined;
+  const remoteAddress = forwardedFor || request.remoteAddress || "unknown";
+  return {
+    key: `ip:${remoteAddress}`,
+    keyType: "ip",
+  };
+}
+
+export function createRemoteMcpRateLimiter(
+  config: Pick<RemoteMcpConfig, "authToken" | "rateLimitMaxRequests" | "rateLimitWindowMs" | "trustProxy">,
+  now: () => number = Date.now
+): RemoteMcpRateLimiter {
+  const buckets = new Map<string, { count: number; windowStartedAt: number }>();
+
+  function pruneExpiredBuckets(currentTime: number): void {
+    for (const [key, bucket] of buckets) {
+      if (currentTime - bucket.windowStartedAt >= config.rateLimitWindowMs) {
+        buckets.delete(key);
+      }
+    }
+  }
+
+  return {
+    check(request) {
+      const currentTime = now();
+      pruneExpiredBuckets(currentTime);
+      const identity = rateLimitIdentity(config, request);
+      const existing = buckets.get(identity.key);
+
+      if (!existing || currentTime - existing.windowStartedAt >= config.rateLimitWindowMs) {
+        buckets.set(identity.key, { count: 1, windowStartedAt: currentTime });
+        return { ok: true };
+      }
+
+      if (existing.count >= config.rateLimitMaxRequests) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((existing.windowStartedAt + config.rateLimitWindowMs - currentTime) / 1000)
+        );
+        return {
+          ok: false,
+          status: 429,
+          body: { error: "rate_limited" },
+          retryAfterSeconds,
+          keyType: identity.keyType,
+        };
+      }
+
+      existing.count += 1;
+      return { ok: true };
+    },
+  };
+}
+
 export function validateRemoteMcpRequest(
   config: RemoteMcpConfig,
-  request: RemoteMcpRequestLike
+  request: RemoteMcpRequestLike,
+  logger?: RemoteMcpLogger
 ): RemoteMcpValidationResult {
   if (request.url !== config.path) {
     return { ok: false, status: 404, body: { error: "not_found" } };
@@ -282,24 +440,48 @@ export function validateRemoteMcpRequest(
 
   const declaredBodyLength = bodyLength(request.headers);
   if (declaredBodyLength !== undefined && declaredBodyLength > config.bodyLimitBytes) {
+    logRemoteMcpEvent(logger, {
+      level: "warn",
+      event: "request_too_large",
+      status: 413,
+      limit_bytes: config.bodyLimitBytes,
+      declared_body_bytes: declaredBodyLength,
+    });
     return { ok: false, status: 413, body: { error: "payload_too_large" } };
   }
 
   const hostname = getHostnameFromHostHeader(getHeader(request.headers, "host"));
   if (!hostname || !config.allowedHosts.map((host) => host.toLowerCase()).includes(hostname)) {
+    logRemoteMcpEvent(logger, {
+      level: "warn",
+      event: "host_rejected",
+      status: 403,
+      host: hostname ?? "missing",
+    });
     return { ok: false, status: 403, body: { error: "forbidden" } };
   }
 
   const origin = getHeader(request.headers, "origin");
   if (origin !== undefined && !config.allowedOrigins.includes(origin)) {
+    logRemoteMcpEvent(logger, {
+      level: "warn",
+      event: "origin_rejected",
+      status: 403,
+      origin,
+    });
     return { ok: false, status: 403, body: { error: "forbidden" } };
   }
 
   if (config.authToken) {
-    const authorization = getHeader(request.headers, "authorization");
-    const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : undefined;
+    const token = bearerTokenFromHeaders(request.headers);
 
     if (!token || !tokenMatches(token, config.authToken)) {
+      logRemoteMcpEvent(logger, {
+        level: "warn",
+        event: "auth_rejected",
+        status: 401,
+        reason: token ? "wrong_bearer_token" : "missing_bearer_token",
+      });
       return { ok: false, status: 401, body: { error: "unauthorized" } };
     }
   }
@@ -307,6 +489,12 @@ export function validateRemoteMcpRequest(
   if (config.trustProxy) {
     const forwardedProto = getHeader(request.headers, "x-forwarded-proto")?.split(",")[0].trim().toLowerCase();
     if (forwardedProto !== "https") {
+      logRemoteMcpEvent(logger, {
+        level: "warn",
+        event: "proxy_https_rejected",
+        status: 403,
+        forwarded_proto: forwardedProto ?? "missing",
+      });
       return { ok: false, status: 403, body: { error: "forbidden" } };
     }
   }
@@ -349,15 +537,29 @@ function isInitializeBody(body: unknown): boolean {
   return isInitializeRequest(body);
 }
 
-function writeJson(res: ServerResponse, status: number, body: { error: string }): void {
+function writeJson(
+  res: ServerResponse,
+  status: number,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+): void {
   if (res.headersSent) {
     return;
   }
 
   res.writeHead(status, {
     "content-type": "application/json",
+    ...headers,
   });
   res.end(JSON.stringify(body));
+}
+
+function writeHealthz(res: ServerResponse): void {
+  writeJson(res, 200, {
+    status: "ok",
+    service: "databento-mcp-http",
+    version: SERVICE_VERSION,
+  });
 }
 
 function sessionIdFromRequest(req: IncomingMessage): string | undefined {
@@ -396,6 +598,7 @@ export async function startRemoteMcpHttpServer(
   const clients =
     options.clients ??
     (apiKey ? (options.createClients ?? createDefaultDatabentoMcpClients)(apiKey) : undefined);
+  const logger = options.logger;
 
   if (!clients) {
     throw new Error("DATABENTO_API_KEY is required to start the remote MCP HTTP server");
@@ -404,6 +607,7 @@ export async function startRemoteMcpHttpServer(
   const resolvedClients = clients;
   const disabledTools = config.batchEnabled ? [] : REMOTE_BATCH_TOOL_NAMES;
   const sessions = new Map<string, RemoteMcpSession>();
+  const rateLimiter = createRemoteMcpRateLimiter(config);
 
   function createMcpSession(): RemoteMcpSession {
     let session: RemoteMcpSession;
@@ -412,9 +616,17 @@ export async function startRemoteMcpHttpServer(
       onsessioninitialized: (sessionId) => {
         session.lastSeen = Date.now();
         sessions.set(sessionId, session);
+        logRemoteMcpEvent(logger, {
+          level: "info",
+          event: "session_created",
+        });
       },
       onsessionclosed: (sessionId) => {
         sessions.delete(sessionId);
+        logRemoteMcpEvent(logger, {
+          level: "info",
+          event: "session_closed",
+        });
       },
     });
     const server = createDatabentoMcpServer(resolvedClients, { disabledTools });
@@ -436,11 +648,41 @@ export async function startRemoteMcpHttpServer(
   }
 
   async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const validation = validateRemoteMcpRequest(config, {
+    const requestPath = req.url?.split("?")[0];
+
+    if (requestPath === HEALTHZ_PATH) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        writeJson(res, 405, { error: "method_not_allowed" });
+        return;
+      }
+
+      writeHealthz(res);
+      return;
+    }
+
+    const requestLike: RemoteMcpRequestLike = {
       method: req.method,
-      url: req.url?.split("?")[0],
+      url: requestPath,
       headers: req.headers,
-    });
+      remoteAddress: req.socket.remoteAddress,
+    };
+    const rateLimit = rateLimiter.check(requestLike);
+
+    if (!rateLimit.ok) {
+      logRemoteMcpEvent(logger, {
+        level: "warn",
+        event: "rate_limited",
+        status: rateLimit.status,
+        retry_after_seconds: rateLimit.retryAfterSeconds,
+        rate_limit_key_type: rateLimit.keyType,
+      });
+      writeJson(res, rateLimit.status, rateLimit.body, {
+        "retry-after": String(rateLimit.retryAfterSeconds),
+      });
+      return;
+    }
+
+    const validation = validateRemoteMcpRequest(config, requestLike, logger);
 
     if (!validation.ok) {
       writeJson(res, validation.status, validation.body);
@@ -479,6 +721,12 @@ export async function startRemoteMcpHttpServer(
       await session.transport.handleRequest(req, res, body);
     } catch (error) {
       const httpError = error instanceof HttpRequestError ? error : undefined;
+      logRemoteMcpEvent(logger, {
+        level: httpError ? "warn" : "error",
+        event: httpError?.body.error === "payload_too_large" ? "request_too_large" : "mcp_request_failed",
+        status: httpError?.status ?? 500,
+        error_category: httpError?.body.error ?? "internal_server_error",
+      });
       writeJson(res, httpError?.status ?? 500, httpError?.body ?? { error: "internal_server_error" });
     }
   }
@@ -505,6 +753,21 @@ export async function startRemoteMcpHttpServer(
 
   const address = server.address() as AddressInfo;
   const url = `http://${config.host}:${address.port}${config.path}`;
+  logRemoteMcpEvent(logger, {
+    level: "info",
+    event: "remote_server_started",
+    host: config.host,
+    port: address.port,
+    path: config.path,
+    health_path: HEALTHZ_PATH,
+    url,
+    batch_enabled: config.batchEnabled,
+    trust_proxy: config.trustProxy,
+    body_limit_bytes: config.bodyLimitBytes,
+    request_timeout_ms: config.requestTimeoutMs,
+    rate_limit_max_requests: config.rateLimitMaxRequests,
+    rate_limit_window_ms: config.rateLimitWindowMs,
+  });
 
   return {
     config,
@@ -532,9 +795,9 @@ export async function startRemoteMcpHttpServer(
 async function main() {
   dotenv.config();
 
-  const startedServer = await startRemoteMcpHttpServer();
-
-  console.error(`Databento MCP Streamable HTTP server listening at ${startedServer.url}`);
+  const startedServer = await startRemoteMcpHttpServer({
+    logger: createStderrRemoteMcpLogger(),
+  });
 
   async function shutdown() {
     await startedServer.close();

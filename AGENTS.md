@@ -53,8 +53,8 @@ Remote/cloud MVP decisions:
 - Disable batch tools on remote by default with `MCP_REMOTE_ENABLE_BATCH=false`.
 - Use stateful Streamable HTTP for a single running instance.
 - Terminate HTTPS at the platform or reverse proxy.
-- Add body limits and request timeouts in the first remote PR; rate limiting can
-  follow as a hardening PR before production exposure.
+- Use body limits, request timeouts, per-token/IP rate limiting, structured JSON
+  logs without secrets, and a minimal `GET /healthz` outside the MCP route.
 
 Review workflow for completed implementation slices:
 

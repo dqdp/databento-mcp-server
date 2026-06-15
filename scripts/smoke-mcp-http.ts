@@ -53,11 +53,35 @@ function waitForServerUrl(
       return Buffer.concat(stderrChunks).toString("utf8");
     }
 
+    function parseServerUrl(output: string): string | undefined {
+      const legacyMatch = output.match(/listening at (http:\/\/\S+)/);
+      if (legacyMatch) {
+        return legacyMatch[1];
+      }
+
+      for (const line of output.split(/\r?\n/)) {
+        if (!line.trim()) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(line) as { event?: string; url?: string };
+          if (parsed.event === "remote_server_started" && parsed.url) {
+            return parsed.url;
+          }
+        } catch {
+          // Ignore non-JSON stderr from dependencies and keep waiting.
+        }
+      }
+
+      return undefined;
+    }
+
     function onData() {
-      const match = currentOutput().match(/listening at (http:\/\/\S+)/);
-      if (match) {
+      const url = parseServerUrl(currentOutput());
+      if (url) {
         cleanup();
-        resolve(match[1]);
+        resolve(url);
       }
     }
 

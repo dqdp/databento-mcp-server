@@ -157,8 +157,17 @@ MCP_REMOTE_AUTH_TOKEN=<strong-random-token>
 TRUST_PROXY=true
 ```
 
-With `TRUST_PROXY=true`, the server rejects requests unless the trusted reverse
-proxy forwards `X-Forwarded-Proto: https`.
+With `TRUST_PROXY=true`, the server rejects requests unless the first
+comma-separated `X-Forwarded-Proto` value from the trusted reverse proxy is
+exactly `https`.
+
+The HTTP entrypoint also exposes `GET /healthz` for process health checks. This
+endpoint does not call Databento and does not expose secrets or MCP session data.
+Remote MCP requests are rate limited per valid bearer token, falling back to
+source IP when no valid bearer token is present. Startup, auth/host/origin/proxy
+rejects, payload-too-large rejects, rate limits, session lifecycle, and MCP
+request failures are written as structured JSON logs to stderr without request
+bodies, API keys, bearer tokens, or full `Authorization` headers.
 
 Remote batch tools are disabled by default. Set
 `MCP_REMOTE_ENABLE_BATCH=true` only when you explicitly want remote clients to
@@ -226,6 +235,8 @@ without `DATABENTO_API_KEY`.
 | `MCP_ALLOWED_HOSTS` | HTTP only | `localhost,127.0.0.1` | Comma-separated allowed `Host` hostnames |
 | `MCP_ALLOWED_ORIGINS` | HTTP only | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowed browser `Origin` values |
 | `MCP_HTTP_BODY_LIMIT_BYTES` | HTTP only | `1048576` | Maximum JSON request body size |
+| `MCP_RATE_LIMIT_MAX_REQUESTS` | HTTP only | `120` | Max requests per rate-limit window per bearer token or fallback IP |
+| `MCP_RATE_LIMIT_WINDOW_MS` | HTTP only | `60000` | Rate-limit window in milliseconds |
 | `TRUST_PROXY` | Remote HTTP | `false` | Require trusted proxy `X-Forwarded-Proto: https` for remote/proxy exposure |
 
 ## Available Tools

@@ -44,8 +44,9 @@ single-instance.
 - TLS: terminate HTTPS at the platform or reverse proxy, not inside Node.
 - Deployment target: prove local HTTP smoke first; add a concrete cloud platform
   example only after the endpoint and tests are stable.
-- Limits: include body size limits and request timeouts in the first PR. Add
-  rate limiting as a follow-up hardening slice before production exposure.
+- Limits: body size limits, request timeouts, per-token/IP rate limiting, safe
+  structured logs, and `GET /healthz` are part of remote hardening before
+  production exposure.
 
 ## Current SDK Guidance
 
@@ -140,8 +141,8 @@ Proxy/TLS validation:
 - Any public allowed host, public allowed origin, non-local bind, or
   `TRUST_PROXY=true` requires `MCP_REMOTE_AUTH_TOKEN`.
 - Remote/proxy exposure requires `TRUST_PROXY=true`.
-- With `TRUST_PROXY=true`, reject requests unless `X-Forwarded-Proto` starts
-  with `https`.
+- With `TRUST_PROXY=true`, reject requests unless the first comma-separated
+  `X-Forwarded-Proto` value is exactly `https`.
 
 Batch tool filtering:
 
@@ -182,8 +183,8 @@ NPM scripts:
 Auth:
 
 - Use `Authorization: Bearer <MCP_REMOTE_AUTH_TOKEN>` for remote requests.
-- Require bearer token auth for every request when binding anywhere other than
-  localhost.
+- Require bearer token auth for every MCP request when binding anywhere other
+  than localhost. Keep `/healthz` unauthenticated for process health only.
 - Compare tokens with a timing-safe comparison.
 - Never log token values.
 - Fail closed when `MCP_REMOTE_AUTH_TOKEN` is missing for remote/proxy exposure.
@@ -214,8 +215,12 @@ HTTPS:
 Rate and resource controls:
 
 - Keep request body limits tight.
-- Add request timeouts in the first remote PR.
-- Add rate limiting in a follow-up hardening PR before production exposure.
+- Keep request timeouts enabled.
+- Rate limit by valid bearer token, falling back to source IP when no valid
+  bearer token is present.
+- Keep structured logs free of Databento API keys, bearer tokens, full
+  `Authorization` headers, cookies, and request bodies.
+- Keep `GET /healthz` outside the MCP route and free of Databento live calls.
 - Do not allow unauthenticated batch job submission under any deployment mode.
 
 ## TDD Implementation Order

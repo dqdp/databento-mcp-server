@@ -123,6 +123,8 @@ MCP_HTTP_PATH=/mcp
 MCP_ALLOWED_HOSTS=mcp.example.com
 MCP_ALLOWED_ORIGINS=https://claude.ai,https://claude.com
 MCP_REMOTE_ENABLE_BATCH=false
+MCP_RATE_LIMIT_MAX_REQUESTS=120
+MCP_RATE_LIMIT_WINDOW_MS=60000
 TRUST_PROXY=true
 EOF
 chmod 600 /etc/databento-mcp.env
@@ -145,12 +147,30 @@ npm run start:http
 
 Expected stderr:
 
-```text
-Databento MCP Streamable HTTP server listening at http://127.0.0.1:3000/mcp
+```json
+{"timestamp":"2026-06-16T00:00:00.000Z","level":"info","event":"remote_server_started","host":"127.0.0.1","port":3000,"path":"/mcp","health_path":"/healthz","url":"http://127.0.0.1:3000/mcp","batch_enabled":false,"trust_proxy":true,"body_limit_bytes":1048576,"request_timeout_ms":30000,"rate_limit_max_requests":120,"rate_limit_window_ms":60000}
 ```
 
-The HTTP server logs startup to stderr. It must not print protocol messages to
-stdout.
+The HTTP server logs startup, auth/host/origin/proxy rejects,
+payload-too-large rejects, rate limits, session lifecycle, and MCP request
+failures as structured JSON to stderr. It must not print protocol messages to
+stdout. Logs must not include `DATABENTO_API_KEY`, `MCP_REMOTE_AUTH_TOKEN`,
+full `Authorization` headers, cookies, or request bodies.
+
+Health check:
+
+```bash
+curl -fsS http://127.0.0.1:3000/healthz
+```
+
+Expected body:
+
+```json
+{"status":"ok","service":"databento-mcp-http","version":"1.0.0"}
+```
+
+`/healthz` only reports process health. It does not call Databento and does not
+inspect MCP sessions.
 
 ## systemd Example
 
@@ -208,9 +228,9 @@ server {
 }
 ```
 
-Do not forward public traffic to the Node server without setting
-`X-Forwarded-Proto: https`; with `TRUST_PROXY=true`, the server rejects requests
-without it.
+Do not forward public traffic to the Node server unless the first
+comma-separated `X-Forwarded-Proto` value is exactly `https`; with
+`TRUST_PROXY=true`, the server rejects requests without it.
 
 ## HTTP Health And Security Checks
 
@@ -429,6 +449,7 @@ Then restart and explicitly verify that batch tools appear in `tools/list`.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `401 {"error":"unauthorized"}` | Missing or wrong remote bearer token | Check `Authorization: Bearer ...` and `MCP_REMOTE_AUTH_TOKEN`. |
+| `429 {"error":"rate_limited"}` | Too many requests for the bearer token or fallback IP | Back off using `Retry-After`, then tune `MCP_RATE_LIMIT_MAX_REQUESTS` or `MCP_RATE_LIMIT_WINDOW_MS` if needed. |
 | `403 {"error":"forbidden"}` | Host, Origin, or `X-Forwarded-Proto` rejected | Check `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS`, and reverse proxy headers. |
 | Startup fails with `MCP_REMOTE_AUTH_TOKEN is required` | Public/proxy exposure configured without token | Set `MCP_REMOTE_AUTH_TOKEN` or return to local-only hosts/origins and `TRUST_PROXY=false`. |
 | Startup fails with `TRUST_PROXY=true is required` | Public host/origin or non-local bind configured without trusted proxy mode | Put the service behind TLS reverse proxy and set `TRUST_PROXY=true`. |

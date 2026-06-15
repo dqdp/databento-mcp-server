@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   parseRemoteMcpConfig,
   startRemoteMcpHttpServer,
+  type RemoteMcpLogEvent,
   type StartedRemoteMcpHttpServer,
 } from "../../mcp/http.js";
 import { REMOTE_BATCH_TOOL_NAMES, listDatabentoTools } from "../../mcp/index.js";
@@ -20,6 +21,24 @@ async function closeStartedServer() {
 async function startLocalHttpServer(env: Record<string, string> = {}) {
   startedServer = await startRemoteMcpHttpServer({
     apiKey: "db-test-key",
+    config: parseRemoteMcpConfig({
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "0",
+      MCP_ALLOWED_HOSTS: "127.0.0.1",
+      ...env,
+    }),
+  });
+
+  return startedServer;
+}
+
+async function startLocalHttpServerWithLogs(
+  env: Record<string, string> = {},
+  logs: RemoteMcpLogEvent[] = []
+) {
+  startedServer = await startRemoteMcpHttpServer({
+    apiKey: "db-test-key",
+    logger: (event) => logs.push(event),
     config: parseRemoteMcpConfig({
       MCP_HTTP_HOST: "127.0.0.1",
       MCP_HTTP_PORT: "0",
@@ -80,6 +99,13 @@ async function postInitializeWithoutAuth(url: string) {
       },
     }),
   });
+}
+
+function siblingUrl(url: string, pathname: string) {
+  const parsed = new URL(url);
+  parsed.pathname = pathname;
+  parsed.search = "";
+  return parsed.toString();
 }
 
 describe("MCP Streamable HTTP integration", () => {
@@ -159,4 +185,72 @@ describe("MCP Streamable HTTP integration", () => {
       await transport.close();
     }
   }, 15_000);
+
+  it("serves a minimal unauthenticated health check outside the MCP route", async () => {
+    const logs: RemoteMcpLogEvent[] = [];
+    const server = await startLocalHttpServerWithLogs(
+      {
+        MCP_REMOTE_AUTH_TOKEN: "remote-token",
+      },
+      logs
+    );
+
+    const response = await fetch(siblingUrl(server.url, "/healthz"));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const body = await response.json();
+    expect(body).toEqual({
+      status: "ok",
+      service: "databento-mcp-http",
+      version: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain("db-test-key");
+    expect(JSON.stringify(body)).not.toContain("remote-token");
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        level: "info",
+        event: "remote_server_started",
+        path: "/mcp",
+        health_path: "/healthz",
+      })
+    );
+  });
+
+  it("rate limits repeated remote requests and logs rejections without secrets", async () => {
+    const logs: RemoteMcpLogEvent[] = [];
+    const server = await startLocalHttpServerWithLogs(
+      {
+        MCP_REMOTE_AUTH_TOKEN: "remote-token",
+        MCP_RATE_LIMIT_MAX_REQUESTS: "1",
+        MCP_RATE_LIMIT_WINDOW_MS: "60000",
+      },
+      logs
+    );
+
+    const unauthorized = await postInitializeWithoutAuth(server.url);
+    const limited = await postInitializeWithoutAuth(server.url);
+
+    expect(unauthorized.status).toBe(401);
+    expect(await unauthorized.json()).toEqual({ error: "unauthorized" });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    expect(await limited.json()).toEqual({ error: "rate_limited" });
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        event: "auth_rejected",
+      })
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        event: "rate_limited",
+        rate_limit_key_type: "ip",
+      })
+    );
+    expect(JSON.stringify(logs)).not.toContain("remote-token");
+    expect(JSON.stringify(logs)).not.toContain("db-test-key");
+    expect(JSON.stringify(logs)).not.toContain("authorization");
+  });
 });

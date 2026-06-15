@@ -225,35 +225,34 @@ Current state:
 
 - Remote MCP has a separate Streamable HTTP entrypoint.
 - It uses bearer auth, Host/Origin validation, body limits, request timeouts,
-  session IDs, and disables batch tools by default.
-- Rate limiting is documented as a follow-up before production exposure.
+  session IDs, per-token/IP rate limiting, safe structured logs, `/healthz`,
+  and disables batch tools by default.
 
 Risk:
 
-- A public endpoint without rate limiting can be abused to burn API quota or
-  server resources.
+- A public endpoint with incorrectly tuned rate limiting can still burn API quota
+  or server resources.
 - Operators have limited visibility into rejected requests, session lifecycle,
   and tool error patterns.
 
 Hardening:
 
-- Add per-token or per-IP rate limiting at the HTTP entrypoint.
-- Add structured logs without secrets:
+- Keep per-token rate limiting with source-IP fallback at the HTTP entrypoint.
+- Keep structured logs without secrets:
   - startup config summary without tokens
   - auth reject
   - host/origin reject
   - session create/close
   - request size reject
-  - tool error count/category
-- Add a minimal health/readiness endpoint only if it does not conflict with the
-  single MCP route contract.
+  - MCP request failure category
+- Keep the minimal `/healthz` endpoint outside the MCP route contract.
 - Keep TLS termination at the platform or reverse proxy.
 - Keep direct public Node port exposure unsupported.
 
 TDD first:
 
-- Add unit tests for rate-limit behavior.
-- Add tests that errors/log payloads do not include tokens or Databento keys.
+- Keep unit tests for rate-limit behavior.
+- Keep tests that errors/log payloads do not include tokens or Databento keys.
 - Keep Streamable HTTP smoke without live Databento calls.
 
 ## Recommended Repair Order
@@ -308,11 +307,14 @@ Resolved for this plan:
 - The first MCP validation slice keeps the current lower-level `Server` and adds
   explicit Zod validation.
 - Structured tool outputs are postponed until after input validation is stable.
+- Remote `/healthz` is included as `GET /healthz`, outside the MCP route, with
+  no Databento calls and no secrets.
+- Rate limiting is keyed by valid bearer token and falls back to source IP when
+  no valid bearer token is present.
+- First structured logs cover startup, auth/host/origin/proxy rejects, request
+  size rejects, rate limits, session create/close, and MCP request failures
+  without logging secrets, request bodies, or full authorization headers.
 
 Still open:
 
-1. Should remote production hardening include a separate `/healthz` endpoint, or
-   should operators rely on MCP Inspector and process health only?
-2. Should rate limiting be keyed by bearer token, source IP, or both?
-3. What minimum structured log fields should be considered enough for the first
-   production-hardening pass?
+- None for the current remote hardening slice.
