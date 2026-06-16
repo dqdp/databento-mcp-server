@@ -18,6 +18,11 @@ export enum Schema {
   // Trades
   TRADES = "trades",
 
+  // Best bid/offer
+  TBBO = "tbbo",
+  BBO_1S = "bbo-1s",
+  BBO_1M = "bbo-1m",
+
   // OHLCV Bars
   OHLCV_1S = "ohlcv-1s",   // 1-second bars
   OHLCV_1M = "ohlcv-1m",   // 1-minute bars

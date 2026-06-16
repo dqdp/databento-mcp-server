@@ -227,6 +227,10 @@ without `DATABENTO_API_KEY`.
 |----------|----------|---------|-------------|
 | `DATABENTO_API_KEY` | ✅ | - | Your DataBento API key (starts with `db-`) |
 | `DATABENTO_DATASET` | ❌ | `GLBX.MDP3` | CME dataset for futures data |
+| `MCP_DATABENTO_ALLOWED_DATASETS` | ❌ | `GLBX.MDP3` | Comma-separated datasets allowed by the Standard CME entitlement policy |
+| `MCP_DIRECT_MAX_RECORDS` | ❌ | `10000` | Default and maximum direct `timeseries_get_range` record limit |
+| `MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH` | ❌ | `true` | Requires `metadata.get_cost` to return zero cost before batch submit |
+| `MCP_ZERO_COST_EPSILON_USD` | ❌ | `0` | Explicit operator override for tolerated batch preflight cost estimate |
 | `MCP_HTTP_HOST` | HTTP only | `127.0.0.1` | Bind host for the Streamable HTTP MCP server |
 | `MCP_HTTP_PORT` | HTTP only | `3000` | Bind port for the Streamable HTTP MCP server |
 | `MCP_HTTP_PATH` | HTTP only | `/mcp` | MCP Streamable HTTP endpoint path |
@@ -353,7 +357,9 @@ For arbitrary daily date ranges, use `timeseries_get_range` with
 
 #### 4. `timeseries_get_range`
 
-Stream historical market data with flexible schemas and date ranges. Supports the schemas listed below.
+Stream historical market data for covered Standard CME schemas. Direct MCP
+responses are record-limited; use `batch_submit_job` for `ALL_SYMBOLS` or
+larger covered exports.
 
 **Input:**
 ```json
@@ -361,8 +367,8 @@ Stream historical market data with flexible schemas and date ranges. Supports th
   "dataset": "GLBX.MDP3",
   "symbols": "ES.c.0,NQ.c.0",
   "schema": "trades",
-  "start": "2024-10-01",
-  "end": "2024-10-02",
+  "start": "2026-06-15",
+  "end": "2026-06-16",
   "stype_in": "raw_symbol",
   "stype_out": "instrument_id",
   "limit": 1000
@@ -370,17 +376,20 @@ Stream historical market data with flexible schemas and date ranges. Supports th
 ```
 
 **Supported Schemas:**
-- `mbp-1`, `mbp-10` - Market by price (1 or 10 levels)
-- `mbo` - Market by order
-- `trades` - Trade data
-- `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`, `ohlcv-1d`, `ohlcv-eod` - OHLCV bars
-- `statistics`, `definition`, `imbalance`, `status` - Market metadata
+- L0, full available history: `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`,
+  `ohlcv-1d`, `definition`, `statistics`, `status`
+- L1, rolling last 12 months: `trades`, `mbp-1`, `tbbo`, `bbo-1s`, `bbo-1m`
+- L2, rolling last 1 month: `mbp-10`
+- L3, rolling last 1 month: `mbo`
 
-**Cost guardrails for explicit `start`/`end` ranges:**
-- `trades`, `mbp-1`, `mbp-10`, `mbo`, and `ohlcv-1s`: max 1 day
-- `ohlcv-1m`: max 31 days
-- `ohlcv-1h`: max 366 days
-- Daily/eod bars are not capped by this detailed-schema guard.
+`ohlcv-eod` and `imbalance` are not exposed by the first Standard CME MCP
+policy.
+
+**Direct response guardrails:**
+- Omitted `limit` defaults to `MCP_DIRECT_MAX_RECORDS=10000`.
+- Explicit `limit` values above `MCP_DIRECT_MAX_RECORDS` are rejected.
+- `ALL_SYMBOLS` is rejected for direct streaming; use `batch_submit_job`.
+- Direct requests do not run Databento cost preflight.
 
 **Output:**
 ```json
@@ -389,11 +398,11 @@ Stream historical market data with flexible schemas and date ranges. Supports th
   "schema": "trades",
   "symbols": ["ES.c.0"],
   "dateRange": {
-    "start": "2024-10-01",
-    "end": "2024-10-02"
+    "start": "2026-06-15",
+    "end": "2026-06-16"
   },
   "recordCount": 1000,
-  "data": "ts_event,ts_recv,ts_in_delta,publisher_id,instrument_id,price,size,action,side,flags,depth,ts_in_delta,sequence\n2024-10-01T09:30:00.123456789Z,2024-10-01T09:30:00.123456999Z,210,1,123456,5845.25,10,T,B,0,0,210,1\n"
+  "data": "ts_event,ts_recv,ts_in_delta,publisher_id,instrument_id,price,size,action,side,flags,depth,ts_in_delta,sequence\n2026-06-15T09:30:00.123456789Z,2026-06-15T09:30:00.123456999Z,210,1,123456,5845.25,10,T,B,0,0,210,1\n"
 }
 ```
 
@@ -579,9 +588,9 @@ Calculate the cost in USD for a historical data query before downloading.
 {
   "dataset": "GLBX.MDP3",
   "symbols": "ES.c.0",
-  "schema": "trades",
-  "start": "2024-10-01",
-  "end": "2024-10-02",
+  "schema": "ohlcv-1d",
+  "start": "2010-01-01",
+  "end": "2026-06-16",
   "stype_in": "raw_symbol"
 }
 ```
@@ -591,10 +600,12 @@ Calculate the cost in USD for a historical data query before downloading.
 {
   "dataset": "GLBX.MDP3",
   "symbols": ["ES.c.0"],
-  "schema": "trades",
-  "cost_usd": 15.50,
-  "record_count_estimate": 1500000,
-  "size_bytes_estimate": 45000000
+  "schema": "ohlcv-1d",
+  "start": "2010-01-01",
+  "end": "2026-06-16",
+  "mode": "historical-streaming",
+  "total_cost": 0,
+  "currency": "USD"
 }
 ```
 
@@ -626,14 +637,17 @@ Get the available date range for a dataset.
 #### 12. `batch_submit_job`
 
 Submit a batch data download job for large historical datasets. Returns job ID
-and status. This may create a paid/cost-bearing Databento job; confirm the
-dataset, symbols, schema, date range, and cost risk before submitting.
+and status. Batch is the intended path for large covered Standard CME exports,
+including `ALL_SYMBOLS`.
 
-**Batch cost guardrails for explicit `start`/`end` ranges:**
-- `trades`, `tbbo`, `mbp-1`, `mbp-10`, and `ohlcv-1s`: max 1 day
-- `ohlcv-1m`: max 31 days
-- `ohlcv-1h`: max 366 days
-- Daily bars are not capped by this detailed-schema guard.
+**Batch guardrails:**
+- `end` is required.
+- Dataset, schema, and date range must fit the Standard CME entitlement policy.
+- Databento `metadata.get_cost` preflight runs by default. Any positive
+  estimated cost is rejected unless an operator explicitly raises
+  `MCP_ZERO_COST_EPSILON_USD`.
+- Batch download tools return Databento file metadata and URLs only; they do not
+  stream batch files through MCP.
 
 **Input:**
 ```json
@@ -641,8 +655,8 @@ dataset, symbols, schema, date range, and cost risk before submitting.
   "dataset": "GLBX.MDP3",
   "symbols": ["ES.c.0", "NQ.c.0"],
   "schema": "trades",
-  "start": "2024-10-01",
-  "end": "2024-10-02",
+  "start": "2026-06-15",
+  "end": "2026-06-16",
   "encoding": "csv",
   "compression": "zstd",
   "stype_in": "raw_symbol",
@@ -659,10 +673,10 @@ dataset, symbols, schema, date range, and cost risk before submitting.
   "dataset": "GLBX.MDP3",
   "schema": "trades",
   "symbols_count": 2,
-  "cost_usd": 25.00,
+  "cost_usd": "0.00",
   "date_range": {
-    "start": "2024-10-01",
-    "end": "2024-10-02"
+    "start": "2026-06-15",
+    "end": "2026-06-16"
   },
   "encoding": "csv",
   "compression": "zstd",
@@ -698,10 +712,10 @@ List all batch jobs with their current status. Optionally filter by job states o
       "dataset": "GLBX.MDP3",
       "schema": "trades",
       "symbols_count": 2,
-      "cost_usd": 25.00,
+      "cost_usd": "0.00",
       "date_range": {
-        "start": "2024-10-01",
-        "end": "2024-10-02"
+        "start": "2026-06-15",
+        "end": "2026-06-16"
       },
       "record_count": 1500000,
       "file_count": 2,
@@ -1127,7 +1141,9 @@ npm run dev
 ## Limitations
 
 - **Original Tools**: `get_futures_quote` and `get_historical_bars` only support ES and NQ futures
-- **New Tools**: Support all Databento datasets and symbols (GLBX.MDP3, XNAS.ITCH, DBEQ.BASIC, etc.)
+- **Historical Standard CME Tools**: `timeseries_get_range` and
+  `batch_submit_job` default to the Standard CME dataset allowlist
+  (`GLBX.MDP3`) and entitlement windows
 - **Data Delay**: Historical API (not tick-by-tick real-time streaming)
 - **Weekend Data**: May show stale data on weekends/holidays
 - **Rate Limits**: Respects DataBento API limits (60 req/min)

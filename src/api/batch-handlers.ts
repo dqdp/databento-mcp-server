@@ -5,6 +5,11 @@
 
 import type { BatchClient } from "./batch-client.js";
 import type { BatchJobRequest, ListJobsParams } from "../types/batch.js";
+import type { GetCostParams } from "../types/metadata.js";
+
+type BatchCostMetadataClient = {
+  getCost(params: GetCostParams): Promise<{ total_cost: number | string }>;
+};
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -19,6 +24,73 @@ function countBatchSymbols(symbols: string[] | string): number {
 
 function getBatchDownloadSize(job: { package_size?: number; actual_size?: number; total_size?: number }): number | undefined {
   return job.package_size ?? job.actual_size ?? job.total_size;
+}
+
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === "") {
+    return defaultValue;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`${name} must be a boolean value`);
+}
+
+function parseNumberEnv(name: string, defaultValue: number): number {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === "") {
+    return defaultValue;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+
+  return parsed;
+}
+
+async function assertBatchCostPreflight(
+  metadataClient: BatchCostMetadataClient,
+  params: BatchJobRequest
+): Promise<void> {
+  if (!parseBooleanEnv("MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH", true)) {
+    return;
+  }
+
+  if (!metadataClient || typeof metadataClient.getCost !== "function") {
+    throw new Error("metadataClient with getCost is required for batch cost preflight");
+  }
+
+  const cost = await metadataClient.getCost({
+    dataset: params.dataset,
+    symbols: params.symbols,
+    schema: params.schema,
+    start: params.start,
+    end: params.end,
+    stype_in: params.stype_in,
+    stype_out: params.stype_out,
+  });
+  const totalCost = Number(cost.total_cost);
+  const epsilon = parseNumberEnv("MCP_ZERO_COST_EPSILON_USD", 0);
+
+  if (!Number.isFinite(totalCost)) {
+    throw new Error("Databento cost preflight did not return a finite total_cost");
+  }
+
+  if (totalCost > epsilon) {
+    throw new Error(
+      "Databento estimated this covered Standard CME request as billable. " +
+        "Refusing to submit batch job automatically; verify the account plan or entitlement policy."
+    );
+  }
 }
 
 /**
@@ -39,11 +111,12 @@ export const batchToolDefinitions = [
           type: "array",
           items: { type: "string" },
           description: "Array of symbols (max 2000)",
+          minItems: 1,
           maxItems: 2000,
         },
         schema: {
           type: "string",
-          enum: ["trades", "tbbo", "mbp-1", "mbp-10", "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "definition", "statistics", "status", "imbalance"],
+          enum: ["trades", "tbbo", "bbo-1s", "bbo-1m", "mbp-1", "mbp-10", "mbo", "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "definition", "statistics", "status"],
           description: "Data record schema",
         },
         start: {
@@ -52,7 +125,7 @@ export const batchToolDefinitions = [
         },
         end: {
           type: "string",
-          description: "Optional end date (YYYY-MM-DD or ISO 8601)",
+          description: "Exclusive end date (YYYY-MM-DD or ISO 8601)",
         },
         encoding: {
           type: "string",
@@ -79,7 +152,8 @@ export const batchToolDefinitions = [
           description: "Split files by duration (e.g., day, week, month)",
         },
         split_size: {
-          type: "number",
+          type: "integer",
+          minimum: 1,
           description: "Split files by size in bytes",
         },
         split_symbols: {
@@ -87,11 +161,12 @@ export const batchToolDefinitions = [
           description: "Split files by symbol (default: false)",
         },
         limit: {
-          type: "number",
+          type: "integer",
+          minimum: 1,
           description: "Limit number of records",
         },
       },
-      required: ["dataset", "symbols", "schema", "start"],
+      required: ["dataset", "symbols", "schema", "start", "end"],
     },
   },
   {
@@ -135,8 +210,17 @@ export const batchToolDefinitions = [
  * Tool handlers for batch API
  * Add these cases to the switch statement in index.ts
  */
-export async function handleBatchSubmitJob(batchClient: BatchClient, args: any) {
+export async function handleBatchSubmitJob(
+  batchClient: BatchClient,
+  metadataClient: BatchCostMetadataClient,
+  args: any
+) {
+  if (args === undefined) {
+    throw new Error("metadataClient with getCost is required for batch cost preflight");
+  }
+
   const params = args as BatchJobRequest;
+  await assertBatchCostPreflight(metadataClient, params);
   const jobInfo = await batchClient.submitJob(params);
 
   return {

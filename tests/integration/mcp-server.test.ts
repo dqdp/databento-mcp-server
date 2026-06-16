@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDatabentoMcpServer,
   type DatabentoMcpClients,
@@ -38,7 +38,16 @@ function createMockClients(): DatabentoMcpClients {
       listSchemas: vi.fn(),
       listPublishers: vi.fn(),
       listFields: vi.fn(),
-      getCost: vi.fn(),
+      getCost: vi.fn(async () => ({
+        dataset: "GLBX.MDP3",
+        symbols: ["ES.c.0"],
+        schema: "trades",
+        start: "2026-06-15",
+        end: "2026-06-16",
+        mode: "historical-streaming",
+        total_cost: 0,
+        currency: "USD",
+      })),
       getDatasetRange: vi.fn(),
     },
     referenceClient: {
@@ -87,7 +96,13 @@ async function connectTestClient(clients = createMockClients()) {
 }
 
 describe("MCP server integration", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-16T12:00:00.000Z"));
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -114,6 +129,24 @@ describe("MCP server integration", () => {
         "start",
       ]);
       expect(
+        (toolsByName.get("timeseries_get_range")?.inputSchema.properties as any).schema.enum
+      ).toEqual([
+        "mbp-1",
+        "mbp-10",
+        "mbo",
+        "trades",
+        "tbbo",
+        "bbo-1s",
+        "bbo-1m",
+        "ohlcv-1s",
+        "ohlcv-1m",
+        "ohlcv-1h",
+        "ohlcv-1d",
+        "statistics",
+        "definition",
+        "status",
+      ]);
+      expect(
         toolsByName.get("reference_search_securities")?.inputSchema.required
       ).toEqual(["symbols"]);
       expect(
@@ -122,6 +155,31 @@ describe("MCP server integration", () => {
       expect(
         (toolsByName.get("batch_list_jobs")?.inputSchema.properties as any).states.items.enum
       ).toEqual(["queued", "processing", "done", "expired"]);
+      expect(toolsByName.get("batch_submit_job")?.inputSchema.required).toEqual([
+        "dataset",
+        "symbols",
+        "schema",
+        "start",
+        "end",
+      ]);
+      expect(
+        (toolsByName.get("batch_submit_job")?.inputSchema.properties as any).schema.enum
+      ).toEqual([
+        "trades",
+        "tbbo",
+        "bbo-1s",
+        "bbo-1m",
+        "mbp-1",
+        "mbp-10",
+        "mbo",
+        "ohlcv-1s",
+        "ohlcv-1m",
+        "ohlcv-1h",
+        "ohlcv-1d",
+        "definition",
+        "statistics",
+        "status",
+      ]);
     } finally {
       await client.close();
       await server.close();
@@ -215,9 +273,9 @@ describe("MCP server integration", () => {
           arguments: {
             dataset: "GLBX.MDP3",
             symbols: "ES.c.0",
-            schema: "ohlcv-1m",
-            start: "2026-01-01",
-            end: "2026-03-01",
+            schema: "trades",
+            start: "2025-06-15",
+            end: "2026-06-16",
           },
         })
       );
@@ -231,6 +289,34 @@ describe("MCP server integration", () => {
             symbols: "ES.c.0",
             schema: "ohlcv-1h",
             start: "2026-02-30",
+          },
+        })
+      );
+      expect(clients.timeseriesClient.getRange).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "timeseries_get_range",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: "ES.c.0",
+            schema: "ohlcv-1h",
+            start: "2026-06-15",
+            limit: 10001,
+          },
+        })
+      );
+      expect(clients.timeseriesClient.getRange).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "timeseries_get_range",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: "ALL_SYMBOLS",
+            schema: "ohlcv-1h",
+            start: "2026-06-15",
+            end: "2026-06-16",
           },
         })
       );
@@ -297,7 +383,20 @@ describe("MCP server integration", () => {
             symbols: ["ES.c.0"],
             schema: "trades",
             start: "2026-06-01",
-            end: "2026-06-05",
+          },
+        })
+      );
+      expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "batch_submit_job",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: ["ES.c.0"],
+            schema: "mbp-10",
+            start: "2026-05-15",
+            end: "2026-06-16",
           },
         })
       );
@@ -310,6 +409,37 @@ describe("MCP server integration", () => {
         })
       ).rejects.toThrow(/expected record|Invalid input/);
       expect(clients.databentoClient.getSessionInfo).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("defaults direct timeseries requests to the configured record limit", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      const result = await client.callTool({
+        name: "timeseries_get_range",
+        arguments: {
+          dataset: "GLBX.MDP3",
+          symbols: "ES.c.0",
+          schema: "ohlcv-1h",
+          start: "2026-06-15",
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(clients.timeseriesClient.getRange).toHaveBeenCalledWith({
+        dataset: "GLBX.MDP3",
+        symbols: "ES.c.0",
+        schema: "ohlcv-1h",
+        start: "2026-06-15",
+        end: undefined,
+        stype_in: undefined,
+        stype_out: undefined,
+        limit: 10000,
+      });
     } finally {
       await client.close();
       await server.close();
@@ -453,16 +583,165 @@ describe("MCP server integration", () => {
           symbols: ["ZC.FUT", "ES.FUT"],
           schema: "trades",
           start: "2026-06-15",
+          end: "2026-06-16",
         },
       });
 
       expect(result.isError).not.toBe(true);
+      expect(clients.metadataClient.getCost).toHaveBeenCalledWith({
+        dataset: "GLBX.MDP3",
+        symbols: ["ZC.FUT", "ES.FUT"],
+        schema: "trades",
+        start: "2026-06-15",
+        end: "2026-06-16",
+        stype_in: undefined,
+        stype_out: undefined,
+      });
+      expect(clients.batchClient.submitJob).toHaveBeenCalledWith({
+        dataset: "GLBX.MDP3",
+        symbols: ["ZC.FUT", "ES.FUT"],
+        schema: "trades",
+        start: "2026-06-15",
+        end: "2026-06-16",
+      });
       expect(textPayload(result)).toEqual(
         expect.objectContaining({
           job_id: "batch-job-1",
           symbols_count: 2,
         })
       );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("allows ALL_SYMBOLS through batch submit after zero-cost preflight", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      vi.mocked(clients.batchClient.submitJob).mockResolvedValueOnce({
+        id: "batch-all-symbols",
+        state: "received",
+        dataset: "GLBX.MDP3",
+        schema: "ohlcv-1d",
+        symbols: "ALL_SYMBOLS",
+        cost_usd: "0.00",
+        start: "2010-01-01",
+        end: "2026-06-16",
+        encoding: "dbn",
+        compression: "zstd",
+        ts_received: "2026-06-15T10:30:00Z",
+      } as any);
+
+      const result = await client.callTool({
+        name: "batch_submit_job",
+        arguments: {
+          dataset: "GLBX.MDP3",
+          symbols: ["ALL_SYMBOLS"],
+          schema: "ohlcv-1d",
+          start: "2010-01-01",
+          end: "2026-06-16",
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(clients.metadataClient.getCost).toHaveBeenCalledWith({
+        dataset: "GLBX.MDP3",
+        symbols: ["ALL_SYMBOLS"],
+        schema: "ohlcv-1d",
+        start: "2010-01-01",
+        end: "2026-06-16",
+        stype_in: undefined,
+        stype_out: undefined,
+      });
+      expect(clients.batchClient.submitJob).toHaveBeenCalledWith({
+        dataset: "GLBX.MDP3",
+        symbols: ["ALL_SYMBOLS"],
+        schema: "ohlcv-1d",
+        start: "2010-01-01",
+        end: "2026-06-16",
+      });
+      expect(textPayload(result)).toEqual(
+        expect.objectContaining({
+          job_id: "batch-all-symbols",
+          symbols_count: 1,
+        })
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("refuses batch submit when Databento cost preflight reports billable covered data", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      vi.mocked(clients.metadataClient.getCost).mockResolvedValueOnce({
+        dataset: "GLBX.MDP3",
+        symbols: ["ES.c.0"],
+        schema: "trades",
+        start: "2026-06-15",
+        end: "2026-06-16",
+        mode: "historical-streaming",
+        total_cost: 0.25,
+        currency: "USD",
+      });
+
+      const result = await client.callTool({
+        name: "batch_submit_job",
+        arguments: {
+          dataset: "GLBX.MDP3",
+          symbols: ["ES.c.0"],
+          schema: "trades",
+          start: "2026-06-15",
+          end: "2026-06-16",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textPayload(result)).toEqual({
+        error: expect.stringContaining("Databento estimated this covered Standard CME request as billable"),
+      });
+      expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("refuses batch submit for any positive preflight cost by default", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      vi.mocked(clients.metadataClient.getCost).mockResolvedValueOnce({
+        dataset: "GLBX.MDP3",
+        symbols: ["ES.c.0"],
+        schema: "trades",
+        start: "2026-06-15",
+        end: "2026-06-16",
+        mode: "historical-streaming",
+        total_cost: 0.005,
+        currency: "USD",
+      });
+
+      const result = await client.callTool({
+        name: "batch_submit_job",
+        arguments: {
+          dataset: "GLBX.MDP3",
+          symbols: ["ES.c.0"],
+          schema: "trades",
+          start: "2026-06-15",
+          end: "2026-06-16",
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(textPayload(result)).toEqual({
+        error: expect.stringContaining("Databento estimated this covered Standard CME request as billable"),
+      });
+      expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
     } finally {
       await client.close();
       await server.close();

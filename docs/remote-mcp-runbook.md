@@ -442,6 +442,9 @@ Default is disabled. Enable only after a separate risk review:
 MCP_REMOTE_ENABLE_BATCH=true
 ```
 
+Even when enabled, batch submit still requires the Standard CME entitlement
+window, explicit `end`, and zero-cost Databento preflight by default.
+
 Then restart and explicitly verify that batch tools appear in `tools/list`.
 
 ## Troubleshooting

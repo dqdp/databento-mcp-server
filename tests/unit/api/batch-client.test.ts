@@ -3,7 +3,7 @@
  * Tests batch job submission, listing, and download operations
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BatchClient } from "../../../src/api/batch-client.js";
 import { DataBentoHTTP } from "../../../src/http/databento-http.js";
 import {
@@ -18,6 +18,9 @@ describe("BatchClient", () => {
   let batchClient: BatchClient;
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-16T12:00:00.000Z"));
+
     // Create a real HTTP instance with mocked methods
     mockHTTP = new DataBentoHTTP("db-test-api-key-12345");
     vi.spyOn(mockHTTP, "postForm").mockResolvedValue("");
@@ -25,6 +28,11 @@ describe("BatchClient", () => {
     vi.spyOn(mockHTTP, "getBaseUrl").mockReturnValue("https://hist.databento.com");
 
     batchClient = new BatchClient(mockHTTP);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   describe("submitJob", () => {
@@ -52,7 +60,7 @@ describe("BatchClient", () => {
 
     it("should include optional parameters when provided", async () => {
       const jobRequest = generateBatchJobRequest({
-        end: "2024-01-31",
+        end: "2026-06-30",
         encoding: "csv",
         compression: "gzip",
         stype_in: "raw_symbol",
@@ -73,7 +81,7 @@ describe("BatchClient", () => {
       expect(mockHTTP.postForm).toHaveBeenCalledWith(
         "/v0/batch.submit_job",
         expect.objectContaining({
-          end: "2024-01-31",
+          end: "2026-06-30",
           encoding: "csv",
           compression: "gzip",
           stype_in: "raw_symbol",
@@ -142,6 +150,14 @@ describe("BatchClient", () => {
       );
     });
 
+    it("should throw error if end date is missing", async () => {
+      const jobRequest = { ...generateBatchJobRequest(), end: undefined };
+
+      await expect(batchClient.submitJob(jobRequest)).rejects.toThrow(
+        "End date is required"
+      );
+    });
+
     it("should validate start date format (YYYY-MM-DD)", async () => {
       const jobRequest = generateBatchJobRequest({ start: "invalid-date" });
 
@@ -173,7 +189,7 @@ describe("BatchClient", () => {
     });
 
     it("should accept valid YYYY-MM-DD end date", async () => {
-      const jobRequest = generateBatchJobRequest({ end: "2024-01-31" });
+      const jobRequest = generateBatchJobRequest({ end: "2026-06-30" });
       const jobInfo = generateBatchJobInfo();
       const mockResponse = generateJSONResponse(jobInfo);
 
@@ -218,7 +234,6 @@ describe("BatchClient", () => {
 
     it("should not include undefined optional parameters", async () => {
       const jobRequest = generateBatchJobRequest({
-        end: undefined,
         encoding: undefined,
         compression: undefined,
       });
@@ -230,7 +245,7 @@ describe("BatchClient", () => {
       await batchClient.submitJob(jobRequest);
 
       const callArgs = postFormSpy.mock.calls[0][1];
-      expect(callArgs).not.toHaveProperty("end");
+      expect(callArgs).toHaveProperty("end", jobRequest.end);
       expect(callArgs).not.toHaveProperty("encoding");
       expect(callArgs).not.toHaveProperty("compression");
     });
@@ -261,28 +276,56 @@ describe("BatchClient", () => {
       expect(callArgs).toHaveProperty("ts_out", false);
     });
 
-    it("should reject long explicit ranges for minute-bar batch jobs", async () => {
+    it("should allow long L0 minute-bar batch jobs under Standard CME", async () => {
       const jobRequest = generateBatchJobRequest({
         schema: "ohlcv-1m",
         start: "2024-01-01",
         end: "2024-03-01",
       });
+      const jobInfo = generateBatchJobInfo({
+        schema: "ohlcv-1m",
+        start: "2024-01-01T00:00:00Z",
+        end: "2024-03-01T00:00:00Z",
+      });
+      const mockResponse = generateJSONResponse(jobInfo);
+
+      vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
+
+      await batchClient.submitJob(jobRequest);
+
+      expect(mockHTTP.postForm).toHaveBeenCalledWith(
+        "/v0/batch.submit_job",
+        expect.objectContaining({
+          schema: "ohlcv-1m",
+          start: "2024-01-01",
+          end: "2024-03-01",
+        }),
+        { retry: false }
+      );
+    });
+
+    it("should reject L1 batch jobs older than the rolling last 12 months", async () => {
+      const jobRequest = generateBatchJobRequest({
+        schema: "trades",
+        start: "2025-06-15",
+        end: "2026-06-16",
+      });
 
       await expect(batchClient.submitJob(jobRequest)).rejects.toThrow(
-        "ohlcv-1m queries are limited to 31 days"
+        "trades is only covered by Standard CME for the rolling last 12 months"
       );
       expect(mockHTTP.postForm).not.toHaveBeenCalled();
     });
 
-    it("should reject long explicit ranges for tick-level batch jobs", async () => {
+    it("should reject L2 and L3 batch jobs older than the rolling last 1 month", async () => {
       const jobRequest = generateBatchJobRequest({
-        schema: "trades",
-        start: "2024-01-01",
-        end: "2024-01-05",
+        schema: "mbp-10",
+        start: "2026-05-15",
+        end: "2026-06-16",
       });
 
       await expect(batchClient.submitJob(jobRequest)).rejects.toThrow(
-        "trades queries are limited to 1 day"
+        "mbp-10 is only covered by Standard CME for the rolling last 1 month"
       );
       expect(mockHTTP.postForm).not.toHaveBeenCalled();
     });

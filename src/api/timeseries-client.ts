@@ -11,7 +11,8 @@ import {
   SType,
   Encoding,
 } from "../types/timeseries.js";
-import { assertExplicitHistoricalRangeWithinLimit } from "./historical-range-guard.js";
+import { assertDirectTimeseriesLimit } from "./direct-response-policy.js";
+import { assertStandardCmeHistoricalEntitlement } from "./entitlement-policy.js";
 
 /**
  * Timeseries API Client
@@ -118,6 +119,13 @@ export class TimeseriesClient {
       throw new Error("symbols is required and cannot be empty");
     }
 
+    const symbolValues = Array.isArray(request.symbols)
+      ? request.symbols
+      : request.symbols.split(",");
+    if (symbolValues.some((symbol) => symbol.trim().toUpperCase() === "ALL_SYMBOLS")) {
+      throw new Error("ALL_SYMBOLS is only allowed for batch requests");
+    }
+
     if (!request.schema) {
       throw new Error("schema is required");
     }
@@ -140,21 +148,20 @@ export class TimeseriesClient {
       throw new Error("TimeseriesClient.getRange only supports csv encoding");
     }
 
-    assertExplicitHistoricalRangeWithinLimit({
+    assertStandardCmeHistoricalEntitlement({
+      dataset: request.dataset,
       schema: String(request.schema),
       start: request.start,
       end: request.end,
     });
 
     // Validate limit if provided
-    if (request.limit !== undefined && request.limit < 1) {
-      throw new Error("limit must be greater than 0");
+    if (request.limit !== undefined) {
+      assertDirectTimeseriesLimit(request.limit);
     }
 
     // Validate symbols count (API limit is 2000)
-    const symbolCount = Array.isArray(request.symbols)
-      ? request.symbols.length
-      : request.symbols.split(",").length;
+    const symbolCount = symbolValues.length;
 
     if (symbolCount > 2000) {
       throw new Error("Maximum 2000 symbols allowed per request");
@@ -215,7 +222,22 @@ export class TimeseriesClient {
    * Helper: Get available schemas
    */
   static getAvailableSchemas(): Schema[] {
-    return Object.values(Schema);
+    return [
+      Schema.MBP_1,
+      Schema.MBP_10,
+      Schema.MBO,
+      Schema.TRADES,
+      Schema.TBBO,
+      Schema.BBO_1S,
+      Schema.BBO_1M,
+      Schema.OHLCV_1S,
+      Schema.OHLCV_1M,
+      Schema.OHLCV_1H,
+      Schema.OHLCV_1D,
+      Schema.STATISTICS,
+      Schema.DEFINITION,
+      Schema.STATUS,
+    ];
   }
 
   /**

@@ -3,7 +3,7 @@
  * Tests all 13 schemas, parameter validation, CSV parsing, and error handling
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TimeseriesClient } from '../../../src/api/timeseries-client.js';
 import { DataBentoHTTP } from '../../../src/http/databento-http.js';
 import { Schema, SType, Encoding } from '../../../src/types/timeseries.js';
@@ -12,14 +12,12 @@ import {
   mockOHLCV1SResponse,
   mockOHLCV1MResponse,
   mockOHLCV1DResponse,
-  mockOHLCVEODResponse,
   mockMBP1Response,
   mockMBP10Response,
   mockTradesResponse,
   mockMBOResponse,
   mockStatisticsResponse,
   mockDefinitionResponse,
-  mockImbalanceResponse,
   mockStatusResponse,
   mockEmptyCSVResponse,
   mockMultiSymbolOHLCVResponse,
@@ -31,6 +29,9 @@ describe('TimeseriesClient', () => {
   let mockHttp: DataBentoHTTP;
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-06-16T12:00:00.000Z'));
+
     // Create mock HTTP client
     mockHttp = {
       get: vi.fn(),
@@ -40,6 +41,11 @@ describe('TimeseriesClient', () => {
     } as any;
 
     client = new TimeseriesClient(mockHttp);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   describe('getRange - Basic Functionality', () => {
@@ -148,7 +154,7 @@ describe('TimeseriesClient', () => {
         dataset: 'GLBX.MDP3',
         symbols: 'ES.c.0',
         schema: Schema.MBP_1,
-        start: '2024-01-01',
+        start: '2026-06-15',
       });
 
       expect(result.schema).toBe('mbp-1');
@@ -164,7 +170,7 @@ describe('TimeseriesClient', () => {
         dataset: 'GLBX.MDP3',
         symbols: 'ES.c.0',
         schema: Schema.MBP_10,
-        start: '2024-01-01',
+        start: '2026-06-15',
       });
 
       expect(result.schema).toBe('mbp-10');
@@ -180,7 +186,7 @@ describe('TimeseriesClient', () => {
         dataset: 'GLBX.MDP3',
         symbols: 'ES.c.0',
         schema: Schema.MBO,
-        start: '2024-01-01',
+        start: '2026-06-15',
       });
 
       expect(result.schema).toBe('mbo');
@@ -195,7 +201,7 @@ describe('TimeseriesClient', () => {
         dataset: 'GLBX.MDP3',
         symbols: 'ES.c.0',
         schema: Schema.TRADES,
-        start: '2024-01-01',
+        start: '2026-06-15',
       });
 
       expect(result.schema).toBe('trades');
@@ -265,18 +271,14 @@ describe('TimeseriesClient', () => {
       expect(result.recordCount).toBe(1);
     });
 
-    it('should fetch ohlcv-eod (end of day) data', async () => {
-      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCVEODResponse);
-
-      const result = await client.getRange({
+    it('should reject ohlcv-eod outside the first Standard CME policy', async () => {
+      await expect(client.getRange({
         dataset: 'GLBX.MDP3',
         symbols: 'ES.c.0',
         schema: Schema.OHLCV_EOD,
         start: '2024-01-01',
-      });
-
-      expect(result.schema).toBe('ohlcv-eod');
-      expect(result.recordCount).toBe(1);
+      })).rejects.toThrow('ohlcv-eod is not included in the Standard CME entitlement policy');
+      expect(mockHttp.get).not.toHaveBeenCalled();
     });
 
     it('should fetch statistics data', async () => {
@@ -310,20 +312,14 @@ describe('TimeseriesClient', () => {
       expect(result.data).toContain('expiration');
     });
 
-    it('should fetch imbalance data', async () => {
-      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockImbalanceResponse);
-
-      const result = await client.getRange({
-        dataset: 'XNAS.ITCH',
+    it('should reject schemas outside the first Standard CME policy', async () => {
+      await expect(client.getRange({
+        dataset: 'GLBX.MDP3',
         symbols: 'AAPL',
         schema: Schema.IMBALANCE,
         start: '2024-01-01',
-      });
-
-      expect(result.schema).toBe('imbalance');
-      expect(result.recordCount).toBe(1);
-      expect(result.data).toContain('imbalance_qty');
-      expect(result.data).toContain('paired_qty');
+      })).rejects.toThrow('imbalance is not included in the Standard CME entitlement policy');
+      expect(mockHttp.get).not.toHaveBeenCalled();
     });
 
     it('should fetch status data', async () => {
@@ -502,6 +498,19 @@ describe('TimeseriesClient', () => {
         })
       ).rejects.toThrow('Maximum 2000 symbols allowed per request');
     });
+
+    it('should reject ALL_SYMBOLS for direct timeseries requests', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ALL_SYMBOLS',
+          schema: Schema.OHLCV_1H,
+          start: '2026-06-15',
+          end: '2026-06-16',
+        })
+      ).rejects.toThrow('ALL_SYMBOLS is only allowed for batch requests');
+      expect(mockHttp.get).not.toHaveBeenCalled();
+    });
   });
 
   describe('Parameter Validation', () => {
@@ -601,17 +610,25 @@ describe('TimeseriesClient', () => {
       );
     });
 
-    it('should reject long explicit ranges for minute bars', async () => {
-      await expect(
-        client.getRange({
-          dataset: 'GLBX.MDP3',
-          symbols: 'ES.c.0',
-          schema: Schema.OHLCV_1M,
+    it('should allow long L0 minute-bar ranges under Standard CME', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1MResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1M,
+        start: '2024-01-01',
+        end: '2024-03-01',
+      });
+
+      expect(mockHttp.get).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          schema: 'ohlcv-1m',
           start: '2024-01-01',
           end: '2024-03-01',
         })
-      ).rejects.toThrow('ohlcv-1m queries are limited to 31 days');
-      expect(mockHttp.get).not.toHaveBeenCalled();
+      );
     });
 
     it('should accept short explicit ranges for minute bars', async () => {
@@ -635,16 +652,50 @@ describe('TimeseriesClient', () => {
       );
     });
 
-    it('should reject long explicit ranges for hourly bars', async () => {
+    it('should allow long L0 hourly ranges under Standard CME', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1H,
+        start: '2024-01-01',
+        end: '2025-02-01',
+      });
+
+      expect(mockHttp.get).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          schema: 'ohlcv-1h',
+          start: '2024-01-01',
+          end: '2025-02-01',
+        })
+      );
+    });
+
+    it('should reject L1 ranges outside the rolling last 12 months', async () => {
       await expect(
         client.getRange({
           dataset: 'GLBX.MDP3',
           symbols: 'ES.c.0',
-          schema: Schema.OHLCV_1H,
-          start: '2024-01-01',
-          end: '2025-02-01',
+          schema: Schema.TRADES,
+          start: '2025-06-15',
+          end: '2026-06-16',
         })
-      ).rejects.toThrow('ohlcv-1h queries are limited to 366 days');
+      ).rejects.toThrow('trades is only covered by Standard CME for the rolling last 12 months');
+      expect(mockHttp.get).not.toHaveBeenCalled();
+    });
+
+    it('should reject L2 and L3 ranges outside the rolling last 1 month', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.MBO,
+          start: '2026-05-15',
+          end: '2026-06-16',
+        })
+      ).rejects.toThrow('mbo is only covered by Standard CME for the rolling last 1 month');
       expect(mockHttp.get).not.toHaveBeenCalled();
     });
 
@@ -855,16 +906,19 @@ value1, value2 ,value3 `;
       expect(schemas).toContain(Schema.MBP_10);
       expect(schemas).toContain(Schema.MBO);
       expect(schemas).toContain(Schema.TRADES);
+      expect(schemas).toContain(Schema.TBBO);
+      expect(schemas).toContain(Schema.BBO_1S);
+      expect(schemas).toContain(Schema.BBO_1M);
       expect(schemas).toContain(Schema.OHLCV_1S);
       expect(schemas).toContain(Schema.OHLCV_1M);
       expect(schemas).toContain(Schema.OHLCV_1H);
       expect(schemas).toContain(Schema.OHLCV_1D);
-      expect(schemas).toContain(Schema.OHLCV_EOD);
       expect(schemas).toContain(Schema.STATISTICS);
       expect(schemas).toContain(Schema.DEFINITION);
-      expect(schemas).toContain(Schema.IMBALANCE);
       expect(schemas).toContain(Schema.STATUS);
-      expect(schemas).toHaveLength(13);
+      expect(schemas).not.toContain(Schema.OHLCV_EOD);
+      expect(schemas).not.toContain(Schema.IMBALANCE);
+      expect(schemas).toHaveLength(14);
     });
 
     it('should return all available symbol types', () => {
@@ -907,7 +961,7 @@ value1, value2 ,value3 `;
 
       await expect(
         client.getRange({
-          dataset: 'PREMIUM',
+          dataset: 'GLBX.MDP3',
           symbols: 'ES.c.0',
           schema: Schema.OHLCV_1H,
           start: '2024-01-01',
@@ -982,20 +1036,16 @@ value1, value2 ,value3 `;
       ).rejects.toThrow(/Invalid date/);
     });
 
-    it('should accept Feb 30 as valid (JS Date auto-converts to Mar 1)', async () => {
-      // JavaScript Date constructor accepts Feb 30 and converts it to Mar 1
-      // This is standard JS behavior, not a bug
-      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
-
-      await client.getRange({
-        dataset: 'GLBX.MDP3',
-        symbols: 'ES.c.0',
-        schema: Schema.OHLCV_1H,
-        start: '2024-02-30T12:00:00Z',  // Auto-converts to Mar 1
-      });
-
-      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
-      expect(call[1].start).toBe('2024-02-30T12:00:00Z');  // Preserved as-is
+    it('should reject impossible calendar dates in ISO timestamps', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-02-30T12:00:00Z',
+        })
+      ).rejects.toThrow('start must be a valid ISO 8601 timestamp or YYYY-MM-DD date');
+      expect(mockHttp.get).not.toHaveBeenCalled();
     });
 
     it('should reject invalid end date when start is valid', async () => {
@@ -1076,21 +1126,29 @@ value1, value2 ,value3 `;
   });
 
   describe('Schema Edge Cases', () => {
-    it('should handle all 13 schemas without errors', async () => {
+    it('should handle all Standard CME schemas without errors', async () => {
       const schemas = [
-        Schema.MBP_1, Schema.MBP_10, Schema.MBO, Schema.TRADES,
-        Schema.OHLCV_1S, Schema.OHLCV_1M, Schema.OHLCV_1H, Schema.OHLCV_1D, Schema.OHLCV_EOD,
-        Schema.STATISTICS, Schema.DEFINITION, Schema.IMBALANCE, Schema.STATUS,
+        { schema: Schema.MBP_1, start: '2026-06-15' },
+        { schema: Schema.MBP_10, start: '2026-06-15' },
+        { schema: Schema.MBO, start: '2026-06-15' },
+        { schema: Schema.TRADES, start: '2026-06-15' },
+        { schema: Schema.OHLCV_1S, start: '2024-01-01' },
+        { schema: Schema.OHLCV_1M, start: '2024-01-01' },
+        { schema: Schema.OHLCV_1H, start: '2024-01-01' },
+        { schema: Schema.OHLCV_1D, start: '2024-01-01' },
+        { schema: Schema.STATISTICS, start: '2024-01-01' },
+        { schema: Schema.DEFINITION, start: '2024-01-01' },
+        { schema: Schema.STATUS, start: '2024-01-01' },
       ];
 
-      for (const schema of schemas) {
+      for (const { schema, start } of schemas) {
         vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 
         const result = await client.getRange({
           dataset: 'GLBX.MDP3',
           symbols: 'ES.c.0',
           schema,
-          start: '2024-01-01',
+          start,
         });
 
         expect(result.schema).toBe(schema);
@@ -1195,19 +1253,17 @@ value1, value2 ,value3 `;
       expect(call[1].limit).toBe(1);
     });
 
-    it('should accept very large limit', async () => {
-      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
-
-      await client.getRange({
-        dataset: 'GLBX.MDP3',
-        symbols: 'ES.c.0',
-        schema: Schema.OHLCV_1H,
-        start: '2024-01-01',
-        limit: 1000000,
-      });
-
-      const call = vi.mocked(mockHttp.get).mock.calls[0] as [string, Record<string, any>];
-      expect(call[1].limit).toBe(1000000);
+    it('should reject limits above MCP_DIRECT_MAX_RECORDS', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          limit: 1000000,
+        })
+      ).rejects.toThrow('Direct timeseries_get_range limit cannot exceed 10000');
+      expect(mockHttp.get).not.toHaveBeenCalled();
     });
   });
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertDirectTimeseriesLimit, getDirectMaxRecords } from "../../../src/api/direct-response-policy.js";
 import { TimeseriesClient } from "../../../src/api/timeseries-client.js";
 import { DataBentoHTTP } from "../../../src/http/databento-http.js";
 
@@ -17,9 +18,15 @@ async function main() {
   const schema = args[2] || "ohlcv-1d";
   const start = args[3] || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
   const end = args[4];
-  const limit = args[5] ? parseInt(args[5], 10) : undefined;
 
   try {
+    const maxRecords = getDirectMaxRecords();
+    const limit = args[5] ? parseInt(args[5], 10) : maxRecords;
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error("limit must be a positive integer");
+    }
+    assertDirectTimeseriesLimit(limit);
+
     const http = new DataBentoHTTP(DATABENTO_API_KEY!);
     const client = new TimeseriesClient(http);
 

@@ -43,8 +43,12 @@ describe("Claude Code skill contract", () => {
   }>("package.json");
   const tsconfig = readJson<{ compilerOptions: { module: string } }>("tsconfig.json");
   const manifest = readJson<SkillManifest>("skills/manifest.json");
+  const batchTools = readJson<Array<{ name: string; inputSchema: { properties: Record<string, any> } }>>("src/api/batch-tools.json");
   const skill = manifest.skills.find((entry) => entry.name === "databento");
   const skillText = readText("skills/databento/SKILL.md");
+  const batchScriptText = readText("skills/databento/scripts/batch.ts");
+  const batchHandlersText = readText("src/api/batch-handlers.ts");
+  const readmeText = readText("README.md");
   const installerText = readText("scripts/install-skills.sh");
 
   it("keeps manifest runtime metadata aligned with package and TypeScript output", () => {
@@ -104,7 +108,7 @@ describe("Claude Code skill contract", () => {
       "metadata get-cost dataset start",
       "metadata get-dataset-range [dataset]",
       "batch list [states]",
-      "batch submit dataset symbols schema start [end]",
+      "batch submit dataset symbols schema start end",
       "batch download <job_id>",
       "reference search dataset symbols start_date [end_date] [limit]",
       "reference corporate-actions dataset symbols start_date [end_date]",
@@ -149,6 +153,51 @@ describe("Claude Code skill contract", () => {
     expect(skillText).toContain("Side effects");
     expect(skillText).toContain("batch");
     expect(skillText).toContain("paid");
+  });
+
+  it("requires zero-cost preflight before skill batch submit", () => {
+    expect(batchScriptText).toContain("MetadataClient");
+    expect(batchScriptText).toContain("metadataClient.getCost");
+    expect(batchScriptText).toContain("MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH");
+    expect(batchScriptText).toContain("MCP_ZERO_COST_EPSILON_USD");
+    expect(batchScriptText).toContain("Databento estimated this covered Standard CME request as billable");
+  });
+
+  it("does not document stale paid GLBX trades examples under Standard CME", () => {
+    expect(readmeText).not.toContain('"schema": "trades",\n  "start": "2024-10-01"');
+    expect(readmeText).not.toContain('"cost_usd": 15.50');
+  });
+
+  it("keeps static batch submit schema constraints aligned with MCP", () => {
+    const submitSchema = batchTools.find((tool) => tool.name === "batch_submit_job")?.inputSchema;
+
+    expect(submitSchema?.properties.symbols).toEqual(
+      expect.objectContaining({
+        minItems: 1,
+        maxItems: 2000,
+      })
+    );
+    expect(submitSchema?.properties.limit).toEqual(
+      expect.objectContaining({
+        type: "integer",
+        minimum: 1,
+      })
+    );
+    expect(submitSchema?.properties.split_size).toEqual(
+      expect.objectContaining({
+        type: "integer",
+        minimum: 1,
+      })
+    );
+    expect(batchHandlersText).toContain("split_size: {");
+    expect(batchHandlersText).toContain('type: "integer"');
+    expect(batchHandlersText).toContain("minimum: 1");
+  });
+
+  it("keeps historical skill examples within Standard CME scope", () => {
+    expect(skillText).not.toContain("Get trades for SPY");
+    expect(skillText).not.toContain("Fetch MBP-1 data for TSLA");
+    expect(skillText).not.toContain("trade data for SPY");
   });
 
   it("documents reference dataset and session key-check semantics accurately", () => {

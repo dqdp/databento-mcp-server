@@ -12,7 +12,7 @@ import type {
   BatchDownloadInfo,
   BatchDownloadResult,
 } from "../types/batch.js";
-import { assertExplicitHistoricalRangeWithinLimit } from "./historical-range-guard.js";
+import { assertStandardCmeHistoricalEntitlement } from "./entitlement-policy.js";
 
 function getBatchDownloadSize(job: BatchJobInfo): number | undefined {
   return job.package_size ?? job.actual_size ?? job.total_size;
@@ -237,6 +237,10 @@ export class BatchClient {
       throw new Error("Start date is required");
     }
 
+    if (!params.end || params.end.trim().length === 0) {
+      throw new Error("End date is required");
+    }
+
     // Validate date format (basic check)
     const dateRegex = /^\d{4}-\d{2}-\d{2}/;
     if (!dateRegex.test(params.start)) {
@@ -247,7 +251,8 @@ export class BatchClient {
       throw new Error("End date must be in YYYY-MM-DD or ISO 8601 format");
     }
 
-    assertExplicitHistoricalRangeWithinLimit({
+    assertStandardCmeHistoricalEntitlement({
+      dataset: params.dataset,
       schema: params.schema,
       start: params.start,
       end: params.end,

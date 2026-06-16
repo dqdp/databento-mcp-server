@@ -21,9 +21,16 @@ Completed baseline:
 - Databento timeseries, symbology, reference, and batch contract fixes are in place.
 - `get_historical_bars` keeps intraday `1h`/`H4` counts capped at 100 but allows
   daily `1d` counts up to 10,000 for full-history-style daily pulls.
-- Detailed historical timeseries and batch ranges are cost-guarded for explicit
-  `start`/`end` requests: tick/order-book/trades/`ohlcv-1s` max 1 day,
-  `ohlcv-1m` max 31 days, and `ohlcv-1h` max 366 days.
+- Historical `timeseries_get_range` and `batch_submit_job` enforce the Standard
+  CME entitlement profile:
+  - L0 `ohlcv-1s`/`ohlcv-1m`/`ohlcv-1h`/`ohlcv-1d`/`definition`/`statistics`/`status`
+    allow the full available window.
+  - L1 `trades`/`mbp-1`/`tbbo`/`bbo-1s`/`bbo-1m` allow the rolling last 12 months.
+  - L2 `mbp-10` and L3 `mbo` allow the rolling last 1 month.
+  - Direct `timeseries_get_range` rejects `ALL_SYMBOLS`, defaults omitted
+    `limit` to `MCP_DIRECT_MAX_RECORDS=10000`, and rejects larger direct limits.
+  - `batch_submit_job` requires explicit `end`, allows `ALL_SYMBOLS`, and runs a
+    zero-cost Databento `metadata.get_cost` preflight by default.
 - GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, stdio smoke, Streamable HTTP smoke, and installed-skill smoke.
 - Package contents are allowlisted and verified with `npm pack --dry-run`.
 - Claude Code skill packaging uses `SKILL.md`, and installed skill runtime imports are verified.
@@ -77,7 +84,8 @@ Review workflow for completed implementation slices:
 - If either reviewer reports relevant P0/P1 findings, fix them, rerun tests and
   the full gate, then rerun both clean-context reviewers.
 - Treat P2 findings as in-scope only when they are tightly related and low risk;
-  otherwise document them as follow-up.
+  otherwise document them as follow-up. Do not rerun the reviewer pair only for
+  P2/P3 findings.
 
 ## Repair Order
 

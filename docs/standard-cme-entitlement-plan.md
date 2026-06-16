@@ -4,10 +4,12 @@ Last updated: 2026-06-16.
 
 ## Status
 
-Draft for discussion. No implementation has started from this plan yet.
+Implementation in progress. The core entitlement policy, MCP schema enforcement,
+direct response guard, batch `end` requirement, and batch zero-cost preflight
+are implemented with offline tests. Live Databento checks remain opt-in only.
 
 This plan replaces the earlier dollar-budget framing for Databento guardrails.
-For the intended deployment, the server should enforce the Databento Standard
+For the intended deployment, the server enforces the Databento Standard
 CME subscription contract instead of an arbitrary `max_cost_usd` gate.
 
 The plan is based on the user-provided Databento portal screenshot for CME
@@ -69,7 +71,7 @@ Historical entitlements:
 | Level | Schemas | Standard CME window |
 | --- | --- | --- |
 | L0 | `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`, `ohlcv-1d`, `definition`, `statistics`, `status` | 16+ years |
-| L1 | `mbp-1`, `tbbo`, `bbo`, `trades` | Last 12 months |
+| L1 | `mbp-1`, `tbbo`, `bbo-1s`, `bbo-1m`, `trades` | Last 12 months |
 | L2 | `mbp-10` | Last 1 month |
 | L3 | `mbo` | Last 1 month |
 
@@ -97,22 +99,21 @@ windows are rolling time windows, not calendar-month buckets:
   `MCP_REMOTE_ENABLE_BATCH=true` operator opt-in.
 - `ohlcv-eod` is not included in the first Standard CME policy because the
   portal entitlement lists OHLCV `1s/1m/1h/1d`, not `eod`.
-- `bbo` is included in the Standard CME entitlement model, but should only be
-  exposed by a tool after Databento schema support for the project's endpoints
-  is verified.
+- Databento exposes Standard CME BBO as `bbo-1s` and `bbo-1m` for GLBX.MDP3.
+  Use those schema names rather than a generic `bbo` schema.
 - Start with a hard-coded `standard-cme` profile plus tests. Move to JSON config
   only when another plan/profile is needed.
 
-## Current Behavior To Replace
+## Replaced Behavior
 
-The current detailed historical range guard is too strict for Standard CME:
+The previous detailed historical range guard was too strict for Standard CME:
 
 - `trades`, `tbbo`, `mbp-1`, `mbp-10`, `mbo`, and `ohlcv-1s` are capped at 1
   explicit day.
 - `ohlcv-1m` is capped at 31 days.
 - `ohlcv-1h` is capped at 366 days.
 
-Under Standard CME this should change:
+Under Standard CME this changed to:
 
 - L0 schemas should allow the full available historical window.
 - L1 schemas should allow the rolling last 12 months.
@@ -227,11 +228,11 @@ Suggested defaults:
 
 ```text
 MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH=true
-MCP_ZERO_COST_EPSILON_USD=0.01
+MCP_ZERO_COST_EPSILON_USD=0
 ```
 
-If the preflight cost is greater than the epsilon for a request that passed the
-Standard CME entitlement policy, return a tool error such as:
+If the preflight cost is positive for a request that passed the Standard CME
+entitlement policy, return a tool error such as:
 
 ```text
 Databento estimated this covered Standard CME request as billable. Refusing to
@@ -239,6 +240,7 @@ submit batch job automatically; verify the account plan or entitlement policy.
 ```
 
 This preflight is intentionally a mismatch detector, not a budget mechanism.
+`MCP_ZERO_COST_EPSILON_USD` exists only as an explicit operator override.
 Databento documents that `get_cost` respects flat-rate plan discounts, but it
 can over-report for some non-discrete time ranges. Prefer normalizing batch
 `start`/`end` to clean boundaries where possible.
@@ -252,9 +254,9 @@ Add tests first for a deterministic `standard-cme` policy:
 - Allows `ohlcv-1d` for a long historical range.
 - Rejects `ohlcv-eod` in the first Standard CME policy.
 - Allows `definition`, `statistics`, and `status` for long historical ranges.
-- Allows `trades`, `tbbo`, `bbo`, and `mbp-1` inside the rolling last 12
+- Allows `trades`, `tbbo`, `bbo-1s`, `bbo-1m`, and `mbp-1` inside the rolling last 12
   months.
-- Rejects `trades`, `tbbo`, `bbo`, and `mbp-1` older than the rolling last 12
+- Rejects `trades`, `tbbo`, `bbo-1s`, `bbo-1m`, and `mbp-1` older than the rolling last 12
   months.
 - Allows `mbp-10` and `mbo` inside the rolling last 1 month.
 - Rejects `mbp-10` and `mbo` older than the rolling last 1 month.
@@ -276,10 +278,9 @@ Add tests showing invalid requests do not call injected clients:
 - `batch_submit_job` rejects missing `end`.
 - `batch_submit_job` calls metadata cost preflight when
   `MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH=true`.
-- `batch_submit_job` rejects a covered request when preflight cost is above
-  `MCP_ZERO_COST_EPSILON_USD`.
-- `batch_submit_job` allows a covered request when preflight cost is zero or
-  within the configured epsilon.
+- `batch_submit_job` rejects a covered request when preflight cost is positive
+  by default.
+- `batch_submit_job` allows a covered request when preflight cost is zero.
 - Errors are returned as MCP tool errors with `isError: true`.
 
 Then wire the policy into:
@@ -354,11 +355,8 @@ Do not run live Databento API tests in the default gate.
 
 ## Implementation Verification Notes
 
-- Verify Databento accepts `mbo` in `batch_submit_job` before exposing L3 batch
-  export. If supported, add `mbo` to the batch schema enum and tests.
-- Verify Databento accepts `bbo` in the project's timeseries and batch endpoint
-  paths before exposing it in tool schema enums. Until verified, keep `bbo` in
-  the entitlement model but not necessarily in public tool schemas.
+- Databento's `mbo`, `bbo-1s`, and `bbo-1m` schema names are exposed in the
+  public MCP schema enums and covered by offline tests.
 - Keep `metadata.get_cost` preflight behind
   `MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH=true` so tests can inject a mock
   cost client and default CI stays offline.

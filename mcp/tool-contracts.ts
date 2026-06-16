@@ -1,7 +1,8 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import * as zodToJsonSchemaModule from "zod-to-json-schema";
-import { assertExplicitHistoricalRangeWithinLimit } from "../src/api/historical-range-guard.js";
+import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
+import { assertStandardCmeHistoricalEntitlement } from "../src/api/entitlement-policy.js";
 import {
   MAX_DAILY_HISTORICAL_BARS,
   MAX_INTRADAY_HISTORICAL_BARS,
@@ -15,21 +16,25 @@ const TIMESERIES_SCHEMAS = [
   "mbp-10",
   "mbo",
   "trades",
+  "tbbo",
+  "bbo-1s",
+  "bbo-1m",
   "ohlcv-1s",
   "ohlcv-1m",
   "ohlcv-1h",
   "ohlcv-1d",
-  "ohlcv-eod",
   "statistics",
   "definition",
-  "imbalance",
   "status",
 ] as const;
 const BATCH_SCHEMAS = [
   "trades",
   "tbbo",
+  "bbo-1s",
+  "bbo-1m",
   "mbp-1",
   "mbp-10",
+  "mbo",
   "ohlcv-1s",
   "ohlcv-1m",
   "ohlcv-1h",
@@ -37,7 +42,6 @@ const BATCH_SCHEMAS = [
   "definition",
   "statistics",
   "status",
-  "imbalance",
 ] as const;
 const BATCH_ENCODINGS = ["dbn", "csv", "json"] as const;
 const BATCH_COMPRESSIONS = ["none", "zstd", "gzip"] as const;
@@ -86,24 +90,27 @@ function toolArgsWithDateRange<T extends z.ZodRawShape>(
   });
 }
 
-function toolArgsWithHistoricalRangeLimit<T extends z.ZodRawShape>(
+function toolArgsWithStandardCmeEntitlement<T extends z.ZodRawShape>(
   shape: T,
+  datasetKey: string,
   startKey: string,
   endKey: string,
   schemaKey: string
 ): ToolArgumentSchema {
   return toolArgsWithDateRange(shape, startKey, endKey).superRefine((args, context) => {
     const parsedArgs = args as Record<string, unknown>;
+    const dataset = parsedArgs[datasetKey];
     const schema = parsedArgs[schemaKey];
     const start = parsedArgs[startKey];
     const end = parsedArgs[endKey];
 
-    if (typeof schema !== "string" || typeof start !== "string") {
+    if (typeof dataset !== "string" || typeof schema !== "string" || typeof start !== "string") {
       return;
     }
 
     try {
-      assertExplicitHistoricalRangeWithinLimit({
+      assertStandardCmeHistoricalEntitlement({
+        dataset,
         schema,
         start,
         end: typeof end === "string" ? end : undefined,
@@ -114,6 +121,46 @@ function toolArgsWithHistoricalRangeLimit<T extends z.ZodRawShape>(
         path: [endKey],
         message: error instanceof Error ? error.message : String(error),
       });
+    }
+  });
+}
+
+function containsAllSymbolsToken(symbols: string): boolean {
+  return symbols
+    .split(",")
+    .map((symbol) => symbol.trim().toUpperCase())
+    .includes("ALL_SYMBOLS");
+}
+
+function directTimeseriesArgs<T extends z.ZodRawShape>(shape: T): ToolArgumentSchema {
+  return toolArgsWithStandardCmeEntitlement(
+    shape,
+    "dataset",
+    "start",
+    "end",
+    "schema"
+  ).superRefine((args, context) => {
+    const parsedArgs = args as Record<string, unknown>;
+    const limit = parsedArgs.limit;
+    const symbols = parsedArgs.symbols;
+
+    if (typeof symbols === "string" && containsAllSymbolsToken(symbols)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["symbols"],
+        message: "ALL_SYMBOLS is only allowed for batch_submit_job, not direct timeseries_get_range",
+      });
+    }
+
+    if (typeof limit === "number") {
+      const maxRecords = getDirectMaxRecords();
+      if (limit > maxRecords) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["limit"],
+          message: `Direct timeseries_get_range limit cannot exceed ${maxRecords}`,
+        });
+      }
     }
   });
 }
@@ -268,8 +315,8 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "timeseries_get_range",
-    description: "Get historical market data with flexible schemas and date ranges. Explicit ranges for detailed schemas are capped to control Databento costs.",
-    schema: toolArgsWithHistoricalRangeLimit({
+    description: "Get historical market data with flexible schemas and date ranges. Direct responses are record-limited; use batch_submit_job for ALL_SYMBOLS or larger covered exports.",
+    schema: directTimeseriesArgs({
       dataset: nonEmptyString("Dataset code (e.g., 'GLBX.MDP3' for CME, 'XNAS.ITCH' for Nasdaq)"),
       symbols: nonEmptyString("Comma-separated list of instrument symbols (up to 2000)"),
       schema: z.enum(TIMESERIES_SCHEMAS).describe("Data schema type"),
@@ -277,8 +324,8 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
       end: dateLike("Optional exclusive end date (ISO 8601 or YYYY-MM-DD)").optional(),
       stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type, defaults to 'raw_symbol'").optional(),
       stype_out: z.enum(SYMBOLOGY_TYPES).describe("Output symbology type, defaults to 'instrument_id'").optional(),
-      limit: z.number().int().min(1).describe("Maximum number of records to return").optional(),
-    }, "start", "end", "schema"),
+      limit: z.number().int().min(1).describe("Maximum records to return; defaults to MCP_DIRECT_MAX_RECORDS (10000) and cannot exceed it").optional(),
+    }),
   },
   {
     name: "metadata_list_datasets",
@@ -333,13 +380,13 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "batch_submit_job",
-    description: "Submit a Databento batch data download job for historical datasets. This may be paid/cost-bearing; confirm dataset, symbols, schema, date range, and cost risk before submitting. Explicit ranges for detailed schemas are capped to control Databento costs.",
-    schema: toolArgsWithHistoricalRangeLimit({
+    description: "Submit a Databento batch data download job for covered Standard CME historical data. Batch supports ALL_SYMBOLS and large entitlement-covered exports after zero-cost preflight.",
+    schema: toolArgsWithStandardCmeEntitlement({
       dataset: nonEmptyString("Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)"),
       symbols: z.array(nonEmptyString("Symbol")).min(1).max(2000).describe("Array of symbols (max 2000)"),
       schema: z.enum(BATCH_SCHEMAS).describe("Data record schema"),
       start: dateLike("Start date (YYYY-MM-DD or ISO 8601)"),
-      end: dateLike("Optional end date (YYYY-MM-DD or ISO 8601)").optional(),
+      end: dateLike("Exclusive end date (YYYY-MM-DD or ISO 8601)"),
       encoding: z.enum(BATCH_ENCODINGS).describe("Output encoding (default: dbn)").optional(),
       compression: z.enum(BATCH_COMPRESSIONS).describe("Compression type (default: zstd)").optional(),
       stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type (default: raw_symbol)").optional(),
@@ -348,7 +395,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
       split_size: z.number().int().positive().describe("Split files by size in bytes").optional(),
       split_symbols: z.boolean().describe("Split files by symbol (default: false)").optional(),
       limit: z.number().int().positive().describe("Limit number of records").optional(),
-    }, "start", "end", "schema"),
+    }, "dataset", "start", "end", "schema"),
   },
   {
     name: "batch_list_jobs",
@@ -445,7 +492,17 @@ export function parseDatabentoToolArguments(
     return { status: "unknown" };
   }
 
-  const result = schema.safeParse(args);
+  let result: ReturnType<ToolArgumentSchema["safeParse"]>;
+  try {
+    result = schema.safeParse(args);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "invalid",
+      error: `Invalid tool arguments for ${toolName}: ${message}`,
+    };
+  }
+
   if (!result.success) {
     return {
       status: "invalid",

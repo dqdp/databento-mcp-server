@@ -40,16 +40,18 @@ export type SymbologyType =
 export type DataSchema =
   | "trades"
   | "tbbo"
+  | "bbo-1s"
+  | "bbo-1m"
   | "mbp-1"
   | "mbp-10"
+  | "mbo"
   | "ohlcv-1s"
   | "ohlcv-1m"
   | "ohlcv-1h"
   | "ohlcv-1d"
   | "definition"
   | "statistics"
-  | "status"
-  | "imbalance";
+  | "status";
 
 /**
  * Request parameters for submitting a batch job
@@ -60,7 +62,7 @@ export interface BatchJobRequest {
   symbols: string[];         // List of symbols (up to 2,000)
   schema: DataSchema;        // Data record schema
   start: string;             // Start date (YYYY-MM-DD or ISO 8601)
-  end?: string;              // End date (YYYY-MM-DD or ISO 8601), optional
+  end: string;                // End date (YYYY-MM-DD or ISO 8601)
 
   // Optional parameters
   encoding?: DataEncoding;   // Output encoding (default: dbn)

@@ -50,9 +50,9 @@ export DATABENTO_API_KEY="db-your-api-key-here"
 | `get-historical` | `databento/scripts/get-historical.js` | `node ~/.claude/skills/databento/scripts/get-historical.js ES 1d 20` | Live Databento API read. Args: symbol `ES`/`NQ`, timeframe `1h`/`H4`/`1d`; count `1..100` for `1h`/`H4`, `1..10000` for `1d`. |
 | `get-session` | `databento/scripts/get-session.js` | `node ~/.claude/skills/databento/scripts/get-session.js` | Local session calculation after env/key-format check; optional timestamp argument. |
 | `resolve-symbols` | `databento/scripts/resolve-symbols.js` | `node ~/.claude/skills/databento/scripts/resolve-symbols.js GLBX.MDP3 ES.FUT raw_symbol instrument_id 2026-06-16` | Live Databento API read. Args: dataset, comma-separated symbols, input type, output type, start date, optional end date. |
-| `timeseries` | `databento/scripts/timeseries.js` | `node ~/.claude/skills/databento/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. Detailed explicit ranges are capped. |
+| `timeseries` | `databento/scripts/timeseries.js` | `node ~/.claude/skills/databento/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. Direct output is capped by `MCP_DIRECT_MAX_RECORDS` (default 10000). |
 | `metadata` | `databento/scripts/metadata.js` | `node ~/.claude/skills/databento/scripts/metadata.js list-datasets` | Live Databento API read. Commands: `list-datasets`, `list-schemas`, `list-publishers`, `list-fields`, `get-cost`, `get-dataset-range`. |
-| `batch` | `databento/scripts/batch.js` | `node ~/.claude/skills/databento/scripts/batch.js list` | Live Databento API. `list` and `download` read account/job metadata; `submit` creates a batch job and may be paid. |
+| `batch` | `databento/scripts/batch.js` | `node ~/.claude/skills/databento/scripts/batch.js list` | Live Databento API. `list` and `download` read account/job metadata; `submit` runs zero-cost preflight before creating a batch job. |
 | `reference` | `databento/scripts/reference.js` | `node ~/.claude/skills/databento/scripts/reference.js search XNAS.ITCH AAPL 2026-06-16` | Live Databento API read. Commands: `search`, `corporate-actions`, `adjustments`. |
 
 ### Multi-Command Argument Forms
@@ -66,7 +66,7 @@ Use these positional forms when calling scripts that dispatch by subcommand:
 - `metadata get-cost dataset start`
 - `metadata get-dataset-range [dataset]`
 - `batch list [states]`
-- `batch submit dataset symbols schema start [end]`
+- `batch submit dataset symbols schema start end`
 - `batch download <job_id>`
 - `reference search dataset symbols start_date [end_date] [limit]`
 - `reference corporate-actions dataset symbols start_date [end_date]`
@@ -78,15 +78,19 @@ date range rather than a Databento dataset request parameter.
 
 Confirm the dataset, symbols, schema, date range, and cost risk with the user
 before running `batch submit`, because it creates a Databento batch job and may
-be paid.
+be paid if preflight is disabled or overridden. `batch submit` requires an
+explicit `end` and runs Databento `metadata.get_cost` zero-cost preflight by
+default.
 
-Detailed historical range guardrails for explicit `start`/`end` ranges, where
-the schema is supported by the selected command:
+Historical Standard CME guardrails:
 
-- `trades`, `tbbo`, `mbp-1`, `mbp-10`, `mbo`, and `ohlcv-1s`: max 1 day.
-- `ohlcv-1m`: max 31 days.
-- `ohlcv-1h`: max 366 days.
-- Daily/eod bars are not capped by this detailed-schema guard.
+- L0 `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`, `ohlcv-1d`, `definition`,
+  `statistics`, and `status`: full available history.
+- L1 `trades`, `mbp-1`, `tbbo`, `bbo-1s`, and `bbo-1m`: rolling last 12 months.
+- L2 `mbp-10` and L3 `mbo`: rolling last 1 month.
+- `timeseries` rejects `ALL_SYMBOLS` and caps direct output with
+  `MCP_DIRECT_MAX_RECORDS` (default 10000).
+- Use `batch submit` for large covered exports, including `ALL_SYMBOLS`.
 
 ## When to Use This Skill
 
@@ -121,13 +125,13 @@ Convert symbols between different types (raw_symbol, instrument_id, continuous, 
 
 ### 5. Historical Timeseries
 Stream supported market data schemas (trades, MBP, OHLCV) across date ranges.
-Detailed explicit ranges are capped to avoid accidental high-cost requests.
+Direct command output is capped to avoid giant terminal responses.
 
-**Usage**: "Get trades for SPY on 2024-01-15" or "Fetch MBP-1 data for TSLA"
+**Usage**: "Get daily OHLCV data for ES.c.0" or "Fetch MBP-1 data for ES.c.0 from the last week"
 
 ### 6. Batch Downloads
 Submit jobs for large historical dataset downloads.
-Detailed explicit ranges are capped before submitting a paid job.
+Use for large covered exports after confirming scope and cost risk.
 
 **Usage**: "Submit batch job for ES daily data" or "List my batch jobs"
 
@@ -156,7 +160,7 @@ Access security master database, corporate actions, and price adjustments.
 > "Submit a batch job for ES daily OHLCV data from Jan 1 to Dec 31, 2024"
 
 **Metadata query**:
-> "What's the cost to download trade data for SPY from Jan-Mar 2024?"
+> "What's the cost to download ES daily OHLCV data from Jan 2010 to today?"
 
 **Reference data**:
 > "Get all dividend payments for AAPL in 2024"

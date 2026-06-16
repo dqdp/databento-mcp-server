@@ -16,6 +16,7 @@ import { TimeseriesClient } from "../src/api/timeseries-client.js";
 import { ReferenceClient } from "../src/api/reference-client.js";
 import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
+import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
@@ -35,6 +36,69 @@ function countBatchSymbols(symbols: string[] | string): number {
 
 function getBatchDownloadSize(job: { package_size?: number; actual_size?: number; total_size?: number }): number | undefined {
   return job.package_size ?? job.actual_size ?? job.total_size;
+}
+
+function parseBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === "") {
+    return defaultValue;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  throw new Error(`${name} must be a boolean value`);
+}
+
+function parseNumberEnv(name: string, defaultValue: number): number {
+  const rawValue = process.env[name];
+  if (rawValue === undefined || rawValue.trim() === "") {
+    return defaultValue;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+
+  return parsed;
+}
+
+async function assertBatchCostPreflight(
+  metadataClient: DatabentoMcpClients["metadataClient"],
+  params: BatchJobRequest
+): Promise<void> {
+  if (!parseBooleanEnv("MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH", true)) {
+    return;
+  }
+
+  const cost = await metadataClient.getCost({
+    dataset: params.dataset,
+    symbols: params.symbols,
+    schema: params.schema,
+    start: params.start,
+    end: params.end,
+    stype_in: params.stype_in,
+    stype_out: params.stype_out,
+  });
+  const totalCost = Number(cost.total_cost);
+  const epsilon = parseNumberEnv("MCP_ZERO_COST_EPSILON_USD", 0);
+
+  if (!Number.isFinite(totalCost)) {
+    throw new Error("Databento cost preflight did not return a finite total_cost");
+  }
+
+  if (totalCost > epsilon) {
+    throw new Error(
+      "Databento estimated this covered Standard CME request as billable. " +
+        "Refusing to submit batch job automatically; verify the account plan or entitlement policy."
+    );
+  }
 }
 
 export interface DatabentoMcpClients {
@@ -260,6 +324,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           stype_out?: string;
           limit?: number;
         };
+        const effectiveLimit = limit ?? getDirectMaxRecords();
 
         const response = await timeseriesClient.getRange({
           dataset,
@@ -269,7 +334,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           end,
           stype_in,
           stype_out,
-          limit,
+          limit: effectiveLimit,
         });
 
         const result = {
@@ -456,6 +521,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
 
       case "batch_submit_job": {
         const params = args as unknown as BatchJobRequest;
+        await assertBatchCostPreflight(metadataClient, params);
         const jobInfo = await batchClient.submitJob(params);
 
         return {

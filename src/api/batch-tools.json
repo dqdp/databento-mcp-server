@@ -13,11 +13,12 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Array of symbols (max 2000)",
+          "minItems": 1,
           "maxItems": 2000
         },
         "schema": {
           "type": "string",
-          "enum": ["trades", "tbbo", "mbp-1", "mbp-10", "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "definition", "statistics", "status", "imbalance"],
+          "enum": ["trades", "tbbo", "bbo-1s", "bbo-1m", "mbp-1", "mbp-10", "mbo", "ohlcv-1s", "ohlcv-1m", "ohlcv-1h", "ohlcv-1d", "definition", "statistics", "status"],
           "description": "Data record schema"
         },
         "start": {
@@ -26,7 +27,7 @@
         },
         "end": {
           "type": "string",
-          "description": "Optional end date (YYYY-MM-DD or ISO 8601)"
+          "description": "Exclusive end date (YYYY-MM-DD or ISO 8601)"
         },
         "encoding": {
           "type": "string",
@@ -53,7 +54,8 @@
           "description": "Split files by duration (e.g., day, week, month)"
         },
         "split_size": {
-          "type": "number",
+          "type": "integer",
+          "minimum": 1,
           "description": "Split files by size in bytes"
         },
         "split_symbols": {
@@ -61,11 +63,12 @@
           "description": "Split files by symbol (default: false)"
         },
         "limit": {
-          "type": "number",
+          "type": "integer",
+          "minimum": 1,
           "description": "Limit number of records"
         }
       },
-      "required": ["dataset", "symbols", "schema", "start"]
+      "required": ["dataset", "symbols", "schema", "start", "end"]
     }
   },
   {
@@ -78,7 +81,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["received", "queued", "processing", "done", "expired"]
+            "enum": ["queued", "processing", "done", "expired"]
           },
           "description": "Filter by job states"
         },
