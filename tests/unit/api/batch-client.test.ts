@@ -260,6 +260,60 @@ describe("BatchClient", () => {
       const callArgs = postFormSpy.mock.calls[0][1];
       expect(callArgs).toHaveProperty("ts_out", false);
     });
+
+    it("should reject long explicit ranges for minute-bar batch jobs", async () => {
+      const jobRequest = generateBatchJobRequest({
+        schema: "ohlcv-1m",
+        start: "2024-01-01",
+        end: "2024-03-01",
+      });
+
+      await expect(batchClient.submitJob(jobRequest)).rejects.toThrow(
+        "ohlcv-1m queries are limited to 31 days"
+      );
+      expect(mockHTTP.postForm).not.toHaveBeenCalled();
+    });
+
+    it("should reject long explicit ranges for tick-level batch jobs", async () => {
+      const jobRequest = generateBatchJobRequest({
+        schema: "trades",
+        start: "2024-01-01",
+        end: "2024-01-05",
+      });
+
+      await expect(batchClient.submitJob(jobRequest)).rejects.toThrow(
+        "trades queries are limited to 1 day"
+      );
+      expect(mockHTTP.postForm).not.toHaveBeenCalled();
+    });
+
+    it("should not apply intraday range limits to daily-bar batch jobs", async () => {
+      const jobRequest = generateBatchJobRequest({
+        schema: "ohlcv-1d",
+        start: "2020-01-01",
+        end: "2024-01-01",
+      });
+      const jobInfo = generateBatchJobInfo({
+        schema: "ohlcv-1d",
+        start: "2020-01-01T00:00:00Z",
+        end: "2024-01-01T00:00:00Z",
+      });
+      const mockResponse = generateJSONResponse(jobInfo);
+
+      vi.spyOn(mockHTTP, "postForm").mockResolvedValue(mockResponse);
+
+      await batchClient.submitJob(jobRequest);
+
+      expect(mockHTTP.postForm).toHaveBeenCalledWith(
+        "/v0/batch.submit_job",
+        expect.objectContaining({
+          schema: "ohlcv-1d",
+          start: "2020-01-01",
+          end: "2024-01-01",
+        }),
+        { retry: false }
+      );
+    });
   });
 
   describe("listJobs", () => {

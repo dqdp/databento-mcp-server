@@ -37,6 +37,12 @@ const SYMBOL_MAP: Record<string, string> = {
 };
 
 const DATASET = "GLBX.MDP3"; // CME Group Market Data Platform 3
+export const MAX_INTRADAY_HISTORICAL_BARS = 100;
+export const MAX_DAILY_HISTORICAL_BARS = 10000;
+
+function maxHistoricalBarsForTimeframe(timeframe: "1h" | "H4" | "1d"): number {
+  return timeframe === "1d" ? MAX_DAILY_HISTORICAL_BARS : MAX_INTRADAY_HISTORICAL_BARS;
+}
 
 /**
  * DataBento API Client
@@ -136,6 +142,11 @@ export class DataBentoClient {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
 
+    const maxCount = maxHistoricalBarsForTimeframe(timeframe);
+    if (!Number.isInteger(count) || count < 1 || count > maxCount) {
+      throw new Error(`${timeframe} historical bars are limited to ${maxCount} bars`);
+    }
+
     // Calculate date range based on count and timeframe
     const endDate = new Date();
     const startDate = new Date();
@@ -159,7 +170,7 @@ export class DataBentoClient {
       end: endDate.toISOString(),
       schema: schema,
       encoding: "csv",
-      limit: 1000,
+      limit: timeframe === "1d" ? count : 1000,
     };
 
     const response = await this.http.get("/v0/timeseries.get_range", params);

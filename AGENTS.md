@@ -19,6 +19,11 @@ Completed baseline:
 - The MCP TypeScript SDK is updated and verified.
 - Stdio MCP smoke and Vitest integration coverage are active.
 - Databento timeseries, symbology, reference, and batch contract fixes are in place.
+- `get_historical_bars` keeps intraday `1h`/`H4` counts capped at 100 but allows
+  daily `1d` counts up to 10,000 for full-history-style daily pulls.
+- Detailed historical timeseries and batch ranges are cost-guarded for explicit
+  `start`/`end` requests: tick/order-book/trades/`ohlcv-1s` max 1 day,
+  `ohlcv-1m` max 31 days, and `ohlcv-1h` max 366 days.
 - GitHub CI covers Node 22 and 24 with `npm ci`, tests, build, stdio smoke, Streamable HTTP smoke, and installed-skill smoke.
 - Package contents are allowlisted and verified with `npm pack --dry-run`.
 - Claude Code skill packaging uses `SKILL.md`, and installed skill runtime imports are verified.

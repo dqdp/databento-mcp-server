@@ -13,7 +13,8 @@ async function main() {
   // Parse arguments: symbol timeframe count
   const symbol = (args[0]?.toUpperCase() || "ES") as "ES" | "NQ";
   const timeframe = (args[1] || "1d") as "1h" | "H4" | "1d";
-  const count = parseInt(args[2] || "20", 10);
+  const countArgument = args[2] ?? "20";
+  const count = Number(countArgument);
 
   if (!["ES", "NQ"].includes(symbol)) {
     console.error(`Error: Symbol must be ES or NQ, got: ${symbol}`);
@@ -25,8 +26,9 @@ async function main() {
     process.exit(1);
   }
 
-  if (count < 1 || count > 100) {
-    console.error(`Error: Count must be between 1 and 100, got: ${count}`);
+  const maxCount = timeframe === "1d" ? 10000 : 100;
+  if (!Number.isInteger(count) || count < 1 || count > maxCount) {
+    console.error(`Error: Count must be between 1 and ${maxCount} for ${timeframe}, got: ${countArgument}`);
     process.exit(1);
   }
 

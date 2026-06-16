@@ -11,6 +11,7 @@ import {
   SType,
   Encoding,
 } from "../types/timeseries.js";
+import { assertExplicitHistoricalRangeWithinLimit } from "./historical-range-guard.js";
 
 /**
  * Timeseries API Client
@@ -138,6 +139,12 @@ export class TimeseriesClient {
     if (request.encoding !== undefined && request.encoding !== Encoding.CSV) {
       throw new Error("TimeseriesClient.getRange only supports csv encoding");
     }
+
+    assertExplicitHistoricalRangeWithinLimit({
+      schema: String(request.schema),
+      start: request.start,
+      end: request.end,
+    });
 
     // Validate limit if provided
     if (request.limit !== undefined && request.limit < 1) {

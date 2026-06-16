@@ -279,6 +279,38 @@ describe('DataBentoClient', () => {
       );
     });
 
+    it('should allow large daily history requests and pass the requested limit', async () => {
+      mockHttpGet.mockResolvedValue(mockBarsResponse);
+
+      await client.getHistoricalBars('ES', '1d', 5000);
+
+      expect(mockHttpGet).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          schema: 'ohlcv-1d',
+          symbols: 'ES.c.0',
+          limit: 5000,
+        })
+      );
+    });
+
+    it('should reject large intraday historical bar counts', async () => {
+      await expect(client.getHistoricalBars('ES', '1h', 101)).rejects.toThrow(
+        '1h historical bars are limited to 100 bars'
+      );
+      await expect(client.getHistoricalBars('ES', 'H4', 101)).rejects.toThrow(
+        'H4 historical bars are limited to 100 bars'
+      );
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+
+    it('should reject daily historical bar counts above the full-history cap', async () => {
+      await expect(client.getHistoricalBars('ES', '1d', 10001)).rejects.toThrow(
+        '1d historical bars are limited to 10000 bars'
+      );
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+
     it('should aggregate to H4 bars correctly', async () => {
       // Create 8 hours of data (should aggregate to 2 H4 bars)
       const eightHoursResponse = `ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume

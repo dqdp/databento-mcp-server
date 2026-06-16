@@ -1,6 +1,11 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import * as zodToJsonSchemaModule from "zod-to-json-schema";
+import { assertExplicitHistoricalRangeWithinLimit } from "../src/api/historical-range-guard.js";
+import {
+  MAX_DAILY_HISTORICAL_BARS,
+  MAX_INTRADAY_HISTORICAL_BARS,
+} from "../src/databento-client.js";
 
 const FUTURES_SYMBOLS = ["ES", "NQ"] as const;
 const FUTURES_TIMEFRAMES = ["1h", "H4", "1d"] as const;
@@ -78,6 +83,61 @@ function toolArgsWithDateRange<T extends z.ZodRawShape>(
 ): ToolArgumentSchema {
   return toolArgs(shape).superRefine((args, context) => {
     validateDateRange(args as Record<string, unknown>, context, startKey, endKey);
+  });
+}
+
+function toolArgsWithHistoricalRangeLimit<T extends z.ZodRawShape>(
+  shape: T,
+  startKey: string,
+  endKey: string,
+  schemaKey: string
+): ToolArgumentSchema {
+  return toolArgsWithDateRange(shape, startKey, endKey).superRefine((args, context) => {
+    const parsedArgs = args as Record<string, unknown>;
+    const schema = parsedArgs[schemaKey];
+    const start = parsedArgs[startKey];
+    const end = parsedArgs[endKey];
+
+    if (typeof schema !== "string" || typeof start !== "string") {
+      return;
+    }
+
+    try {
+      assertExplicitHistoricalRangeWithinLimit({
+        schema,
+        start,
+        end: typeof end === "string" ? end : undefined,
+      });
+    } catch (error) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [endKey],
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+}
+
+function historicalBarsArgs(): ToolArgumentSchema {
+  return toolArgs({
+    symbol: z.enum(FUTURES_SYMBOLS).describe("Futures symbol"),
+    timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
+    count: z
+      .number()
+      .int()
+      .min(1)
+      .describe(
+        `Number of bars to retrieve. Max ${MAX_INTRADAY_HISTORICAL_BARS} for 1h/H4, max ${MAX_DAILY_HISTORICAL_BARS} for 1d.`
+      ),
+  }).superRefine((args, context) => {
+    const maxCount = args.timeframe === "1d" ? MAX_DAILY_HISTORICAL_BARS : MAX_INTRADAY_HISTORICAL_BARS;
+    if (args.count > maxCount) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["count"],
+        message: `${args.timeframe} historical bars are limited to ${maxCount} bars`,
+      });
+    }
   });
 }
 
@@ -192,11 +252,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   {
     name: "get_historical_bars",
     description: "Get historical OHLCV bars for futures contracts",
-    schema: toolArgs({
-      symbol: z.enum(FUTURES_SYMBOLS).describe("Futures symbol"),
-      timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
-      count: z.number().int().min(1).max(100).describe("Number of bars to retrieve"),
-    }),
+    schema: historicalBarsArgs(),
   },
   {
     name: "symbology_resolve",
@@ -212,8 +268,8 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "timeseries_get_range",
-    description: "Get historical market data with flexible schemas and date ranges. Supports all Databento schemas (mbp-1, mbp-10, trades, ohlcv-1h, ohlcv-1d, etc.)",
-    schema: toolArgsWithDateRange({
+    description: "Get historical market data with flexible schemas and date ranges. Explicit ranges for detailed schemas are capped to control Databento costs.",
+    schema: toolArgsWithHistoricalRangeLimit({
       dataset: nonEmptyString("Dataset code (e.g., 'GLBX.MDP3' for CME, 'XNAS.ITCH' for Nasdaq)"),
       symbols: nonEmptyString("Comma-separated list of instrument symbols (up to 2000)"),
       schema: z.enum(TIMESERIES_SCHEMAS).describe("Data schema type"),
@@ -222,7 +278,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
       stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type, defaults to 'raw_symbol'").optional(),
       stype_out: z.enum(SYMBOLOGY_TYPES).describe("Output symbology type, defaults to 'instrument_id'").optional(),
       limit: z.number().int().min(1).describe("Maximum number of records to return").optional(),
-    }, "start", "end"),
+    }, "start", "end", "schema"),
   },
   {
     name: "metadata_list_datasets",
@@ -277,8 +333,8 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "batch_submit_job",
-    description: "Submit a batch data download job for large historical datasets. Returns job ID and status. Job processing is asynchronous.",
-    schema: toolArgsWithDateRange({
+    description: "Submit a Databento batch data download job for historical datasets. This may be paid/cost-bearing; confirm dataset, symbols, schema, date range, and cost risk before submitting. Explicit ranges for detailed schemas are capped to control Databento costs.",
+    schema: toolArgsWithHistoricalRangeLimit({
       dataset: nonEmptyString("Dataset code (e.g., GLBX.MDP3, XNAS.ITCH)"),
       symbols: z.array(nonEmptyString("Symbol")).min(1).max(2000).describe("Array of symbols (max 2000)"),
       schema: z.enum(BATCH_SCHEMAS).describe("Data record schema"),
@@ -292,7 +348,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
       split_size: z.number().int().positive().describe("Split files by size in bytes").optional(),
       split_symbols: z.boolean().describe("Split files by symbol (default: false)").optional(),
       limit: z.number().int().positive().describe("Limit number of records").optional(),
-    }, "start", "end"),
+    }, "start", "end", "schema"),
   },
   {
     name: "batch_list_jobs",

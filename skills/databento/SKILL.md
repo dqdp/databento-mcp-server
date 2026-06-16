@@ -47,10 +47,10 @@ export DATABENTO_API_KEY="db-your-api-key-here"
 | Script | Path | Command | Live API / side effects |
 | --- | --- | --- | --- |
 | `get-quote` | `databento/scripts/get-quote.js` | `node ~/.claude/skills/databento/scripts/get-quote.js ES` | Live Databento API read. Supports `ES` or `NQ`; default `ES`. |
-| `get-historical` | `databento/scripts/get-historical.js` | `node ~/.claude/skills/databento/scripts/get-historical.js ES 1d 20` | Live Databento API read. Args: symbol `ES`/`NQ`, timeframe `1h`/`H4`/`1d`, count `1..100`. |
+| `get-historical` | `databento/scripts/get-historical.js` | `node ~/.claude/skills/databento/scripts/get-historical.js ES 1d 20` | Live Databento API read. Args: symbol `ES`/`NQ`, timeframe `1h`/`H4`/`1d`; count `1..100` for `1h`/`H4`, `1..10000` for `1d`. |
 | `get-session` | `databento/scripts/get-session.js` | `node ~/.claude/skills/databento/scripts/get-session.js` | Local session calculation after env/key-format check; optional timestamp argument. |
 | `resolve-symbols` | `databento/scripts/resolve-symbols.js` | `node ~/.claude/skills/databento/scripts/resolve-symbols.js GLBX.MDP3 ES.FUT raw_symbol instrument_id 2026-06-16` | Live Databento API read. Args: dataset, comma-separated symbols, input type, output type, start date, optional end date. |
-| `timeseries` | `databento/scripts/timeseries.js` | `node ~/.claude/skills/databento/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. |
+| `timeseries` | `databento/scripts/timeseries.js` | `node ~/.claude/skills/databento/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. Detailed explicit ranges are capped. |
 | `metadata` | `databento/scripts/metadata.js` | `node ~/.claude/skills/databento/scripts/metadata.js list-datasets` | Live Databento API read. Commands: `list-datasets`, `list-schemas`, `list-publishers`, `list-fields`, `get-cost`, `get-dataset-range`. |
 | `batch` | `databento/scripts/batch.js` | `node ~/.claude/skills/databento/scripts/batch.js list` | Live Databento API. `list` and `download` read account/job metadata; `submit` creates a batch job and may be paid. |
 | `reference` | `databento/scripts/reference.js` | `node ~/.claude/skills/databento/scripts/reference.js search XNAS.ITCH AAPL 2026-06-16` | Live Databento API read. Commands: `search`, `corporate-actions`, `adjustments`. |
@@ -79,6 +79,14 @@ date range rather than a Databento dataset request parameter.
 Confirm the dataset, symbols, schema, date range, and cost risk with the user
 before running `batch submit`, because it creates a Databento batch job and may
 be paid.
+
+Detailed historical range guardrails for explicit `start`/`end` ranges, where
+the schema is supported by the selected command:
+
+- `trades`, `tbbo`, `mbp-1`, `mbp-10`, `mbo`, and `ohlcv-1s`: max 1 day.
+- `ohlcv-1m`: max 31 days.
+- `ohlcv-1h`: max 366 days.
+- Daily/eod bars are not capped by this detailed-schema guard.
 
 ## When to Use This Skill
 
@@ -112,12 +120,14 @@ Convert symbols between different types (raw_symbol, instrument_id, continuous, 
 **Usage**: "Resolve AAPL to instrument ID" or "Convert ESM4 symbol"
 
 ### 5. Historical Timeseries
-Stream any market data schema (trades, MBP, OHLCV) across date ranges.
+Stream supported market data schemas (trades, MBP, OHLCV) across date ranges.
+Detailed explicit ranges are capped to avoid accidental high-cost requests.
 
 **Usage**: "Get trades for SPY on 2024-01-15" or "Fetch MBP-1 data for TSLA"
 
 ### 6. Batch Downloads
 Submit jobs for large historical dataset downloads.
+Detailed explicit ranges are capped before submitting a paid job.
 
 **Usage**: "Submit batch job for ES daily data" or "List my batch jobs"
 

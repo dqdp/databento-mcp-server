@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = path.resolve(__dirname, "../..");
+const tsxCli = path.join(projectRoot, "node_modules/tsx/dist/cli.mjs");
 
 function readJson<T>(relativePath: string): T {
   return JSON.parse(readFileSync(path.join(projectRoot, relativePath), "utf8")) as T;
@@ -111,6 +113,27 @@ describe("Claude Code skill contract", () => {
 
     for (const form of requiredForms) {
       expect(skillText).toContain(form);
+    }
+  });
+
+  it("rejects malformed get-historical counts without truncating them", () => {
+    const scriptPath = path.join(projectRoot, "skills/databento/scripts/get-historical.ts");
+    const env = {
+      ...process.env,
+      DATABENTO_API_KEY: "db-test-key",
+    };
+
+    for (const count of ["0.5", "0abc"]) {
+      const result = spawnSync(process.execPath, [tsxCli, scriptPath, "ES", "1d", count], {
+        cwd: projectRoot,
+        env,
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status).toBe(1);
+      expect(output).toContain(`Error: Count must be between 1 and 10000 for 1d, got: ${count}`);
     }
   });
 

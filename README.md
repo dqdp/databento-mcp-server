@@ -21,7 +21,7 @@ Choose the deployment that fits your workflow best!
 ## Features
 
 - 🎯 **Real-time Futures Quotes** - Current prices for ES and NQ contracts
-- 📊 **Historical Timeseries** - Stream any market data schema across date ranges
+- 📊 **Historical Timeseries** - Stream supported market data schemas across date ranges
 - 📈 **Batch Downloads** - Submit and manage large historical data jobs
 - 🔍 **Symbol Resolution** - Resolve symbols to instrument IDs across datasets
 - 📚 **Metadata Discovery** - Explore datasets, schemas, fields, and pricing
@@ -340,9 +340,12 @@ Get historical OHLCV bars for futures contracts.
 ```
 
 **Supported Timeframes:**
-- `1h` - Hourly bars
-- `H4` - 4-hour bars (aggregated from 1h)
-- `1d` - Daily bars
+- `1h` - Hourly bars, max 100 bars
+- `H4` - 4-hour bars (aggregated from 1h), max 100 bars
+- `1d` - Daily bars, max 10,000 bars for full-history-style daily pulls
+
+For arbitrary daily date ranges, use `timeseries_get_range` with
+`schema: "ohlcv-1d"`.
 
 ---
 
@@ -350,7 +353,7 @@ Get historical OHLCV bars for futures contracts.
 
 #### 4. `timeseries_get_range`
 
-Stream historical market data with flexible schemas and date ranges. Supports all Databento schemas.
+Stream historical market data with flexible schemas and date ranges. Supports the schemas listed below.
 
 **Input:**
 ```json
@@ -372,6 +375,12 @@ Stream historical market data with flexible schemas and date ranges. Supports al
 - `trades` - Trade data
 - `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`, `ohlcv-1d`, `ohlcv-eod` - OHLCV bars
 - `statistics`, `definition`, `imbalance`, `status` - Market metadata
+
+**Cost guardrails for explicit `start`/`end` ranges:**
+- `trades`, `mbp-1`, `mbp-10`, `mbo`, and `ohlcv-1s`: max 1 day
+- `ohlcv-1m`: max 31 days
+- `ohlcv-1h`: max 366 days
+- Daily/eod bars are not capped by this detailed-schema guard.
 
 **Output:**
 ```json
@@ -616,7 +625,15 @@ Get the available date range for a dataset.
 
 #### 12. `batch_submit_job`
 
-Submit a batch data download job for large historical datasets. Returns job ID and status.
+Submit a batch data download job for large historical datasets. Returns job ID
+and status. This may create a paid/cost-bearing Databento job; confirm the
+dataset, symbols, schema, date range, and cost risk before submitting.
+
+**Batch cost guardrails for explicit `start`/`end` ranges:**
+- `trades`, `tbbo`, `mbp-1`, `mbp-10`, and `ohlcv-1s`: max 1 day
+- `ohlcv-1m`: max 31 days
+- `ohlcv-1h`: max 366 days
+- Daily bars are not capped by this detailed-schema guard.
 
 **Input:**
 ```json

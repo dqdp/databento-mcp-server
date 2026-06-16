@@ -215,6 +215,20 @@ describe("MCP server integration", () => {
           arguments: {
             dataset: "GLBX.MDP3",
             symbols: "ES.c.0",
+            schema: "ohlcv-1m",
+            start: "2026-01-01",
+            end: "2026-03-01",
+          },
+        })
+      );
+      expect(clients.timeseriesClient.getRange).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "timeseries_get_range",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: "ES.c.0",
             schema: "ohlcv-1h",
             start: "2026-02-30",
           },
@@ -275,6 +289,20 @@ describe("MCP server integration", () => {
       );
       expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
 
+      expectValidationError(
+        await client.callTool({
+          name: "batch_submit_job",
+          arguments: {
+            dataset: "GLBX.MDP3",
+            symbols: ["ES.c.0"],
+            schema: "trades",
+            start: "2026-06-01",
+            end: "2026-06-05",
+          },
+        })
+      );
+      expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
+
       await expect(
         client.callTool({
           name: "get_session_info",
@@ -321,6 +349,41 @@ describe("MCP server integration", () => {
           recordCount: 0,
         })
       );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("allows large daily historical bars while keeping intraday counts capped", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      vi.mocked(clients.databentoClient.getHistoricalBars).mockResolvedValueOnce([]);
+
+      const result = await client.callTool({
+        name: "get_historical_bars",
+        arguments: {
+          symbol: "ES",
+          timeframe: "1d",
+          count: 5000,
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledWith("ES", "1d", 5000);
+
+      expectValidationError(
+        await client.callTool({
+          name: "get_historical_bars",
+          arguments: {
+            symbol: "ES",
+            timeframe: "H4",
+            count: 101,
+          },
+        })
+      );
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();
       await server.close();

@@ -600,6 +600,74 @@ describe('TimeseriesClient', () => {
         expect.objectContaining({ limit: 100 })
       );
     });
+
+    it('should reject long explicit ranges for minute bars', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1M,
+          start: '2024-01-01',
+          end: '2024-03-01',
+        })
+      ).rejects.toThrow('ohlcv-1m queries are limited to 31 days');
+      expect(mockHttp.get).not.toHaveBeenCalled();
+    });
+
+    it('should accept short explicit ranges for minute bars', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1MResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1M,
+        start: '2024-01-01',
+        end: '2024-01-31',
+      });
+
+      expect(mockHttp.get).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          schema: 'ohlcv-1m',
+          start: '2024-01-01',
+          end: '2024-01-31',
+        })
+      );
+    });
+
+    it('should reject long explicit ranges for hourly bars', async () => {
+      await expect(
+        client.getRange({
+          dataset: 'GLBX.MDP3',
+          symbols: 'ES.c.0',
+          schema: Schema.OHLCV_1H,
+          start: '2024-01-01',
+          end: '2025-02-01',
+        })
+      ).rejects.toThrow('ohlcv-1h queries are limited to 366 days');
+      expect(mockHttp.get).not.toHaveBeenCalled();
+    });
+
+    it('should not apply intraday range limits to daily bars', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1DResponse);
+
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.c.0',
+        schema: Schema.OHLCV_1D,
+        start: '2020-01-01',
+        end: '2024-01-01',
+      });
+
+      expect(mockHttp.get).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          schema: 'ohlcv-1d',
+          start: '2020-01-01',
+          end: '2024-01-01',
+        })
+      );
+    });
   });
 
   describe('CSV Response Parsing', () => {

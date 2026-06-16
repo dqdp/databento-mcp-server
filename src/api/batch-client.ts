@@ -12,6 +12,7 @@ import type {
   BatchDownloadInfo,
   BatchDownloadResult,
 } from "../types/batch.js";
+import { assertExplicitHistoricalRangeWithinLimit } from "./historical-range-guard.js";
 
 function getBatchDownloadSize(job: BatchJobInfo): number | undefined {
   return job.package_size ?? job.actual_size ?? job.total_size;
@@ -245,5 +246,11 @@ export class BatchClient {
     if (params.end && !dateRegex.test(params.end)) {
       throw new Error("End date must be in YYYY-MM-DD or ISO 8601 format");
     }
+
+    assertExplicitHistoricalRangeWithinLimit({
+      schema: params.schema,
+      start: params.start,
+      end: params.end,
+    });
   }
 }
