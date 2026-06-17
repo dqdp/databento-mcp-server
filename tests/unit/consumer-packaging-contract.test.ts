@@ -81,9 +81,9 @@ describe("consumer distribution packaging contract", () => {
     expect(manifest.version).toBe(packageJson.version);
     expect(manifest.privacy_policies).toEqual(["https://databento.com/legal/privacy-policy"]);
     expect(manifest.server.type).toBe("node");
-    expect(manifest.server.entry_point).toBe("server/mcp/index.js");
+    expect(manifest.server.entry_point).toBe("server/mcp/extension-entrypoint.js");
     expect(manifest.server.mcp_config.command).toBe("node");
-    expect(manifest.server.mcp_config.args).toEqual(["${__dirname}/server/mcp/index.js"]);
+    expect(manifest.server.mcp_config.args).toEqual(["${__dirname}/server/mcp/extension-entrypoint.js"]);
     expect(manifest.server.mcp_config.env.DATABENTO_API_KEY).toBe("${user_config.databento_api_key}");
     expect(manifest.server.mcp_config.env.DATABENTO_DATASET).toBe("${user_config.databento_dataset}");
     expect(manifest.server.mcp_config.env.MCP_DIRECT_MAX_RECORDS).toBe("${user_config.direct_max_records}");
@@ -113,17 +113,23 @@ describe("consumer distribution packaging contract", () => {
     const smokeScript = readText(smokeScriptPath);
 
     expect(buildScript).toContain("dist/consumer/market-data-skill");
+    expect(buildScript).toContain("market-data-skill.zip");
     expect(buildScript).toContain("dist/consumer/databento-mcp-desktop-extension");
     expect(buildScript).toContain("manifest.template.json");
     expect(buildScript).toContain("copyRuntimeNodeModules");
     expect(buildScript).toContain("buildConsumerSkillMarkdown");
+    expect(buildScript).toContain("createSkillArchive");
     expect(buildScript).not.toContain("skills/manifest.json");
+    expect(smokeScript).toContain("market-data-skill.zip");
+    expect(smokeScript).toContain("assertConsumerSkillArchive");
     expect(smokeScript).toContain("databento-mcp-desktop-extension.mcpb");
     expect(smokeScript).toContain("extractMcpbArchive");
     expect(smokeScript).toContain("consumer skill artifact must not advertise local Claude Code skill paths");
     expect(smokeScript).toContain("consumer skill artifact must not advertise unavailable script commands");
     expect(smokeScript).toContain("dist/consumer/databento-mcp-desktop-extension");
+    expect(smokeScript).toContain("assertRequiredEntrypointWorks");
     expect(smokeScript).toContain("server/mcp/index.js");
+    expect(smokeScript).toContain("server/mcp/extension-entrypoint.js");
     expect(smokeScript).toContain("StdioClientTransport");
     expect(smokeScript).toContain("assertNoSourceCheckoutFallback");
     expect(smokeScript).not.toContain("cpSync(extensionArtifactDir");

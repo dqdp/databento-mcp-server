@@ -33,6 +33,7 @@ const extensionArtifactRelativePath = "dist/consumer/databento-mcp-desktop-exten
 const consumerRoot = path.join(projectRoot, "dist/consumer");
 const skillArtifactDir = path.join(projectRoot, skillArtifactRelativePath);
 const extensionArtifactDir = path.join(projectRoot, extensionArtifactRelativePath);
+const skillArchivePath = path.join(consumerRoot, "market-data-skill.zip");
 const extensionArchivePath = path.join(consumerRoot, "databento-mcp-desktop-extension.mcpb");
 
 function readJson<T>(filePath: string): T {
@@ -222,6 +223,29 @@ function buildSkillArtifact() {
   );
 }
 
+function createSkillArchive() {
+  const skillPackageDir = path.join(skillArtifactDir, "market-data");
+  rmSync(skillArchivePath, { force: true });
+
+  const result = spawnSync("zip", ["-qr", skillArchivePath, "."], {
+    cwd: skillPackageDir,
+    encoding: "utf8",
+  });
+
+  if (result.error) {
+    throw new Error(`Failed to run zip for market-data skill archive: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      [
+        "Failed to create market-data skill archive",
+        result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : undefined,
+        result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : undefined,
+      ].filter(Boolean).join("\n")
+    );
+  }
+}
+
 function buildExtensionArtifact() {
   const packageJson = readJson<PackageJson>(path.join(projectRoot, "package.json"));
   const manifestTemplatePath = path.join(projectRoot, "packaging/mcpb/databento/manifest.template.json");
@@ -274,10 +298,12 @@ function main() {
   mkdirSync(consumerRoot, { recursive: true });
 
   buildSkillArtifact();
+  createSkillArchive();
   buildExtensionArtifact();
   createMcpbArchive();
 
   console.log(`Consumer artifacts built: ${consumerRoot}`);
+  console.log(`Skill archive: ${skillArchivePath}`);
   console.log(`MCPB archive: ${extensionArchivePath}`);
 }
 

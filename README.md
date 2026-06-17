@@ -234,6 +234,8 @@ Outputs:
 
 - `dist/consumer/market-data-skill/` - self-contained market-data skill with no
   external documentation links or local Claude Code script commands.
+- `dist/consumer/market-data-skill.zip` - uploadable skill archive for Claude
+  Skills UI.
 - `dist/consumer/databento-mcp-desktop-extension/` - staged Databento MCP
   Desktop Extension directory.
 - `dist/consumer/databento-mcp-desktop-extension.mcpb` - MCPB zip archive for
@@ -244,6 +246,9 @@ connects over stdio from that extracted package, so it verifies the handoff
 archive does not depend on the source checkout. It only calls safe
 `get_session_info`; it does not run live market-data pulls, submit batch jobs,
 or download batch files.
+
+For a nontechnical Claude Desktop user, use the simple three-part install guide
+in `docs/claude-desktop-simple-install.md`.
 
 ### Environment Variables
 

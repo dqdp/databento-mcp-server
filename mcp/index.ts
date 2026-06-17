@@ -760,8 +760,7 @@ export function createDatabentoMcpServer(
   return server;
 }
 
-// Start the server
-async function main() {
+export async function startDatabentoMcpServer() {
   dotenv.config({ quiet: true });
 
   const apiKey = process.env.DATABENTO_API_KEY;
@@ -773,6 +772,11 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("DataBento MCP Server running on stdio");
+}
+
+// Start the server
+async function main() {
+  await startDatabentoMcpServer();
 }
 
 if (require.main === module) {

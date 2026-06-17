@@ -23,6 +23,7 @@ npm run smoke:consumer
 Current output paths:
 
 - `dist/consumer/market-data-skill/`
+- `dist/consumer/market-data-skill.zip`
 - `dist/consumer/databento-mcp-desktop-extension/`
 - `dist/consumer/databento-mcp-desktop-extension.mcpb`
 
@@ -134,7 +135,7 @@ Acceptance Gate:
 
 Give the user two files or folders:
 
-- `market-data-skill`: teaches Claude how to route and reason.
+- `market-data-skill.zip`: teaches Claude how to route and reason.
 - `databento-mcp-desktop-extension`: gives Claude Desktop the Databento tools.
 
 Tell the user only the minimum sequence:
@@ -147,6 +148,9 @@ Tell the user only the minimum sequence:
 4. Add/import the Market Data skill.
 5. Ask Claude to check connected tools before the first live data request.
 
+The concrete nontechnical instruction is maintained in
+`docs/claude-desktop-simple-install.md`.
+
 ## Implementation Slices
 
 Completed:
@@ -156,6 +160,7 @@ Completed:
 3. Add an MCPB manifest template for the Databento MCP server.
 4. Add a packaging script that builds:
    - `dist/consumer/market-data-skill`
+   - `dist/consumer/market-data-skill.zip`
    - `dist/consumer/databento-mcp-desktop-extension`
    - `dist/consumer/databento-mcp-desktop-extension.mcpb`
 5. Add a package smoke test that extracts the `.mcpb` archive and runs from the
@@ -166,6 +171,9 @@ Next:
 6. Add a manual clean-machine checklist for macOS and Windows.
 7. Test the MCPB package in real Claude Desktop on macOS.
 8. Test Windows installation behavior or document a fallback path.
+
+Windows compatibility notes and the manual Windows smoke checklist are tracked
+in `docs/windows-compatibility-review.md`.
 
 ## Open Decisions
 

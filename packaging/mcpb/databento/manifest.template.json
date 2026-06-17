@@ -10,10 +10,10 @@
   },
   "server": {
     "type": "node",
-    "entry_point": "server/mcp/index.js",
+    "entry_point": "server/mcp/extension-entrypoint.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/mcp/index.js"],
+      "args": ["${__dirname}/server/mcp/extension-entrypoint.js"],
       "env": {
         "DATABENTO_API_KEY": "${user_config.databento_api_key}",
         "DATABENTO_DATASET": "${user_config.databento_dataset}",
