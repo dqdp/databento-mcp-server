@@ -71,6 +71,16 @@ describe("consumer distribution packaging contract", () => {
     expect(workflow).toContain("run: npm run smoke:consumer");
   });
 
+  it("runs the consumer artifact smoke on a Windows GitHub runner", () => {
+    const workflow = readText(".github/workflows/ci.yml");
+
+    expect(workflow).toContain("windows-consumer-smoke:");
+    expect(workflow).toContain("runs-on: windows-latest");
+    expect(workflow).toContain("name: Windows consumer artifact smoke");
+    expect(workflow).toContain("run: npm ci");
+    expect(workflow).toContain("run: npm run smoke:consumer");
+  });
+
   it("defines an MCPB manifest template with sensitive Databento configuration", () => {
     expect(existsSync(path.join(projectRoot, manifestPath))).toBe(true);
 
