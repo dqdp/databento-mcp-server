@@ -1,54 +1,54 @@
 {
-  "name": "DataBento Skills",
+  "name": "Market Data Skills",
   "version": "1.0.0",
-  "description": "Professional market data access via DataBento API for all asset classes",
+  "description": "Market data source routing for Databento and Alpha Vantage MCP workflows",
   "author": "DataBento MCP Server Team",
   "skills": [
     {
-      "name": "databento",
-      "path": "databento/SKILL.md",
-      "description": "Professional market data access via DataBento API",
+      "name": "market-data",
+      "path": "market-data/SKILL.md",
+      "description": "Market data source routing for Databento and Alpha Vantage MCP workflows",
       "version": "1.0.0",
       "type": "data-api",
       "scripts": [
         {
           "name": "get-quote",
-          "path": "databento/scripts/get-quote.js",
+          "path": "market-data/scripts/get-quote.js",
           "description": "Get real-time futures quotes (ES, NQ)"
         },
         {
           "name": "get-historical",
-          "path": "databento/scripts/get-historical.js",
+          "path": "market-data/scripts/get-historical.js",
           "description": "Get historical OHLCV bars for futures"
         },
         {
           "name": "get-session",
-          "path": "databento/scripts/get-session.js",
+          "path": "market-data/scripts/get-session.js",
           "description": "Get current trading session info"
         },
         {
           "name": "resolve-symbols",
-          "path": "databento/scripts/resolve-symbols.js",
+          "path": "market-data/scripts/resolve-symbols.js",
           "description": "Resolve symbols across different types"
         },
         {
           "name": "timeseries",
-          "path": "databento/scripts/timeseries.js",
-          "description": "Get historical timeseries data with any schema"
+          "path": "market-data/scripts/timeseries.js",
+          "description": "Get covered Standard CME historical timeseries data"
         },
         {
           "name": "metadata",
-          "path": "databento/scripts/metadata.js",
+          "path": "market-data/scripts/metadata.js",
           "description": "Query datasets, schemas, fields, and costs"
         },
         {
           "name": "batch",
-          "path": "databento/scripts/batch.js",
+          "path": "market-data/scripts/batch.js",
           "description": "Submit and manage batch download jobs"
         },
         {
           "name": "reference",
-          "path": "databento/scripts/reference.js",
+          "path": "market-data/scripts/reference.js",
           "description": "Access security master and reference data"
         }
       ]
@@ -68,19 +68,27 @@
     "automatic": [
       {
         "pattern": "databento",
-        "skill": "databento"
+        "skill": "market-data"
       },
       {
-        "pattern": "market data",
-        "skill": "databento"
+        "pattern": "cme market data",
+        "skill": "market-data"
+      },
+      {
+        "pattern": "standard cme",
+        "skill": "market-data"
       },
       {
         "pattern": "futures quote",
-        "skill": "databento"
+        "skill": "market-data"
       },
       {
-        "pattern": "historical bars",
-        "skill": "databento"
+        "pattern": "futures historical bars",
+        "skill": "market-data"
+      },
+      {
+        "pattern": "cme options",
+        "skill": "market-data"
       }
     ]
   },

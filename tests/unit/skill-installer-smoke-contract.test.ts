@@ -31,9 +31,10 @@ describe("installed skill smoke contract", () => {
   });
 
   it("keeps publish files broad enough for installer and built skill runtime", () => {
-    expect(packageJson.files).toContain("dist/");
+    expect(packageJson.files).toContain("dist/mcp/");
+    expect(packageJson.files).toContain("dist/skills/");
     expect(packageJson.files).toContain("scripts/install-skills.sh");
     expect(packageJson.files).toContain("skills/manifest.json");
-    expect(packageJson.files).toContain("skills/databento/SKILL.md");
+    expect(packageJson.files).toContain("skills/market-data/SKILL.md");
   });
 });

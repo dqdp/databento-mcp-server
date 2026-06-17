@@ -190,7 +190,7 @@ npm run install:skills
 
 This will:
 - Build skill scripts first when `dist/skills` is missing in a source checkout
-- Copy the prebuilt skill scripts to `~/.claude/skills/databento/`
+- Copy the prebuilt skill scripts to `~/.claude/skills/market-data/`
 - Make scripts executable
 
 When working from a source checkout after changing skill TypeScript, you can also rebuild explicitly:
@@ -208,7 +208,7 @@ export DATABENTO_API_KEY="db-your-api-key-here"
 
 Verify installation:
 ```bash
-node ~/.claude/skills/databento/scripts/get-quote.js ES
+node ~/.claude/skills/market-data/scripts/get-quote.js ES
 ```
 
 Run the automated installed-skill smoke without touching your real Claude skills:
@@ -220,6 +220,30 @@ The smoke command creates a temporary `HOME`, runs the installer there, verifies
 `SKILL.md`, manifest, all installed scripts, copied shared runtime files, and
 the master manifest merge, then checks every installed script fails cleanly
 without `DATABENTO_API_KEY`.
+
+### Option 4: Consumer Distribution Artifacts
+
+Build two handoff artifacts for a nontechnical Claude Desktop user:
+
+```bash
+npm run build:consumer
+npm run smoke:consumer
+```
+
+Outputs:
+
+- `dist/consumer/market-data-skill/` - self-contained market-data skill with no
+  external documentation links or local Claude Code script commands.
+- `dist/consumer/databento-mcp-desktop-extension/` - staged Databento MCP
+  Desktop Extension directory.
+- `dist/consumer/databento-mcp-desktop-extension.mcpb` - MCPB zip archive for
+  handoff testing.
+
+The consumer smoke extracts the `.mcpb` archive to a temporary directory and
+connects over stdio from that extracted package, so it verifies the handoff
+archive does not depend on the source checkout. It only calls safe
+`get_session_info`; it does not run live market-data pulls, submit batch jobs,
+or download batch files.
 
 ### Environment Variables
 
@@ -1060,7 +1084,7 @@ databento-mcp-server/
 ├── mcp/                      # MCP Server specific code
 │   └── index.ts              # MCP server entry point & 17 tool definitions
 ├── skills/                   # Claude Code Skills
-│   ├── databento/
+│   ├── market-data/
 │   │   ├── SKILL.md          # Skill documentation
 │   │   ├── scripts/          # 8 executable skill scripts
 │   │   │   ├── get-quote.ts
@@ -1118,7 +1142,7 @@ npm run build:skills
 4. Rebuild: `npm run build:mcp`
 
 **For Skills:**
-1. Create new script in `skills/databento/scripts/`
+1. Create new script in `skills/market-data/scripts/`
 2. Import and use shared clients from `src/`
 3. Update `skills/manifest.json` with new script
 4. Rebuild and install: `npm run build:skills && npm run install:skills`

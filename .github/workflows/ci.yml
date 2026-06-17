@@ -53,3 +53,6 @@ jobs:
 
       - name: Smoke installed skills
         run: npm run smoke:skills
+
+      - name: Smoke consumer artifacts
+        run: npm run smoke:consumer

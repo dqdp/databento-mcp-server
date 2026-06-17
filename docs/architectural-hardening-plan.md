@@ -181,7 +181,7 @@ TDD first:
 
 Current state:
 
-- `scripts/install-skills.sh` installs into `~/.claude/skills/databento`.
+- `scripts/install-skills.sh` installs into `~/.claude/skills/market-data`.
 - CI verifies one installed script fails cleanly without `DATABENTO_API_KEY`.
 - Native Windows PowerShell install is not covered.
 
@@ -214,7 +214,7 @@ TDD first:
 - Add a packaging check that validates the npm tarball contains:
   - `scripts/install-skills.sh`
   - `skills/manifest.json`
-  - `skills/databento/SKILL.md`
+  - `skills/market-data/SKILL.md`
   - compiled skill scripts
   - compiled shared runtime under `dist/skills`
 - Add a follow-up PowerShell installer only if native Windows support is a goal.

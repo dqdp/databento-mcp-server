@@ -1,0 +1,138 @@
+{
+  "manifest_version": "0.3",
+  "name": "databento-mcp",
+  "display_name": "Databento MCP",
+  "version": "1.0.0",
+  "description": "Databento market data MCP server for Claude Desktop",
+  "long_description": "Local Databento MCP server for CME futures market data, symbology, metadata, reference data, and guarded batch workflows. API keys are collected through sensitive configuration.",
+  "author": {
+    "name": "Databento MCP Maintainers"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/mcp/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/mcp/index.js"],
+      "env": {
+        "DATABENTO_API_KEY": "${user_config.databento_api_key}",
+        "DATABENTO_DATASET": "${user_config.databento_dataset}",
+        "MCP_DIRECT_MAX_RECORDS": "${user_config.direct_max_records}",
+        "MCP_REQUIRE_ZERO_COST_PREFLIGHT_FOR_BATCH": "${user_config.require_zero_cost_preflight_for_batch}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "get_futures_quote",
+      "description": "Get current price quote for ES or NQ futures contracts"
+    },
+    {
+      "name": "get_session_info",
+      "description": "Get current trading session information"
+    },
+    {
+      "name": "get_historical_bars",
+      "description": "Get historical OHLCV bars for futures contracts"
+    },
+    {
+      "name": "symbology_resolve",
+      "description": "Resolve symbols to instrument IDs or other symbol types"
+    },
+    {
+      "name": "timeseries_get_range",
+      "description": "Get historical Databento market data with guarded direct output"
+    },
+    {
+      "name": "metadata_list_datasets",
+      "description": "List Databento datasets"
+    },
+    {
+      "name": "metadata_list_schemas",
+      "description": "List schemas for a Databento dataset"
+    },
+    {
+      "name": "metadata_list_publishers",
+      "description": "List Databento publishers"
+    },
+    {
+      "name": "metadata_list_fields",
+      "description": "List fields for a Databento schema"
+    },
+    {
+      "name": "metadata_get_cost",
+      "description": "Estimate Databento historical query cost"
+    },
+    {
+      "name": "metadata_get_dataset_range",
+      "description": "Get the available date range for a Databento dataset"
+    },
+    {
+      "name": "batch_submit_job",
+      "description": "Submit a guarded Databento batch job"
+    },
+    {
+      "name": "batch_list_jobs",
+      "description": "List Databento batch jobs"
+    },
+    {
+      "name": "batch_download",
+      "description": "Get metadata and URLs for completed Databento batch files"
+    },
+    {
+      "name": "reference_search_securities",
+      "description": "Search Databento reference security master data"
+    },
+    {
+      "name": "reference_get_corporate_actions",
+      "description": "Get Databento corporate actions"
+    },
+    {
+      "name": "reference_get_adjustments",
+      "description": "Get Databento price adjustment factors"
+    }
+  ],
+  "tools_generated": false,
+  "user_config": {
+    "databento_api_key": {
+      "type": "string",
+      "title": "Databento API key",
+      "description": "Databento API key. This value is passed to the local MCP server as DATABENTO_API_KEY.",
+      "required": true,
+      "sensitive": true
+    },
+    "databento_dataset": {
+      "type": "string",
+      "title": "Databento dataset",
+      "description": "Default Databento dataset for futures workflows.",
+      "default": "GLBX.MDP3",
+      "required": false
+    },
+    "direct_max_records": {
+      "type": "number",
+      "title": "Direct timeseries max records",
+      "description": "Maximum direct records returned by timeseries_get_range before batch is required.",
+      "default": 10000,
+      "min": 1,
+      "max": 10000,
+      "required": false
+    },
+    "require_zero_cost_preflight_for_batch": {
+      "type": "boolean",
+      "title": "Require zero-cost batch preflight",
+      "description": "Require Databento metadata_get_cost to estimate zero cost before submitting batch jobs.",
+      "default": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "node": ">=22.15.0"
+    }
+  },
+  "keywords": ["mcp", "databento", "market-data", "futures", "cme"],
+  "license": "MIT",
+  "privacy_policies": ["https://databento.com/legal/privacy-policy"]
+}

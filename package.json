@@ -7,8 +7,9 @@
     "databento-mcp-server": "./dist/mcp/mcp/index.js"
   },
   "files": [
-    "dist/",
-    "skills/databento/SKILL.md",
+    "dist/mcp/",
+    "dist/skills/",
+    "skills/market-data/SKILL.md",
     "skills/manifest.json",
     "scripts/install-skills.sh"
   ],
@@ -16,6 +17,7 @@
     "build": "npm run build:mcp && npm run build:skills",
     "build:mcp": "tsc -p tsconfig.mcp.json",
     "build:skills": "tsc -p tsconfig.skills.json",
+    "build:consumer": "npm run build && tsx scripts/build-consumer-artifacts.ts",
     "dev": "tsx mcp/index.ts",
     "dev:http": "tsx mcp/http.ts",
     "start": "node dist/mcp/mcp/index.js",
@@ -23,6 +25,7 @@
     "smoke:mcp": "tsx scripts/smoke-mcp-stdio.ts",
     "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts",
     "smoke:skills": "tsx scripts/smoke-installed-skills.ts",
+    "smoke:consumer": "npm run build:consumer && tsx scripts/smoke-consumer-artifacts.ts",
     "install:skills": "bash scripts/install-skills.sh",
     "prepublishOnly": "npm run build",
     "test": "vitest",

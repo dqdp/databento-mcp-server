@@ -17,8 +17,8 @@ async function main() {
     switch (command) {
       case "search": {
         // Parse: search dataset symbols start_date [end_date] [limit]
-        const dataset = args[1] || "XNAS.ITCH";
-        const symbols = args[2] || "AAPL";
+        const dataset = args[1] || "GLBX.MDP3";
+        const symbols = args[2] || "ES.FUT";
         const start_date = args[3] || new Date().toISOString().split("T")[0];
         const end_date = args[4];
         const limit = args[5] ? parseInt(args[5], 10) : undefined;
@@ -42,8 +42,8 @@ async function main() {
 
       case "corporate-actions": {
         // Parse: corporate-actions dataset symbols start_date [end_date]
-        const dataset = args[1] || "XNAS.ITCH";
-        const symbols = args[2] || "AAPL";
+        const dataset = args[1] || "GLBX.MDP3";
+        const symbols = args[2] || "ES.FUT";
         const start_date = args[3] || new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
         const end_date = args[4];
 
@@ -65,8 +65,8 @@ async function main() {
 
       case "adjustments": {
         // Parse: adjustments dataset symbols start_date [end_date]
-        const dataset = args[1] || "XNAS.ITCH";
-        const symbols = args[2] || "AAPL";
+        const dataset = args[1] || "GLBX.MDP3";
+        const symbols = args[2] || "ES.FUT";
         const start_date = args[3] || new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
         const end_date = args[4];
 

@@ -78,23 +78,33 @@ function assertNoKeyMode(scriptPath: string, scriptName: string) {
 
 function main() {
   const sourceManifest = readJson<SkillManifest>(path.join(projectRoot, "skills/manifest.json"));
-  const sourceSkill = sourceManifest.skills.find((skill) => skill.name === "databento");
-  assert(sourceSkill, "skills/manifest.json is missing the databento skill");
+  const sourceSkill = sourceManifest.skills.find((skill) => skill.name === "market-data");
+  assert(sourceSkill, "skills/manifest.json is missing the market-data skill");
 
-  const homeDir = mkdtempSync(path.join(os.tmpdir(), "databento-skills-home-"));
+  const homeDir = mkdtempSync(path.join(os.tmpdir(), "market-data-skills-home-"));
   const claudeSkillsDir = path.join(homeDir, ".claude", "skills");
-  const targetDir = path.join(claudeSkillsDir, "databento");
+  const targetDir = path.join(claudeSkillsDir, "market-data");
+  const legacyDir = path.join(claudeSkillsDir, "databento");
+  const legacyMarkerPath = path.join(legacyDir, "legacy-marker.txt");
   const masterManifestPath = path.join(claudeSkillsDir, "manifest.json");
 
   try {
     mkdirSync(claudeSkillsDir, { recursive: true });
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(legacyMarkerPath, "legacy custom file\n");
     writeFileSync(
       masterManifestPath,
-      `${JSON.stringify({ skills: [{ name: "existing", path: "existing/SKILL.md" }] }, null, 2)}\n`
+      `${JSON.stringify({
+        skills: [
+          { name: "existing", path: "existing/SKILL.md" },
+          { name: "databento", path: "databento/SKILL.md" },
+        ],
+      }, null, 2)}\n`
     );
 
     run("npm", ["run", "install:skills"], envWithoutDatabentoKey({ HOME: homeDir }));
 
+    assert(existsSync(legacyMarkerPath), "legacy databento skill directory should not be deleted automatically");
     assert(existsSync(path.join(targetDir, "SKILL.md")), "installed SKILL.md is missing");
     assert(existsSync(path.join(targetDir, "manifest.json")), "installed manifest.json is missing");
     assert(existsSync(path.join(targetDir, "src")), "installed shared src runtime is missing");
@@ -104,8 +114,8 @@ function main() {
     );
 
     const installedManifest = readJson<SkillManifest>(path.join(targetDir, "manifest.json"));
-    const installedSkill = installedManifest.skills.find((skill) => skill.name === "databento");
-    assert(installedSkill, "installed manifest is missing the databento skill");
+    const installedSkill = installedManifest.skills.find((skill) => skill.name === "market-data");
+    assert(installedSkill, "installed manifest is missing the market-data skill");
     assert(
       JSON.stringify(installedSkill) === JSON.stringify(sourceSkill),
       "installed manifest skill entry differs from source manifest"
@@ -114,13 +124,13 @@ function main() {
     const masterManifest = readJson<SkillManifest>(masterManifestPath);
     const masterSkillNames = masterManifest.skills.map((skill) => skill.name).sort();
     assert(
-      JSON.stringify(masterSkillNames) === JSON.stringify(["databento", "existing"]),
-      `master manifest should contain existing and databento skills, got ${JSON.stringify(masterSkillNames)}`
+      JSON.stringify(masterSkillNames) === JSON.stringify(["existing", "market-data"]),
+      `master manifest should contain existing and market-data skills, got ${JSON.stringify(masterSkillNames)}`
     );
     assert(
-      JSON.stringify(masterManifest.skills.find((skill) => skill.name === "databento")) ===
+      JSON.stringify(masterManifest.skills.find((skill) => skill.name === "market-data")) ===
         JSON.stringify(sourceSkill),
-      "master manifest databento entry should come from skills/manifest.json"
+      "master manifest market-data entry should come from skills/manifest.json"
     );
 
     for (const script of sourceSkill.scripts) {
