@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import AdmZip from "adm-zip";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -55,6 +56,47 @@ function isTextContent(content: unknown): content is TextContent {
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function testServerEnv() {
+  return {
+    ...process.env,
+    DATABENTO_API_KEY: apiKey,
+  };
+}
+
+async function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number) {
+  if (child.exitCode !== null) {
+    return;
+  }
+
+  await Promise.race([
+    new Promise((resolve) => child.once("exit", resolve)),
+    wait(timeoutMs),
+  ]);
+}
+
+async function stopChildProcess(child: ChildProcessWithoutNullStreams) {
+  if (child.exitCode !== null) {
+    return;
+  }
+
+  child.kill("SIGTERM");
+  await waitForExit(child, 1000);
+
+  if (child.exitCode === null) {
+    child.kill("SIGKILL");
+    await waitForExit(child, 1000);
+  }
+}
+
+function removeTempDir(tempDir: string) {
+  rmSync(tempDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 200,
+  });
 }
 
 function assertConsumerSkillMarkdown(skillPath: string, manifestPath: string) {
@@ -148,9 +190,7 @@ function assertNoSourceCheckoutFallback(extensionDir: string) {
 async function assertNoStartupStdout(entrypoint: string, cwd: string) {
   const child = spawn(process.execPath, [entrypoint], {
     cwd,
-    env: {
-      DATABENTO_API_KEY: apiKey,
-    },
+    env: testServerEnv(),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const stdoutChunks: Buffer[] = [];
@@ -163,12 +203,19 @@ async function assertNoStartupStdout(entrypoint: string, cwd: string) {
     stderrChunks.push(chunk);
   });
 
-  await wait(500);
-  child.kill("SIGTERM");
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    wait(1000),
+  const startupError = new Promise<Error>((resolve) => {
+    child.once("error", resolve);
+  });
+
+  const waitResult = await Promise.race([
+    wait(500).then(() => undefined),
+    startupError,
   ]);
+  if (waitResult instanceof Error) {
+    throw waitResult;
+  }
+
+  await stopChildProcess(child);
 
   const stdout = Buffer.concat(stdoutChunks).toString("utf8");
   if (stdout.length > 0) {
@@ -188,9 +235,7 @@ async function assertStagedMcpServerWorks(extensionDir: string) {
     command: process.execPath,
     args: [entrypoint],
     cwd: extensionDir,
-    env: {
-      DATABENTO_API_KEY: apiKey,
-    },
+    env: testServerEnv(),
     stderr: "pipe",
   });
   const stderrChunks: Buffer[] = [];
@@ -242,9 +287,7 @@ async function assertRequiredEntrypointWorks(extensionDir: string) {
     command: process.execPath,
     args: ["-e", requireScript],
     cwd: extensionDir,
-    env: {
-      DATABENTO_API_KEY: apiKey,
-    },
+    env: testServerEnv(),
     stderr: "pipe",
   });
   const stderrChunks: Buffer[] = [];
@@ -278,6 +321,7 @@ async function assertRequiredEntrypointWorks(extensionDir: string) {
 
 async function main() {
   assert(existsSync(extensionArtifactDir), "consumer Databento MCP extension artifact is missing; run npm run build:consumer");
+  console.log("Consumer artifact smoke: validating staged skill and archives");
   assertNoExternalLinksInSkill();
   assertArchiveLooksLikeZip(skillArchivePath, "consumer skill");
   assertArchiveLooksLikeZip(extensionArchivePath, "MCPB");
@@ -287,18 +331,22 @@ async function main() {
   const extractedExtensionDir = path.join(tempDir, "databento-mcp-desktop-extension");
 
   try {
+    console.log("Consumer artifact smoke: extracting staged archives");
     assertConsumerSkillArchive(extractedSkillDir);
     extractMcpbArchive(extractedExtensionDir);
 
+    console.log("Consumer artifact smoke: validating MCPB manifest and staged runtime");
     assertManifest(extractedExtensionDir);
     assertNoSourceCheckoutFallback(extractedExtensionDir);
+    console.log("Consumer artifact smoke: launching staged MCP server");
     await assertStagedMcpServerWorks(extractedExtensionDir);
+    console.log("Consumer artifact smoke: launching MCPB require entrypoint");
     await assertRequiredEntrypointWorks(extractedExtensionDir);
 
     console.log(`Consumer artifact smoke passed: ${extractedExtensionDir}`);
   } finally {
     if (!process.env.KEEP_CONSUMER_SMOKE_ARTIFACT) {
-      rmSync(tempDir, { recursive: true, force: true });
+      removeTempDir(tempDir);
     }
   }
 }
