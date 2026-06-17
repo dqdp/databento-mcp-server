@@ -129,9 +129,13 @@ describe("consumer distribution packaging contract", () => {
     expect(buildScript).toContain("copyRuntimeNodeModules");
     expect(buildScript).toContain("buildConsumerSkillMarkdown");
     expect(buildScript).toContain("createSkillArchive");
+    expect(buildScript).toContain('from "adm-zip"');
+    expect(buildScript).not.toContain('spawnSync("zip"');
     expect(buildScript).not.toContain("skills/manifest.json");
     expect(smokeScript).toContain("market-data-skill.zip");
     expect(smokeScript).toContain("assertConsumerSkillArchive");
+    expect(smokeScript).toContain('from "adm-zip"');
+    expect(smokeScript).not.toContain('spawnSync("unzip"');
     expect(smokeScript).toContain("databento-mcp-desktop-extension.mcpb");
     expect(smokeScript).toContain("extractMcpbArchive");
     expect(smokeScript).toContain("consumer skill artifact must not advertise local Claude Code skill paths");

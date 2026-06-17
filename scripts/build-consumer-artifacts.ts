@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import AdmZip from "adm-zip";
 
 type PackageJson = {
   name: string;
@@ -225,25 +225,7 @@ function buildSkillArtifact() {
 
 function createSkillArchive() {
   const skillPackageDir = path.join(skillArtifactDir, "market-data");
-  rmSync(skillArchivePath, { force: true });
-
-  const result = spawnSync("zip", ["-qr", skillArchivePath, "."], {
-    cwd: skillPackageDir,
-    encoding: "utf8",
-  });
-
-  if (result.error) {
-    throw new Error(`Failed to run zip for market-data skill archive: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      [
-        "Failed to create market-data skill archive",
-        result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : undefined,
-        result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : undefined,
-      ].filter(Boolean).join("\n")
-    );
-  }
+  createZipArchive(skillPackageDir, skillArchivePath);
 }
 
 function buildExtensionArtifact() {
@@ -269,25 +251,15 @@ function buildExtensionArtifact() {
 }
 
 function createMcpbArchive() {
-  rmSync(extensionArchivePath, { force: true });
+  createZipArchive(extensionArtifactDir, extensionArchivePath);
+}
 
-  const result = spawnSync("zip", ["-qr", extensionArchivePath, "."], {
-    cwd: extensionArtifactDir,
-    encoding: "utf8",
-  });
+function createZipArchive(sourceDir: string, archivePath: string) {
+  rmSync(archivePath, { force: true });
 
-  if (result.error) {
-    throw new Error(`Failed to run zip for MCPB archive: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      [
-        "Failed to create MCPB archive",
-        result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : undefined,
-        result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : undefined,
-      ].filter(Boolean).join("\n")
-    );
-  }
+  const zip = new AdmZip();
+  zip.addLocalFolder(sourceDir);
+  zip.writeZip(archivePath);
 }
 
 function main() {

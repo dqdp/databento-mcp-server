@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import AdmZip from "adm-zip";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -92,22 +93,8 @@ function assertArchiveLooksLikeZip(archivePath: string, label: string) {
 }
 
 function extractZipArchive(archivePath: string, targetDir: string, label: string) {
-  const result = spawnSync("unzip", ["-q", archivePath, "-d", targetDir], {
-    encoding: "utf8",
-  });
-
-  if (result.error) {
-    throw new Error(`Failed to run unzip for ${label} archive: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      [
-        `Failed to extract ${label} archive`,
-        result.stdout.trim() ? `stdout:\n${result.stdout.trim()}` : undefined,
-        result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : undefined,
-      ].filter(Boolean).join("\n")
-    );
-  }
+  const zip = new AdmZip(archivePath);
+  zip.extractAllTo(targetDir, true);
 }
 
 function extractMcpbArchive(targetDir: string) {
