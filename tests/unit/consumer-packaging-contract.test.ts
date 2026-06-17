@@ -128,6 +128,7 @@ describe("consumer distribution packaging contract", () => {
     expect(buildScript).toContain("manifest.template.json");
     expect(buildScript).toContain("copyRuntimeNodeModules");
     expect(buildScript).toContain("buildConsumerSkillMarkdown");
+    expect(buildScript).toContain('replace(/\\r\\n?/g, "\\n")');
     expect(buildScript).toContain("createSkillArchive");
     expect(buildScript).toContain('from "adm-zip"');
     expect(buildScript).not.toContain('spawnSync("zip"');

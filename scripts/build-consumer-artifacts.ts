@@ -145,7 +145,7 @@ function replaceSection(markdown: string, startHeading: string, endHeading: stri
 }
 
 function buildConsumerSkillMarkdown(sourceMarkdown: string) {
-  let markdown = sourceMarkdown.replace(
+  let markdown = sourceMarkdown.replace(/\r\n?/g, "\n").replace(
     /Route market-data requests across configured sources\.[\s\S]*?actual tool access\s+comes from configured MCP servers\./,
     [
       "Route market-data requests across configured sources. In Claude Desktop,",
