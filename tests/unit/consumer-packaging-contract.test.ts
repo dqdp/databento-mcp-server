@@ -113,7 +113,12 @@ describe("consumer distribution packaging contract", () => {
     expect(manifest.compatibility.platforms.sort()).toEqual(["darwin", "linux", "win32"]);
     expect(manifest.compatibility.runtimes.node).toBe(packageJson.engines.node);
     expect(manifest.tools.map((tool) => tool.name)).toEqual(
-      expect.arrayContaining(["get_session_info", "timeseries_get_range", "batch_submit_job"])
+      expect.arrayContaining([
+        "get_live_futures_quote",
+        "get_session_info",
+        "timeseries_get_range",
+        "batch_submit_job",
+      ])
     );
     expect(manifest.tools_generated).toBe(false);
   });

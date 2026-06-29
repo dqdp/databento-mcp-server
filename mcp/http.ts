@@ -14,6 +14,7 @@ import * as dotenv from "dotenv";
 import {
   createDatabentoMcpServer,
   createDefaultDatabentoMcpClients,
+  DATABENTO_MCP_SERVER_VERSION,
   REMOTE_BATCH_TOOL_NAMES,
   type DatabentoMcpClients,
 } from "./index.js";
@@ -22,7 +23,7 @@ export const DEFAULT_HTTP_BODY_LIMIT_BYTES = 1024 * 1024;
 export const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 120;
 export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 export const HEALTHZ_PATH = "/healthz";
-const SERVICE_VERSION = "1.0.0";
+const SERVICE_VERSION = DATABENTO_MCP_SERVER_VERSION;
 const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000;

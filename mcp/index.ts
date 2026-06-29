@@ -16,12 +16,15 @@ import { TimeseriesClient } from "../src/api/timeseries-client.js";
 import { ReferenceClient } from "../src/api/reference-client.js";
 import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
+import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
   parseDatabentoToolArguments,
 } from "./tool-contracts.js";
+
+export const DATABENTO_MCP_SERVER_VERSION = "1.1.0";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -103,6 +106,7 @@ async function assertBatchCostPreflight(
 
 export interface DatabentoMcpClients {
   databentoClient: Pick<DataBentoClient, "getQuote" | "getSessionInfo" | "getHistoricalBars">;
+  liveClient: Pick<DatabentoLiveClient, "getLiveFuturesQuote">;
   metadataClient: Pick<
     MetadataClient,
     "listDatasets" | "listSchemas" | "listPublishers" | "listFields" | "getCost" | "getDatasetRange"
@@ -128,6 +132,7 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 
   return {
     databentoClient: new DataBentoClient(apiKey),
+    liveClient: new DatabentoLiveClient(apiKey),
     metadataClient: new MetadataClient(http),
     referenceClient: new ReferenceClient(apiKey),
     timeseriesClient: new TimeseriesClient(http),
@@ -162,6 +167,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
   return async (request: CallToolRequest): Promise<CallToolResult> => {
     const {
       databentoClient,
+      liveClient,
       metadataClient,
       referenceClient,
       timeseriesClient,
@@ -199,6 +205,42 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           timestamp: quote.timestamp.toISOString(),
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
           source: "DataBento",
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "get_live_futures_quote": {
+        const { symbol, timeout_ms } = args as { symbol: "ES" | "NQ"; timeout_ms?: number };
+        const quote = await liveClient.getLiveFuturesQuote(symbol, {
+          timeoutMs: timeout_ms,
+        });
+
+        const result = {
+          symbol: quote.symbol,
+          liveSymbol: quote.liveSymbol,
+          dataset: quote.dataset,
+          schema: quote.schema,
+          price: quote.price,
+          bid: quote.bid,
+          ask: quote.ask,
+          spread: +(quote.ask - quote.bid).toFixed(2),
+          bidSize: quote.bidSize,
+          askSize: quote.askSize,
+          bidCount: quote.bidCount,
+          askCount: quote.askCount,
+          timestamp: quote.timestamp.toISOString(),
+          receiveTimestamp: quote.receiveTimestamp.toISOString(),
+          dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
+          sessionId: quote.sessionId,
+          source: "DataBento Live API",
         };
 
         return {
@@ -740,7 +782,7 @@ export function createDatabentoMcpServer(
   const server = new Server(
     {
       name: "databento-mcp-server",
-      version: "1.0.0",
+      version: DATABENTO_MCP_SERVER_VERSION,
     },
     {
       capabilities: {

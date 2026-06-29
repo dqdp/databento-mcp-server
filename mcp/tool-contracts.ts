@@ -10,6 +10,8 @@ import {
 
 const FUTURES_SYMBOLS = ["ES", "NQ"] as const;
 const FUTURES_TIMEFRAMES = ["1h", "H4", "1d"] as const;
+const LIVE_QUOTE_MIN_TIMEOUT_MS = 1;
+const LIVE_QUOTE_MAX_TIMEOUT_MS = 30000;
 const SYMBOLOGY_TYPES = ["raw_symbol", "instrument_id", "continuous", "parent"] as const;
 const TIMESERIES_SCHEMAS = [
   "mbp-1",
@@ -282,11 +284,27 @@ const nonEmptyString = (description: string) => z.string().min(1).describe(descr
 export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   {
     name: "get_futures_quote",
-    description: "Get current price quote for ES or NQ futures contracts",
+    description: "Get the latest ES or NQ futures quote from Databento Historical REST data. This is not a true live socket subscription.",
     schema: toolArgs({
       symbol: z
         .enum(FUTURES_SYMBOLS)
         .describe("Futures symbol (ES = E-mini S&P 500, NQ = E-mini Nasdaq-100)"),
+    }),
+  },
+  {
+    name: "get_live_futures_quote",
+    description: "Get a true live ES or NQ futures top-of-book quote through the Databento Live API socket feed.",
+    schema: toolArgs({
+      symbol: z
+        .enum(FUTURES_SYMBOLS)
+        .describe("Futures symbol (ES = E-mini S&P 500, NQ = E-mini Nasdaq-100)"),
+      timeout_ms: z
+        .number()
+        .int()
+        .min(LIVE_QUOTE_MIN_TIMEOUT_MS)
+        .max(LIVE_QUOTE_MAX_TIMEOUT_MS)
+        .describe("Maximum time to wait for the first live quote, in milliseconds. Defaults to 10000.")
+        .optional(),
     }),
   },
   {

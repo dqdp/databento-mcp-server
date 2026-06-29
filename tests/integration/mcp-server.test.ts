@@ -33,6 +33,25 @@ function createMockClients(): DatabentoMcpClients {
         timestamp: new Date("2026-06-15T10:30:00.000Z"),
       })),
     },
+    liveClient: {
+      getLiveFuturesQuote: vi.fn(async () => ({
+        symbol: "ES",
+        liveSymbol: "ES.v.0",
+        dataset: "GLBX.MDP3",
+        schema: "mbp-1",
+        price: 4500.375,
+        bid: 4500.25,
+        ask: 4500.5,
+        bidSize: 10,
+        askSize: 12,
+        bidCount: 3,
+        askCount: 4,
+        timestamp: new Date("2026-06-16T12:00:00.500Z"),
+        receiveTimestamp: new Date("2026-06-16T12:00:00.600Z"),
+        dataAge: 500,
+        sessionId: "session-1",
+      })),
+    },
     metadataClient: {
       listDatasets: vi.fn(),
       listSchemas: vi.fn(),
@@ -113,7 +132,14 @@ describe("MCP server integration", () => {
       const response = await client.listTools();
       const toolsByName = new Map(response.tools.map((tool) => [tool.name, tool]));
 
-      expect(response.tools).toHaveLength(17);
+      expect(response.tools).toHaveLength(18);
+      expect(toolsByName.get("get_live_futures_quote")?.description).toContain("Databento Live API");
+      expect(toolsByName.get("get_live_futures_quote")?.inputSchema.required).toEqual([
+        "symbol",
+      ]);
+      expect(
+        (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).timeout_ms.maximum
+      ).toBe(30000);
       expect(toolsByName.get("get_session_info")?.inputSchema).toEqual(
         expect.objectContaining({
           type: "object",
@@ -220,6 +246,26 @@ describe("MCP server integration", () => {
         })
       );
       expect(clients.databentoClient.getQuote).not.toHaveBeenCalled();
+      expectValidationError(
+        await client.callTool({
+          name: "get_live_futures_quote",
+          arguments: {
+            symbol: "CL",
+          },
+        })
+      );
+      expect(clients.liveClient.getLiveFuturesQuote).not.toHaveBeenCalled();
+
+      expectValidationError(
+        await client.callTool({
+          name: "get_live_futures_quote",
+          arguments: {
+            symbol: "ES",
+            timeout_ms: 30001,
+          },
+        })
+      );
+      expect(clients.liveClient.getLiveFuturesQuote).not.toHaveBeenCalled();
 
       expectValidationError(
         await client.callTool({
@@ -440,6 +486,49 @@ describe("MCP server integration", () => {
         stype_out: undefined,
         limit: 10000,
       });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns true Databento Live quotes through a separate MCP tool", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      const result = await client.callTool({
+        name: "get_live_futures_quote",
+        arguments: {
+          symbol: "ES",
+          timeout_ms: 5000,
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(clients.liveClient.getLiveFuturesQuote).toHaveBeenCalledWith("ES", {
+        timeoutMs: 5000,
+      });
+      expect(textPayload(result)).toEqual(
+        expect.objectContaining({
+          symbol: "ES",
+          liveSymbol: "ES.v.0",
+          dataset: "GLBX.MDP3",
+          schema: "mbp-1",
+          source: "DataBento Live API",
+          price: 4500.375,
+          bid: 4500.25,
+          ask: 4500.5,
+          spread: 0.25,
+          bidSize: 10,
+          askSize: 12,
+          bidCount: 3,
+          askCount: 4,
+          timestamp: "2026-06-16T12:00:00.500Z",
+          receiveTimestamp: "2026-06-16T12:00:00.600Z",
+          dataAge: "1s ago",
+          sessionId: "session-1",
+        })
+      );
     } finally {
       await client.close();
       await server.close();

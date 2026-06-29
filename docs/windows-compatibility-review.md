@@ -149,8 +149,11 @@ On a clean Windows machine with Claude Desktop:
    - `databento_api_key.txt`
    - `alphavantage_api_key.txt`
 2. Install Databento MCP:
-   - `+` -> `Connectors` -> `Manage Connectors` -> `+`
-   - choose `databento-mcp-desktop-extension.mcpb`
+   - double-click `databento-mcp-desktop-extension.mcpb`
+   - this is the same install path as macOS
+   - if Windows does not know how to open `.mcpb`, use Open with ->
+     Choose another app -> Claude Desktop
+   - if Claude Desktop is not listed, browse to `Claude.exe` and select it
    - paste the key from `databento_api_key.txt`
    - save
    - enable the extension

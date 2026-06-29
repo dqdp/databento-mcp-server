@@ -8,6 +8,7 @@ import {
   type StartedRemoteMcpHttpServer,
 } from "../../mcp/http.js";
 import { REMOTE_BATCH_TOOL_NAMES, listDatabentoTools } from "../../mcp/index.js";
+import packageJson from "../../package.json";
 
 let startedServer: StartedRemoteMcpHttpServer | undefined;
 
@@ -203,7 +204,7 @@ describe("MCP Streamable HTTP integration", () => {
     expect(body).toEqual({
       status: "ok",
       service: "databento-mcp-http",
-      version: expect.any(String),
+      version: packageJson.version,
     });
     expect(JSON.stringify(body)).not.toContain("db-test-key");
     expect(JSON.stringify(body)).not.toContain("remote-token");
