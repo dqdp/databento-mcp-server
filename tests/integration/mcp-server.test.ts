@@ -35,10 +35,12 @@ function createMockClients(): DatabentoMcpClients {
     },
     liveClient: {
       getLiveFuturesQuote: vi.fn(async () => ({
-        symbol: "ES",
-        liveSymbol: "ES.v.0",
+        symbol: "CL.v.0",
+        liveSymbol: "CL.v.0",
+        stypeIn: "continuous",
         dataset: "GLBX.MDP3",
         schema: "mbp-1",
+        instrumentId: 22222,
         price: 4500.375,
         bid: 4500.25,
         ask: 4500.5,
@@ -140,6 +142,12 @@ describe("MCP server integration", () => {
       expect(
         (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).timeout_ms.maximum
       ).toBe(30000);
+      expect(
+        (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).stype_in.enum
+      ).toEqual(["raw_symbol", "instrument_id", "continuous", "parent"]);
+      expect(
+        (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).dataset.type
+      ).toBe("string");
       expect(toolsByName.get("get_session_info")?.inputSchema).toEqual(
         expect.objectContaining({
           type: "object",
@@ -250,7 +258,7 @@ describe("MCP server integration", () => {
         await client.callTool({
           name: "get_live_futures_quote",
           arguments: {
-            symbol: "CL",
+            symbol: "ALL_SYMBOLS",
           },
         })
       );
@@ -499,21 +507,27 @@ describe("MCP server integration", () => {
       const result = await client.callTool({
         name: "get_live_futures_quote",
         arguments: {
-          symbol: "ES",
+          symbol: "CL.v.0",
+          dataset: "GLBX.MDP3",
+          stype_in: "continuous",
           timeout_ms: 5000,
         },
       });
 
       expect(result.isError).not.toBe(true);
-      expect(clients.liveClient.getLiveFuturesQuote).toHaveBeenCalledWith("ES", {
+      expect(clients.liveClient.getLiveFuturesQuote).toHaveBeenCalledWith("CL.v.0", {
+        dataset: "GLBX.MDP3",
+        stypeIn: "continuous",
         timeoutMs: 5000,
       });
       expect(textPayload(result)).toEqual(
         expect.objectContaining({
-          symbol: "ES",
-          liveSymbol: "ES.v.0",
+          symbol: "CL.v.0",
+          liveSymbol: "CL.v.0",
+          stypeIn: "continuous",
           dataset: "GLBX.MDP3",
           schema: "mbp-1",
+          instrumentId: 22222,
           source: "DataBento Live API",
           price: 4500.375,
           bid: 4500.25,

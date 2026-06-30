@@ -293,11 +293,28 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "get_live_futures_quote",
-    description: "Get a true live ES or NQ futures top-of-book quote through the Databento Live API socket feed.",
+    description: "Get a true live top-of-book quote update for a futures or futures-options symbol through the Databento Live API socket feed.",
     schema: toolArgs({
       symbol: z
-        .enum(FUTURES_SYMBOLS)
-        .describe("Futures symbol (ES = E-mini S&P 500, NQ = E-mini Nasdaq-100)"),
+        .string()
+        .trim()
+        .min(1)
+        .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+          message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
+        })
+        .describe(
+          "Single Databento symbol. ES and NQ are aliases for ES.v.0/NQ.v.0 continuous front contracts. Use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+        ),
+      dataset: z
+        .string()
+        .trim()
+        .min(1)
+        .describe("Databento dataset code. Defaults to GLBX.MDP3 for CME Globex futures and options on futures.")
+        .optional(),
+      stype_in: z
+        .enum(SYMBOLOGY_TYPES)
+        .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
+        .optional(),
       timeout_ms: z
         .number()
         .int()

@@ -24,7 +24,7 @@ import {
   parseDatabentoToolArguments,
 } from "./tool-contracts.js";
 
-export const DATABENTO_MCP_SERVER_VERSION = "1.1.0";
+export const DATABENTO_MCP_SERVER_VERSION = "1.2.0";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -218,16 +218,25 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       }
 
       case "get_live_futures_quote": {
-        const { symbol, timeout_ms } = args as { symbol: "ES" | "NQ"; timeout_ms?: number };
+        const { symbol, dataset, stype_in, timeout_ms } = args as {
+          symbol: string;
+          dataset?: string;
+          stype_in?: "raw_symbol" | "instrument_id" | "continuous" | "parent";
+          timeout_ms?: number;
+        };
         const quote = await liveClient.getLiveFuturesQuote(symbol, {
+          dataset,
+          stypeIn: stype_in,
           timeoutMs: timeout_ms,
         });
 
         const result = {
           symbol: quote.symbol,
           liveSymbol: quote.liveSymbol,
+          stypeIn: quote.stypeIn,
           dataset: quote.dataset,
           schema: quote.schema,
+          instrumentId: quote.instrumentId,
           price: quote.price,
           bid: quote.bid,
           ask: quote.ask,

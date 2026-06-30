@@ -184,9 +184,9 @@ function buildConsumerSkillMarkdown(sourceMarkdown: string) {
   domains.
 - Live Databento API: Databento MCP tools call Databento over the network and
   require a valid Databento API key configured in the MCP server or Desktop
-  Extension. Use \`get_live_futures_quote\` for true ES/NQ Live API quote
-  updates and \`get_futures_quote\` as a separate latest Historical REST quote
-  path.
+  Extension. Use \`get_live_futures_quote\` for true single-symbol Databento
+  Live API quote updates on covered futures and options on futures. Use
+  \`get_futures_quote\` as a separate latest Historical REST quote path.
 - Side effects: Databento batch submit can create Databento batch jobs. Treat
   batch submit as a paid operation unless the user explicitly approves the query
   scope and cost risk.`
@@ -229,9 +229,11 @@ Historical Standard CME guardrails:
 - Direct \`timeseries_get_range\` rejects \`ALL_SYMBOLS\` and caps direct output
   with \`MCP_DIRECT_MAX_RECORDS\` (default 10000).
 - Use \`batch_submit_job\` for large covered exports, including \`ALL_SYMBOLS\`.
-- Use \`get_live_futures_quote\` for true ES/NQ live top-of-book updates. It is
-  a short-lived Databento Live API update tool, not an MBO snapshot tool or a
-  persistent stream.
+- Use \`get_live_futures_quote\` for true single-symbol live top-of-book
+  updates on covered futures and options on futures. It accepts explicit
+  \`dataset\`, \`stype_in\`, and \`timeout_ms\`; ES and NQ without \`stype_in\`
+  are aliases for \`ES.v.0\` and \`NQ.v.0\`. It is a short-lived Databento Live
+  API update tool, not an MBO snapshot tool or a persistent stream.
 - Use \`get_futures_quote\` as a separate latest Historical REST quote feature,
   not as a degraded live-data mode.
 - Historical API pulls can be near the current catalog frontier, but deep order

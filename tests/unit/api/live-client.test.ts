@@ -42,6 +42,7 @@ function encodeDbnMetadataPrelude(metadataLength = 120): Buffer {
 function encodeMbp1Record(params: {
   tsEventNs: bigint;
   tsRecvNs: bigint;
+  instrumentId?: number;
   bid: number;
   ask: number;
   bidSize: number;
@@ -53,7 +54,7 @@ function encodeMbp1Record(params: {
   record.writeUInt8(20, 0);
   record.writeUInt8(1, 1);
   record.writeUInt16LE(1, 2);
-  record.writeUInt32LE(12345, 4);
+  record.writeUInt32LE(params.instrumentId ?? 12345, 4);
   record.writeBigUInt64LE(params.tsEventNs, 8);
   record.writeBigInt64LE(BigInt(Math.round(((params.bid + params.ask) / 2) * 1e9)), 16);
   record.writeUInt32LE(1, 24);
@@ -134,8 +135,10 @@ describe("DatabentoLiveClient", () => {
     expect(quote).toEqual({
       symbol: "ES",
       liveSymbol: "ES.v.0",
+      stypeIn: "continuous",
       dataset: "GLBX.MDP3",
       schema: "mbp-1",
+      instrumentId: 12345,
       bid: 4500.25,
       ask: 4500.5,
       price: 4500.375,
@@ -190,9 +193,121 @@ describe("DatabentoLiveClient", () => {
       expect.objectContaining({
         symbol: "NQ",
         liveSymbol: "NQ.v.0",
+        stypeIn: "continuous",
         bid: 19000.25,
         ask: 19000.75,
       })
+    );
+  });
+
+  it("subscribes arbitrary futures symbols with explicit symbology", async () => {
+    const socket = new FakeLiveSocket();
+    const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345", {
+      socketFactory: () => socket,
+      now: () => Date.parse("2026-06-16T12:00:01.000Z"),
+    });
+
+    const quotePromise = client.getLiveFuturesQuote("CL.v.0", {
+      dataset: "GLBX.MDP3",
+      stypeIn: "continuous",
+      timeoutMs: 5_000,
+    });
+
+    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=challenge-123\n"));
+    socket.emit("data", Buffer.from("success=1|session_id=session-1\n"));
+
+    await vi.waitFor(() => {
+      expect(socket.writes.map((write) => write.toString("utf8"))).toEqual(
+        expect.arrayContaining([
+          "auth=44151f08364aed917587b50ac9df3c58db3fe9937c39ad2d5e7da0584b24dd97-12345|dataset=GLBX.MDP3|encoding=dbn|ts_out=0|compression=none|client=databento-mcp-server\n",
+          "schema=mbp-1|stype_in=continuous|symbols=CL.v.0|id=0|is_last=1\n",
+        ])
+      );
+    });
+
+    socket.emit(
+      "data",
+      Buffer.concat([
+        encodeDbnMetadataPrelude(),
+        encodeMbp1Record({
+          tsEventNs: 1_781_611_200_500_000_000n,
+          tsRecvNs: 1_781_611_200_600_000_000n,
+          instrumentId: 22222,
+          bid: 72.31,
+          ask: 72.32,
+          bidSize: 18,
+          askSize: 21,
+          bidCount: 6,
+          askCount: 7,
+        }),
+      ])
+    );
+
+    await expect(quotePromise).resolves.toEqual(
+      expect.objectContaining({
+        symbol: "CL.v.0",
+        liveSymbol: "CL.v.0",
+        stypeIn: "continuous",
+        instrumentId: 22222,
+        bid: 72.31,
+        ask: 72.32,
+      })
+    );
+  });
+
+  it("subscribes futures options parent groups when requested explicitly", async () => {
+    const socket = new FakeLiveSocket();
+    const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345", {
+      socketFactory: () => socket,
+    });
+
+    const quotePromise = client.getLiveFuturesQuote("ES.OPT", {
+      stypeIn: "parent",
+      timeoutMs: 5_000,
+    });
+
+    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=challenge-123\n"));
+    socket.emit("data", Buffer.from("success=1|session_id=session-1\n"));
+
+    await vi.waitFor(() => {
+      expect(socket.writes.map((write) => write.toString("utf8"))).toContain(
+        "schema=mbp-1|stype_in=parent|symbols=ES.OPT|id=0|is_last=1\n"
+      );
+    });
+
+    socket.emit(
+      "data",
+      Buffer.concat([
+        encodeDbnMetadataPrelude(),
+        encodeMbp1Record({
+          tsEventNs: 1_781_611_200_500_000_000n,
+          tsRecvNs: 1_781_611_200_600_000_000n,
+          instrumentId: 33333,
+          bid: 10.25,
+          ask: 10.5,
+          bidSize: 4,
+          askSize: 5,
+          bidCount: 1,
+          askCount: 2,
+        }),
+      ])
+    );
+
+    await expect(quotePromise).resolves.toEqual(
+      expect.objectContaining({
+        symbol: "ES.OPT",
+        liveSymbol: "ES.OPT",
+        stypeIn: "parent",
+        instrumentId: 33333,
+      })
+    );
+  });
+
+  it("rejects ALL_SYMBOLS live quote subscriptions to avoid broad streams", async () => {
+    const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345");
+
+    await expect(client.getLiveFuturesQuote("ALL_SYMBOLS")).rejects.toThrow(
+      "get_live_futures_quote requires a single symbol"
     );
   });
 

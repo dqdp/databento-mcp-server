@@ -1,7 +1,7 @@
 ---
 name: market-data
 description: Market data source routing for Databento and Alpha Vantage MCP workflows
-version: 1.1.0
+version: 1.2.0
 triggers:
   - "databento"
   - "cme market data"
@@ -93,7 +93,7 @@ Use only the operating rules embedded in this file:
   reasonably mean either source.
 - For live or potentially large requests, state the selected source, expected
   data shape, date range, adjustment semantics, and cost/volume risk before
-  invoking tools. Exception: routine Databento ES/NQ live quote updates,
+  invoking tools. Exception: routine Databento single-symbol live quote updates,
   routine Alpha Vantage live quotes, and small intraday pulls do not need this
   preamble; default to live data and return it directly when the request is
   unambiguous.
@@ -106,8 +106,9 @@ the necessary MCP servers connected.
 Databento MCP tools expected for this skill:
 
 - Quote/session safety: `get_live_futures_quote` (true Databento Live API
-  top-of-book quote update, ES/NQ ONLY), `get_futures_quote` (latest Historical REST quote,
-  ES/NQ ONLY), `get_session_info`.
+  top-of-book quote update for a single covered futures or futures-options
+  symbol), `get_futures_quote` (latest Historical REST quote, ES/NQ ONLY),
+  `get_session_info`.
 - Timeseries/direct data: `get_historical_bars` (ES/NQ ONLY), `timeseries_get_range`
   (the workhorse for everything else — any dataset/symbol/schema, incl. CL, other
   commodities, and options on futures).
@@ -211,15 +212,20 @@ Historical Standard CME guardrails:
 
 Databento operating reality (verified against the live MCP, 2026-06-29):
 
-- The convenience tools `get_live_futures_quote`, `get_futures_quote`, and
-  `get_historical_bars` are hard-wired to ES/NQ only. For every other instrument
-  — CL/WTI and other commodities, and ALL options on futures — use
+- The live quote tool `get_live_futures_quote` accepts any single covered
+  Databento symbol for futures and options on futures. It supports explicit
+  `dataset`, `stype_in`, and `timeout_ms`. Use `stype_in=continuous` for
+  continuous futures such as `CL.v.0`, `stype_in=raw_symbol` or
+  `instrument_id` for exact listed instruments, and `stype_in=parent` only when
+  a first update from a parent group such as `ES.FUT` or `ES.OPT` is acceptable.
+- The convenience tools `get_futures_quote` and `get_historical_bars` remain
+  ES/NQ only. For non-ES/NQ historical bars or broader schemas, use
   `timeseries_get_range`.
 - `get_live_futures_quote` is the true Databento Live API path. It opens a
-  short-lived Raw API socket subscription for `GLBX.MDP3`, `schema=mbp-1`,
-  `stype_in=continuous`, and `ES.v.0` or `NQ.v.0`, returns the first
+  short-lived Raw API socket subscription for `schema=mbp-1`, returns the first
   top-of-book update, then closes the socket. It is a short-lived live update
-  tool, not an MBO snapshot tool and not a persistent push/stream tool.
+  tool, not an MBO snapshot tool and not a persistent push/stream tool. ES and
+  NQ without `stype_in` are convenience aliases for `ES.v.0` and `NQ.v.0`.
 - `get_futures_quote` is the latest quote path via Databento Historical REST
   (`ES.c.0`/`NQ.c.0`) and uses a local 30-second cache. Treat it as a
   separate historical-data feature, not as a degraded live-data mode, and do not
@@ -382,7 +388,7 @@ Rules for agents:
 
 ## When to Use This Skill
 
-- **Standard CME Futures Data**: Get current quotes for ES, NQ, and covered CME futures workflows
+- **Standard CME Futures Data**: Get current live quotes for covered CME futures and options-on-futures symbols
 - **CME Futures Options Routing**: Keep CME options on futures with Databento when covered
 - **Databento Historical Analysis**: Retrieve covered Standard CME OHLCV bars and tick/order-book data for backtesting
 - **Symbol Management**: Resolve symbols across different symbology types
@@ -392,10 +398,11 @@ Rules for agents:
 
 ## Available Capabilities
 
-### 1. Real-Time Futures Quotes
-Get current price quotes for ES (E-mini S&P 500) or NQ (E-mini Nasdaq-100) futures.
+### 1. Real-Time Futures And Futures-Options Quotes
+Get current top-of-book quote updates for a single covered Databento futures or
+options-on-futures symbol.
 
-**Usage**: "Get current ES quote" or "What's the NQ price?"
+**Usage**: "Get current CL.v.0 quote" or "Get a live quote for ES.OPT parent"
 
 ### 2. Historical Bars
 Retrieve OHLCV historical data for futures contracts.
@@ -520,7 +527,7 @@ soft commodity → Alpha Vantage.
 ## Examples
 
 **Get live futures quote**:
-> "Show me the current ES futures quote" -> `get_live_futures_quote`.
+> "Show me the current CL.v.0 futures quote" -> `get_live_futures_quote` with `stype_in=continuous`.
 
 **Latest historical quote**:
 > "Show me the latest ES quote from historical data" -> `get_futures_quote`.

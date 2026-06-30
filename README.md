@@ -13,14 +13,14 @@ This project now supports two deployment modes:
 Both modes share the same core functionality:
 - Complete Databento API coverage (Timeseries, Metadata, Batch, Symbology, Reference)
 - Full Historical API support with flexible schemas
-- Latest historical and true live futures quote updates (ES, NQ)
+- Latest historical ES/NQ quotes and true live futures/options-on-futures quote updates
 - Type-safe TypeScript implementation throughout
 
 Choose the deployment that fits your workflow best!
 
 ## Features
 
-- 🎯 **Futures Quotes** - Latest historical and true live top-of-book updates for ES and NQ contracts
+- 🎯 **Futures Quotes** - Latest historical ES/NQ quotes and true live top-of-book updates for covered futures/options-on-futures symbols
 - 📊 **Historical Timeseries** - Stream supported market data schemas across date ranges
 - 📈 **Batch Downloads** - Submit and manage large historical data jobs
 - 🔍 **Symbol Resolution** - Resolve symbols to instrument IDs across datasets
@@ -278,7 +278,7 @@ The MCP server provides 18 tools organized into 6 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Original** | 4 tools | ES/NQ futures quotes, live quotes, session info, historical bars |
+| **Original** | 4 tools | ES/NQ historical quotes, single-symbol live quotes, session info, historical bars |
 | **Timeseries** | 1 tool | Historical market data streaming with flexible schemas |
 | **Symbology** | 1 tool | Symbol resolution and conversion |
 | **Metadata** | 6 tools | Dataset discovery, schema info, cost estimation |
@@ -316,15 +316,18 @@ Live API socket tool.
 
 #### 2. `get_live_futures_quote`
 
-Get a true live ES or NQ futures top-of-book quote through the Databento Live
-API socket feed. The tool opens a short-lived `mbp-1` subscription for
-the volume-based front continuous contract (`ES.v.0` or `NQ.v.0`), returns the
-first quote update, and closes the socket.
+Get a true live top-of-book quote update for a single covered futures or
+options-on-futures symbol through the Databento Live API socket feed. The tool
+opens a short-lived `mbp-1` subscription, returns the first quote update, and
+closes the socket. `ES` and `NQ` are convenience aliases for `ES.v.0` and
+`NQ.v.0`; all other symbols should specify the appropriate `stype_in`.
 
 **Input:**
 ```json
 {
-  "symbol": "ES",
+  "symbol": "CL.v.0",
+  "dataset": "GLBX.MDP3",
+  "stype_in": "continuous",
   "timeout_ms": 10000
 }
 ```
@@ -332,14 +335,16 @@ first quote update, and closes the socket.
 **Output:**
 ```json
 {
-  "symbol": "ES",
-  "liveSymbol": "ES.v.0",
+  "symbol": "CL.v.0",
+  "liveSymbol": "CL.v.0",
+  "stypeIn": "continuous",
   "dataset": "GLBX.MDP3",
   "schema": "mbp-1",
-  "price": 5845.25,
-  "bid": 5845.00,
-  "ask": 5845.50,
-  "spread": 0.50,
+  "instrumentId": 22222,
+  "price": 72.315,
+  "bid": 72.31,
+  "ask": 72.32,
+  "spread": 0.01,
   "bidSize": 10,
   "askSize": 12,
   "bidCount": 3,
@@ -992,7 +997,7 @@ Once configured, you can ask Claude:
 
 Claude will use the `get_futures_quote` tool to fetch the latest Historical REST quote.
 
-> "Get a true live ES quote"
+> "Get a true live CL.v.0 quote"
 
 Claude will use the `get_live_futures_quote` tool to fetch a Databento Live API quote update.
 
@@ -1075,7 +1080,7 @@ All tools return structured errors:
 
 Common errors:
 - Missing API key
-- Invalid symbol (only ES/NQ supported)
+- Invalid symbol or unsupported broad stream (`ALL_SYMBOLS` and comma-separated symbols are rejected for live quotes)
 - No data available (weekends, holidays)
 - API rate limit exceeded
 
@@ -1213,7 +1218,9 @@ npm run dev
 
 ## Limitations
 
-- **Original Tools**: `get_futures_quote` and `get_historical_bars` only support ES and NQ futures
+- **Original Historical Convenience Tools**: `get_futures_quote` and
+  `get_historical_bars` only support ES and NQ futures; `get_live_futures_quote`
+  accepts a single covered Databento futures or futures-options symbol
 - **Historical Standard CME Tools**: `timeseries_get_range` and
   `batch_submit_job` default to the Standard CME dataset allowlist
   (`GLBX.MDP3`) and entitlement windows

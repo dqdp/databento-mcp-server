@@ -16,18 +16,22 @@ const DBN_RTYPE_ERROR = 21;
 const MBP_1_RECORD_MIN_LENGTH = 80;
 const UNDEF_PRICE = 9_223_372_036_854_775_807n;
 
-const LIVE_SYMBOL_MAP: Record<LiveFuturesSymbol, string> = {
-  ES: "ES.v.0",
-  NQ: "NQ.v.0",
+export const LIVE_SYMBOL_STYPES = ["raw_symbol", "instrument_id", "continuous", "parent"] as const;
+
+const LIVE_SYMBOL_ALIASES: Record<string, { symbol: string; stypeIn: LiveSymbolSType }> = {
+  ES: { symbol: "ES.v.0", stypeIn: "continuous" },
+  NQ: { symbol: "NQ.v.0", stypeIn: "continuous" },
 };
 
-export type LiveFuturesSymbol = "ES" | "NQ";
+export type LiveSymbolSType = (typeof LIVE_SYMBOL_STYPES)[number];
 
 export interface LiveQuoteData {
-  symbol: LiveFuturesSymbol;
+  symbol: string;
   liveSymbol: string;
+  stypeIn: LiveSymbolSType;
   dataset: string;
   schema: "mbp-1";
+  instrumentId: number;
   price: number;
   bid: number;
   ask: number;
@@ -42,6 +46,8 @@ export interface LiveQuoteData {
 }
 
 export interface LiveQuoteOptions {
+  dataset?: string;
+  stypeIn?: LiveSymbolSType;
   timeoutMs?: number;
 }
 
@@ -66,8 +72,16 @@ type GatewayControlMessage = Record<string, string>;
 
 type DbnDecodeResult =
   | { status: "need-more" }
-  | { status: "quote"; quote: Omit<LiveQuoteData, "symbol" | "liveSymbol" | "dataset" | "schema" | "sessionId"> }
+  | { status: "quote"; quote: Omit<LiveQuoteData, "symbol" | "liveSymbol" | "stypeIn" | "dataset" | "schema" | "sessionId"> }
   | { status: "gateway-error"; message: string };
+
+type NormalizedLiveQuoteRequest = {
+  requestedSymbol: string;
+  liveSymbol: string;
+  stypeIn: LiveSymbolSType;
+  dataset: string;
+  cacheKey: string;
+};
 
 export function computeDatabentoCramResponse(challenge: string, apiKey: string): string {
   const bucketId = apiKey.slice(-5);
@@ -196,7 +210,7 @@ class DbnMbp1QuoteDecoder {
 function parseMbp1QuoteRecord(
   record: Buffer,
   now: () => number
-): Omit<LiveQuoteData, "symbol" | "liveSymbol" | "dataset" | "schema" | "sessionId"> | undefined {
+): Omit<LiveQuoteData, "symbol" | "liveSymbol" | "stypeIn" | "dataset" | "schema" | "sessionId"> | undefined {
   if (record.length < MBP_1_RECORD_MIN_LENGTH) {
     throw new Error(`Invalid MBP-1 record length: ${record.length}`);
   }
@@ -214,6 +228,7 @@ function parseMbp1QuoteRecord(
   const timestamp = unixNanosToDate(tsEvent);
 
   return {
+    instrumentId: record.readUInt32LE(4),
     price: (bid + ask) / 2,
     bid,
     ask,
@@ -230,13 +245,13 @@ function parseMbp1QuoteRecord(
 export class DatabentoLiveClient {
   private readonly apiKey: string;
   private readonly dataset: string;
-  private readonly gateway: string;
+  private readonly gatewayOverride?: string;
   private readonly port: number;
   private readonly socketFactory: LiveSocketFactory;
   private readonly now: () => number;
   private readonly quoteCacheTtlMs: number;
-  private readonly inFlightQuotes = new Map<LiveFuturesSymbol, Promise<LiveQuoteData>>();
-  private readonly quoteCache = new Map<LiveFuturesSymbol, { quote: LiveQuoteData; expiresAtMs: number }>();
+  private readonly inFlightQuotes = new Map<string, Promise<LiveQuoteData>>();
+  private readonly quoteCache = new Map<string, { quote: LiveQuoteData; expiresAtMs: number }>();
 
   constructor(apiKey: string, options: DatabentoLiveClientOptions = {}) {
     if (!apiKey) {
@@ -248,7 +263,7 @@ export class DatabentoLiveClient {
 
     this.apiKey = apiKey;
     this.dataset = options.dataset ?? DEFAULT_LIVE_DATASET;
-    this.gateway = options.gateway ?? getDatabentoLiveGatewayHost(this.dataset);
+    this.gatewayOverride = options.gateway;
     this.port = options.port ?? DEFAULT_LIVE_PORT;
     this.socketFactory = options.socketFactory ?? createDefaultSocket;
     this.now = options.now ?? (() => Date.now());
@@ -256,33 +271,30 @@ export class DatabentoLiveClient {
   }
 
   async getLiveFuturesQuote(
-    symbol: LiveFuturesSymbol,
+    symbol: string,
     options: LiveQuoteOptions = {}
   ): Promise<LiveQuoteData> {
-    const liveSymbol = LIVE_SYMBOL_MAP[symbol];
-    if (!liveSymbol) {
-      throw new Error(`Invalid live futures symbol: ${symbol}`);
-    }
+    const request = this.normalizeQuoteRequest(symbol, options);
 
     const timeoutMs = options.timeoutMs ?? DEFAULT_LIVE_TIMEOUT_MS;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
       throw new Error("timeoutMs must be an integer between 1 and 30000");
     }
 
-    const cached = this.quoteCache.get(symbol);
+    const cached = this.quoteCache.get(request.cacheKey);
     if (cached && cached.expiresAtMs > this.now()) {
       return cached.quote;
     }
 
-    const inFlight = this.inFlightQuotes.get(symbol);
+    const inFlight = this.inFlightQuotes.get(request.cacheKey);
     if (inFlight) {
       return inFlight;
     }
 
-    const quotePromise = this.readLiveQuote(symbol, liveSymbol, timeoutMs)
+    const quotePromise = this.readLiveQuote(request, timeoutMs)
       .then((quote) => {
         if (this.quoteCacheTtlMs > 0) {
-          this.quoteCache.set(symbol, {
+          this.quoteCache.set(request.cacheKey, {
             quote,
             expiresAtMs: this.now() + this.quoteCacheTtlMs,
           });
@@ -290,19 +302,46 @@ export class DatabentoLiveClient {
         return quote;
       })
       .finally(() => {
-        this.inFlightQuotes.delete(symbol);
+        this.inFlightQuotes.delete(request.cacheKey);
       });
 
-    this.inFlightQuotes.set(symbol, quotePromise);
+    this.inFlightQuotes.set(request.cacheKey, quotePromise);
     return quotePromise;
   }
 
-  private readLiveQuote(
-    symbol: LiveFuturesSymbol,
-    liveSymbol: string,
-    timeoutMs: number
-  ): Promise<LiveQuoteData> {
-    const socket = this.socketFactory({ host: this.gateway, port: this.port });
+  private normalizeQuoteRequest(symbol: string, options: LiveQuoteOptions): NormalizedLiveQuoteRequest {
+    const requestedSymbol = symbol.trim();
+    if (!requestedSymbol || requestedSymbol.includes(",") || requestedSymbol.toUpperCase() === "ALL_SYMBOLS") {
+      throw new Error("get_live_futures_quote requires a single symbol; ALL_SYMBOLS and comma-separated symbols are not supported");
+    }
+
+    const dataset = (options.dataset ?? this.dataset).trim();
+    if (!dataset) {
+      throw new Error("dataset must be a non-empty Databento dataset code");
+    }
+
+    const alias = options.stypeIn ? undefined : LIVE_SYMBOL_ALIASES[requestedSymbol.toUpperCase()];
+    const liveSymbol = alias?.symbol ?? requestedSymbol;
+    const stypeIn = options.stypeIn ?? alias?.stypeIn ?? "raw_symbol";
+    if (!LIVE_SYMBOL_STYPES.includes(stypeIn)) {
+      throw new Error(`stypeIn must be one of: ${LIVE_SYMBOL_STYPES.join(", ")}`);
+    }
+
+    return {
+      requestedSymbol,
+      liveSymbol,
+      stypeIn,
+      dataset,
+      cacheKey: `${dataset}|${stypeIn}|${liveSymbol}`,
+    };
+  }
+
+  private gatewayForDataset(dataset: string): string {
+    return this.gatewayOverride ?? getDatabentoLiveGatewayHost(dataset);
+  }
+
+  private readLiveQuote(request: NormalizedLiveQuoteRequest, timeoutMs: number): Promise<LiveQuoteData> {
+    const socket = this.socketFactory({ host: this.gatewayForDataset(request.dataset), port: this.port });
     const dbnDecoder = new DbnMbp1QuoteDecoder();
     let controlBuffer = Buffer.alloc(0);
     let sessionId: string | undefined;
@@ -351,9 +390,10 @@ export class DatabentoLiveClient {
             finish(() => {
               socket.end();
               resolve({
-                symbol,
-                liveSymbol,
-                dataset: this.dataset,
+                symbol: request.requestedSymbol,
+                liveSymbol: request.liveSymbol,
+                stypeIn: request.stypeIn,
+                dataset: request.dataset,
                 schema: "mbp-1",
                 ...result.quote,
                 sessionId,
@@ -371,7 +411,7 @@ export class DatabentoLiveClient {
           socket.write(
             serializeGatewayControl({
               auth: computeDatabentoCramResponse(message.cram, this.apiKey),
-              dataset: this.dataset,
+              dataset: request.dataset,
               encoding: "dbn",
               ts_out: "0",
               compression: "none",
@@ -391,8 +431,8 @@ export class DatabentoLiveClient {
           socket.write(
             serializeGatewayControl({
               schema: "mbp-1",
-              stype_in: "continuous",
-              symbols: liveSymbol,
+              stype_in: request.stypeIn,
+              symbols: request.liveSymbol,
               id: "0",
               is_last: "1",
             })

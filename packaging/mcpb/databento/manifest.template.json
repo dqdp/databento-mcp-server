@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "databento-mcp",
   "display_name": "Databento MCP",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Databento market data MCP server for Claude Desktop",
-  "long_description": "Local Databento MCP server for CME futures market data, true live ES/NQ quote updates, symbology, metadata, reference data, and guarded batch workflows. API keys are collected through sensitive configuration.",
+  "long_description": "Local Databento MCP server for CME futures market data, true live futures and futures-options quote updates, symbology, metadata, reference data, and guarded batch workflows. API keys are collected through sensitive configuration.",
   "author": {
     "name": "Databento MCP Maintainers"
   },
@@ -29,7 +29,7 @@
     },
     {
       "name": "get_live_futures_quote",
-      "description": "Get a true Databento Live API top-of-book quote update for ES or NQ futures contracts"
+      "description": "Get a true Databento Live API top-of-book quote update for a covered futures or futures-options symbol"
     },
     {
       "name": "get_session_info",
