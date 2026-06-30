@@ -390,10 +390,39 @@ describe('DataBentoClient', () => {
       expect(bars[1].timestamp.getTime()).toBe(1609488000000);
     });
 
-    it('should throw error for invalid symbol', async () => {
+    it('should throw error for an empty symbol', async () => {
       await expect(
-        client.getHistoricalBars('INVALID' as any, '1h', 10)
-      ).rejects.toThrow('Invalid symbol: INVALID');
+        client.getHistoricalBars('' as any, '1h', 10)
+      ).rejects.toThrow('Invalid symbol');
+    });
+
+    it('should default a non-ES/NQ symbol to raw_symbol', async () => {
+      mockHttpGet.mockResolvedValue(mockBarsResponse);
+
+      await client.getHistoricalBars('CLZ6', '1d', 3);
+
+      expect(mockHttpGet).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          symbols: 'CLZ6',
+          stype_in: 'raw_symbol',
+          schema: 'ohlcv-1d',
+        })
+      );
+    });
+
+    it('should honor an explicit stype_in for any symbol', async () => {
+      mockHttpGet.mockResolvedValue(mockBarsResponse);
+
+      await client.getHistoricalBars('CL.v.0', '1d', 3, 'continuous');
+
+      expect(mockHttpGet).toHaveBeenCalledWith(
+        '/v0/timeseries.get_range',
+        expect.objectContaining({
+          symbols: 'CL.v.0',
+          stype_in: 'continuous',
+        })
+      );
     });
 
     it('should throw error when no data is available', async () => {
@@ -421,28 +450,24 @@ describe('DataBentoClient', () => {
 
       const callArgs = mockHttpGet.mock.calls[0][1];
       const startDate = new Date(callArgs.start);
-      const endDate = new Date(callArgs.end);
+      const now = new Date();
       const daysDiff = Math.ceil(
-        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+        (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
       );
 
       // Should request at least 2 days + 7 day buffer for weekends
       expect(daysDiff).toBeGreaterThanOrEqual(9);
     });
 
-    it('should send historical bars end as the current ISO timestamp', async () => {
-      vi.useFakeTimers();
-      const now = new Date('2024-03-15T18:30:00.000Z');
-      vi.setSystemTime(now);
+    it('should omit end so DataBento returns latest available bars (avoids intraday HTTP 422)', async () => {
       mockHttpGet.mockResolvedValue(mockBarsResponse);
 
       await client.getHistoricalBars('ES', '1h', 3);
 
       const callArgs = mockHttpGet.mock.calls[0][1];
-      expect(callArgs.end).toBe(now.toISOString());
-      expect(callArgs.end).toContain('T');
-
-      vi.useRealTimers();
+      // `end`=now used to exceed the ohlcv frontier intraday and 422; it must not be sent.
+      expect(callArgs.end).toBeUndefined();
+      expect(callArgs.start).toBeTruthy();
     });
 
     it('should calculate correct date range for H4 timeframe', async () => {
@@ -461,9 +486,9 @@ describe('DataBentoClient', () => {
 
       const callArgs = mockHttpGet.mock.calls[0][1];
       const startDate = new Date(callArgs.start);
-      const endDate = new Date(callArgs.end);
+      const now = new Date();
       const daysDiff = Math.ceil(
-        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+        (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
       );
 
       // Should request 10 days + 7 day buffer

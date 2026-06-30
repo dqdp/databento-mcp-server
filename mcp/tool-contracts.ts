@@ -169,7 +169,16 @@ function directTimeseriesArgs<T extends z.ZodRawShape>(shape: T): ToolArgumentSc
 
 function historicalBarsArgs(): ToolArgumentSchema {
   return toolArgs({
-    symbol: z.enum(FUTURES_SYMBOLS).describe("Futures symbol"),
+    symbol: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+        message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
+      })
+      .describe(
+        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+      ),
     timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
     count: z
       .number()
@@ -178,6 +187,10 @@ function historicalBarsArgs(): ToolArgumentSchema {
       .describe(
         `Number of bars to retrieve. Max ${MAX_INTRADAY_HISTORICAL_BARS} for 1h/H4, max ${MAX_DAILY_HISTORICAL_BARS} for 1d.`
       ),
+    stype_in: z
+      .enum(SYMBOLOGY_TYPES)
+      .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
+      .optional(),
   }).superRefine((args, context) => {
     const maxCount = args.timeframe === "1d" ? MAX_DAILY_HISTORICAL_BARS : MAX_INTRADAY_HISTORICAL_BARS;
     if (args.count > maxCount) {

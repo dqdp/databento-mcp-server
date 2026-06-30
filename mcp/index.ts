@@ -286,13 +286,14 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       }
 
       case "get_historical_bars": {
-        const { symbol, timeframe, count } = args as {
-          symbol: "ES" | "NQ";
+        const { symbol, timeframe, count, stype_in } = args as {
+          symbol: string;
           timeframe: "1h" | "H4" | "1d";
           count: number;
+          stype_in?: "raw_symbol" | "instrument_id" | "continuous" | "parent";
         };
 
-        const bars = await databentoClient.getHistoricalBars(symbol, timeframe, count);
+        const bars = await databentoClient.getHistoricalBars(symbol, timeframe, count, stype_in);
 
         const result = {
           symbol,

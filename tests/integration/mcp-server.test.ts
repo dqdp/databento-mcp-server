@@ -604,7 +604,7 @@ describe("MCP server integration", () => {
       });
 
       expect(result.isError).not.toBe(true);
-      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledWith("ES", "1d", 5000);
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledWith("ES", "1d", 5000, undefined);
 
       expectValidationError(
         await client.callTool({
@@ -617,6 +617,30 @@ describe("MCP server integration", () => {
         })
       );
       expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("accepts arbitrary (non-ES/NQ) historical-bar symbols and passes stype_in through", async () => {
+    const { client, clients, server } = await connectTestClient();
+
+    try {
+      vi.mocked(clients.databentoClient.getHistoricalBars).mockResolvedValueOnce([]);
+
+      const result = await client.callTool({
+        name: "get_historical_bars",
+        arguments: {
+          symbol: "CL.v.0",
+          timeframe: "1d",
+          count: 5,
+          stype_in: "continuous",
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledWith("CL.v.0", "1d", 5, "continuous");
     } finally {
       await client.close();
       await server.close();
