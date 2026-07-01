@@ -134,7 +134,9 @@ describe("MCP server integration", () => {
       const response = await client.listTools();
       const toolsByName = new Map(response.tools.map((tool) => [tool.name, tool]));
 
-      expect(response.tools).toHaveLength(18);
+      expect(response.tools).toHaveLength(19);
+      expect(toolsByName.get("get_futures_options_smile")?.description).toContain("volatility-smile");
+      expect(toolsByName.get("get_futures_options_smile")?.inputSchema.required).toEqual(["root"]);
       expect(toolsByName.get("get_live_futures_quote")?.description).toContain("Databento Live API");
       expect(toolsByName.get("get_live_futures_quote")?.inputSchema.required).toEqual([
         "symbol",
@@ -959,6 +961,53 @@ describe("MCP server integration", () => {
       expect(textPayload(result)).toEqual({
         error: "Unknown tool: not_a_tool",
       });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
+describe("get_futures_options_smile tool", () => {
+  const EXP = "2027-03-19";
+  const nsE = (BigInt(Date.parse(`${EXP}T00:00:00Z`)) * 1_000_000n).toString();
+  const FUT = 100;
+  // ROOT.OPT carries options only (the future is in ROOT.FUT). Fixed mids above intrinsic so IV solves finite.
+  const defCsv =
+    `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n` +
+    `201,ESH7 C7400,C,${nsE},${FUT},7400000000000\n` +
+    `202,ESH7 P7400,P,${nsE},${FUT},7400000000000\n` +
+    `203,ESH7 C7500,C,${nsE},${FUT},7500000000000\n` +
+    `204,ESH7 P7500,P,${nsE},${FUT},7500000000000\n`;
+  const bboCsv =
+    `instrument_id,ts_event,bid_px_00,ask_px_00\n` +
+    `${FUT},1,7466000000000,7468000000000\n` +
+    `201,1,120000000000,124000000000\n` +
+    `202,1,44000000000,48000000000\n` +
+    `203,1,64000000000,68000000000\n` +
+    `204,1,88000000000,92000000000\n`;
+  const statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n201,0,0,1500,9\n202,0,0,1200,9\n203,0,0,900,9\n204,0,0,800,9\n`;
+
+  it("pulls the chain and returns a summary + chain JSON", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = vi.fn(async (req: any) => {
+      const data =
+        req.schema === "definition" ? defCsv : req.schema === "statistics" ? statCsv : req.schema === "bbo-1m" ? bboCsv : null;
+      if (data == null) throw new Error(`unexpected schema ${req.schema}`);
+      return { data, schema: req.schema, symbols: [], dateRange: {}, recordCount: 0 };
+    });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      expect(result.content).toHaveLength(2);
+      expect(result.content[0].text).toContain("ES options · exp 2027-03-19");
+      const chain = JSON.parse(result.content[1].text);
+      expect(chain.symbol).toBe("ES");
+      expect(chain.expiration).toBe(EXP);
+      expect(chain.spot).toBe(7467);
+      expect(chain.strikes).toEqual([7400, 7500]);
+      expect(chain.callIV.some((v: number | null) => typeof v === "number")).toBe(true);
+      expect(chain.callOItotal).toBeGreaterThanOrEqual(1500);
     } finally {
       await client.close();
       await server.close();

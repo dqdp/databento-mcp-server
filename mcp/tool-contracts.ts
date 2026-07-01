@@ -376,6 +376,19 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
     }),
   },
   {
+    name: "get_futures_options_smile",
+    description:
+      "Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3), e.g. root 'ES'. Pulls the chain definitions + latest BBO + open interest, computes IV/greeks (Black-76 — Databento carries no greeks), and returns a text summary plus a compact chain JSON. `expiry` is a date 'YYYY-MM-DD' or a mode: 'nearest' (default, DTE>=1), 'quarterly' (nearest Mar/Jun/Sep/Dec), or 'most-liquid' (highest open interest). Render the returned JSON as an interactive volatility-smile dashboard artifact.",
+    schema: toolArgs({
+      root: nonEmptyString("Futures root, e.g. 'ES' (E-mini S&P 500). CME / GLBX.MDP3 only."),
+      expiry: z
+        .string()
+        .describe("Target expiration: a date 'YYYY-MM-DD', or a mode 'nearest' | 'quarterly' | 'most-liquid'.")
+        .optional(),
+      window: z.number().int().min(1).describe("Strikes on each side of ATM (default 20).").optional(),
+    }),
+  },
+  {
     name: "metadata_list_datasets",
     description: "List all available Databento datasets with optional date range filtering",
     schema: toolArgsWithDateRange({

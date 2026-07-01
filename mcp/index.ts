@@ -18,6 +18,7 @@ import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
 import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
+import { buildSmile } from "../src/analytics/pull-chain.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
@@ -404,6 +405,39 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
               type: "text",
               text: JSON.stringify(result, null, 2),
             },
+          ],
+        };
+      }
+
+      case "get_futures_options_smile": {
+        const { root, expiry, window } = args as { root: string; expiry?: string; window?: number };
+        const now = new Date();
+        const today = now.toISOString().slice(0, 10);
+        const MODES = ["nearest", "quarterly", "most-liquid"] as const;
+        const asMode = expiry && (MODES as readonly string[]).includes(expiry) ? (expiry as (typeof MODES)[number]) : undefined;
+
+        const chain = await buildSmile(timeseriesClient, root.toUpperCase(), {
+          today,
+          now: now.toISOString(),
+          expiry: asMode ? undefined : expiry,
+          mode: asMode,
+          window,
+        });
+
+        const pct = (x: number | null) => (x == null ? "n/a" : `${(x * 100).toFixed(1)}%`);
+        const summary =
+          `${chain.symbol} options · exp ${chain.expiration} · ${chain.dte} DTE · spot ${chain.spot}\n` +
+          `ATM IV ${pct(chain.atmIV)} · 25Δ skew ${chain.skew25 == null ? "n/a" : `${(chain.skew25 * 100).toFixed(1)}pt`} · ` +
+          `PCR(OI) ${chain.pcrOI == null ? "n/a" : chain.pcrOI.toFixed(2)} · max pain ${chain.maxPain}\n` +
+          `Render the JSON below as an interactive Chart.js artifact — three panels, dark-mode friendly: ` +
+          `(1) volatility smile — plot the OTM legs vs \`strikes\`: \`putIV\` where strike <= \`atmStrike\`, \`callIV\` where strike >= \`atmStrike\`, mark \`atmStrike\`; ` +
+          `(2) open interest by strike — \`callOI\`/\`putOI\` grouped bars with a vertical line at \`maxPain\`; ` +
+          `(3) a metric strip — \`atmIV\`, \`skew25\`, \`pcrOI\`, \`maxPain\`, \`spot\`, \`dte\`. IV values are decimals (0.15 = 15%).`;
+
+        return {
+          content: [
+            { type: "text", text: summary },
+            { type: "text", text: JSON.stringify(chain) },
           ],
         };
       }
