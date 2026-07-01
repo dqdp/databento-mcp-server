@@ -32,7 +32,8 @@
     "test": "vitest",
     "test:once": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest watch"
+    "test:watch": "vitest watch",
+    "smoke:live-socket": "tsx scripts/smoke-live-socket.ts"
   },
   "keywords": [
     "mcp",
