@@ -20,6 +20,7 @@ import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import { buildSmile, clampNowToAvailable, resolveExpirySelector, resolveOptionsRoot } from "../src/analytics/pull-chain.js";
 import { loadSmileStatic } from "../src/analytics/smile-cache.js";
+import { startSmileWebIfConfigured } from "../src/server/smile-web-host.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
@@ -874,10 +875,25 @@ export async function startDatabentoMcpServer() {
     throw new Error("DATABENTO_API_KEY environment variable is required");
   }
 
-  const server = createDatabentoMcpServer(createDefaultDatabentoMcpClients(apiKey));
+  const clients = createDefaultDatabentoMcpClients(apiKey);
+  const server = createDatabentoMcpServer(clients);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("DataBento MCP Server running on stdio");
+
+  // Optional: host the live futures-options smile page from this process when SMILE_WEB_PORT is
+  // set (off by default). Tear its Live sockets down when the connector process stops. Registering
+  // a signal handler suppresses Node's default termination, so the handler MUST exit explicitly —
+  // otherwise the live stdin pipe keeps the event loop alive and the connector hangs on SIGTERM.
+  const smileWeb = startSmileWebIfConfigured(clients, apiKey);
+  if (smileWeb) {
+    const shutdown = () => {
+      smileWeb.close();
+      process.exit(0);
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  }
 }
 
 // Start the server
