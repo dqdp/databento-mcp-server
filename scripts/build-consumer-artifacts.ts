@@ -144,6 +144,20 @@ function replaceSection(markdown: string, startHeading: string, endHeading: stri
   return `${markdown.slice(0, start)}${replacement.trimEnd()}\n\n${markdown.slice(end)}`;
 }
 
+function removeSectionIfPresent(markdown: string, startHeading: string, endHeading: string) {
+  const start = markdown.indexOf(startHeading);
+  if (start === -1) {
+    return markdown;
+  }
+
+  const end = markdown.indexOf(endHeading, start + startHeading.length);
+  if (end === -1) {
+    throw new Error(`Cannot build consumer skill: section end not found (${startHeading} -> ${endHeading})`);
+  }
+
+  return `${markdown.slice(0, start)}${markdown.slice(end)}`;
+}
+
 function buildConsumerSkillMarkdown(sourceMarkdown: string) {
   let markdown = sourceMarkdown.replace(/\r\n?/g, "\n").replace(
     /Route market-data requests across configured sources\.[\s\S]*?actual tool access\s+comes from configured MCP servers\./,
@@ -170,7 +184,9 @@ function buildConsumerSkillMarkdown(sourceMarkdown: string) {
   domains.
 - Live Databento API: Databento MCP tools call Databento over the network and
   require a valid Databento API key configured in the MCP server or Desktop
-  Extension.
+  Extension. Use \`get_live_futures_quote\` for true single-symbol Databento
+  Live API quote updates on covered futures and options on futures. Use
+  \`get_futures_quote\` as a separate latest Historical REST quote path.
 - Side effects: Databento batch submit can create Databento batch jobs. Treat
   batch submit as a paid operation unless the user explicitly approves the query
   scope and cost risk.`
@@ -181,9 +197,15 @@ function buildConsumerSkillMarkdown(sourceMarkdown: string) {
     "- Do not assume this repository checkout, build output, local environment files, or local scripts exist for that user."
   );
 
+  markdown = removeSectionIfPresent(
+    markdown,
+    "## Claude Code Script Commands",
+    "## Databento MCP Operating Rules"
+  );
+
   markdown = replaceSection(
     markdown,
-    "## Prerequisites",
+    "## Databento MCP Operating Rules",
     "## Multi-Source Market Data Routing",
     `## Databento MCP Operating Rules
 
@@ -206,7 +228,17 @@ Historical Standard CME guardrails:
 - L2 \`mbp-10\` and L3 \`mbo\`: rolling last 1 month.
 - Direct \`timeseries_get_range\` rejects \`ALL_SYMBOLS\` and caps direct output
   with \`MCP_DIRECT_MAX_RECORDS\` (default 10000).
-- Use \`batch_submit_job\` for large covered exports, including \`ALL_SYMBOLS\`.`
+- Use \`batch_submit_job\` for large covered exports, including \`ALL_SYMBOLS\`.
+- Use \`get_live_futures_quote\` for true single-symbol live top-of-book
+  updates on covered futures and options on futures. It accepts explicit
+  \`dataset\`, \`stype_in\`, and \`timeout_ms\`; ES and NQ without \`stype_in\`
+  are aliases for \`ES.v.0\` and \`NQ.v.0\`. It is a short-lived Databento Live
+  API update tool, not an MBO snapshot tool or a persistent stream.
+- Use \`get_futures_quote\` as a separate latest Historical REST quote feature,
+  not as a degraded live-data mode.
+- Historical API pulls can be near the current catalog frontier, but deep order
+  book and current-state workflows should use the explicit live or historical
+  schema that matches the user's request.`
   );
 
   return markdown;

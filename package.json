@@ -1,6 +1,6 @@
 {
   "name": "databento-mcp-server",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Model Context Protocol (MCP) server for DataBento market data",
   "main": "dist/mcp/mcp/index.js",
   "bin": {
@@ -26,6 +26,7 @@
     "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts",
     "smoke:skills": "tsx scripts/smoke-installed-skills.ts",
     "smoke:consumer": "npm run build:consumer && tsx scripts/smoke-consumer-artifacts.ts",
+    "smoke:smile": "tsx scripts/smoke-smile-live.ts",
     "install:skills": "bash scripts/install-skills.sh",
     "prepublishOnly": "npm run build",
     "test": "vitest",

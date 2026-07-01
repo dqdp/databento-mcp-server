@@ -7,20 +7,20 @@ Professional market data access via DataBento API, available as both an MCP serv
 **Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
 This project now supports two deployment modes:
-- **MCP Server**: Local stdio for Claude Desktop (17 tools) and a remote Streamable HTTP MVP
+- **MCP Server**: Local stdio for Claude Desktop (19 tools) and a remote Streamable HTTP MVP
 - **Claude Code Skills**: Native skills for Claude Code CLI (8 skill scripts)
 
 Both modes share the same core functionality:
 - Complete Databento API coverage (Timeseries, Metadata, Batch, Symbology, Reference)
 - Full Historical API support with flexible schemas
-- Real-time futures quotes (ES, NQ)
+- Latest historical ES/NQ quotes and true live futures/options-on-futures quote updates
 - Type-safe TypeScript implementation throughout
 
 Choose the deployment that fits your workflow best!
 
 ## Features
 
-- 🎯 **Real-time Futures Quotes** - Current prices for ES and NQ contracts
+- 🎯 **Futures Quotes** - Latest historical ES/NQ quotes and true live top-of-book updates for covered futures/options-on-futures symbols
 - 📊 **Historical Timeseries** - Stream supported market data schemas across date ranges
 - 📈 **Batch Downloads** - Submit and manage large historical data jobs
 - 🔍 **Symbol Resolution** - Resolve symbols to instrument IDs across datasets
@@ -274,12 +274,13 @@ in `docs/claude-desktop-simple-install.md`.
 
 ## Available Tools
 
-The MCP server provides 17 tools organized into 6 categories:
+The MCP server provides 19 tools organized into 7 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Original** | 3 tools | ES/NQ futures quotes, session info, historical bars |
+| **Original** | 4 tools | ES/NQ historical quotes, single-symbol live quotes, session info, historical bars |
 | **Timeseries** | 1 tool | Historical market data streaming with flexible schemas |
+| **Analytics** | 1 tool | Futures-options volatility smile (Black-76 IV/greeks, skew, max pain) |
 | **Symbology** | 1 tool | Symbol resolution and conversion |
 | **Metadata** | 6 tools | Dataset discovery, schema info, cost estimation |
 | **Batch** | 3 tools | Large-scale data download job management |
@@ -289,7 +290,9 @@ The MCP server provides 17 tools organized into 6 categories:
 
 #### 1. `get_futures_quote`
 
-Get current price quote for ES or NQ futures.
+Get the latest ES or NQ futures quote from Databento Historical REST data.
+This is a separate historical-data query path, not a replacement for the true
+Live API socket tool.
 
 **Input:**
 ```json
@@ -312,7 +315,50 @@ Get current price quote for ES or NQ futures.
 }
 ```
 
-#### 2. `get_session_info`
+#### 2. `get_live_futures_quote`
+
+Get a true live top-of-book quote update for a single covered futures or
+options-on-futures symbol through the Databento Live API socket feed. The tool
+opens a short-lived `mbp-1` subscription, returns the first quote update, and
+closes the socket. `ES` and `NQ` are convenience aliases for `ES.v.0` and
+`NQ.v.0`; all other symbols should specify the appropriate `stype_in`.
+
+**Input:**
+```json
+{
+  "symbol": "CL.v.0",
+  "dataset": "GLBX.MDP3",
+  "stype_in": "continuous",
+  "timeout_ms": 10000
+}
+```
+
+**Output:**
+```json
+{
+  "symbol": "CL.v.0",
+  "liveSymbol": "CL.v.0",
+  "stypeIn": "continuous",
+  "dataset": "GLBX.MDP3",
+  "schema": "mbp-1",
+  "instrumentId": 22222,
+  "price": 72.315,
+  "bid": 72.31,
+  "ask": 72.32,
+  "spread": 0.01,
+  "bidSize": 10,
+  "askSize": 12,
+  "bidCount": 3,
+  "askCount": 4,
+  "timestamp": "2024-10-02T14:30:00.000Z",
+  "receiveTimestamp": "2024-10-02T14:30:00.100Z",
+  "dataAge": "0s ago",
+  "sessionId": "session-id",
+  "source": "DataBento Live API"
+}
+```
+
+#### 3. `get_session_info`
 
 Get current trading session information.
 
@@ -340,7 +386,7 @@ _Note: `timestamp` is optional, defaults to current time_
 - **London**: 07:00 - 14:00 UTC
 - **NY**: 14:00 - 22:00 UTC
 
-#### 3. `get_historical_bars`
+#### 4. `get_historical_bars`
 
 Get historical OHLCV bars for futures contracts.
 
@@ -384,7 +430,7 @@ For arbitrary daily date ranges, use `timeseries_get_range` with
 
 ### Timeseries Tools
 
-#### 4. `timeseries_get_range`
+#### 5. `timeseries_get_range`
 
 Stream historical market data for covered Standard CME schemas. Direct MCP
 responses are record-limited; use `batch_submit_job` for `ALL_SYMBOLS` or
@@ -439,7 +485,7 @@ policy.
 
 ### Symbology Tools
 
-#### 5. `symbology_resolve`
+#### 6. `symbology_resolve`
 
 Resolve symbols to instrument IDs or other symbol types across a date range.
 
@@ -501,7 +547,7 @@ Resolve symbols to instrument IDs or other symbol types across a date range.
 
 ### Metadata Tools
 
-#### 6. `metadata_list_datasets`
+#### 7. `metadata_list_datasets`
 
 List all available Databento datasets with optional date range filtering.
 
@@ -528,7 +574,7 @@ List all available Databento datasets with optional date range filtering.
 }
 ```
 
-#### 7. `metadata_list_schemas`
+#### 8. `metadata_list_schemas`
 
 List available data schemas for a specific dataset.
 
@@ -548,7 +594,7 @@ List available data schemas for a specific dataset.
 }
 ```
 
-#### 8. `metadata_list_publishers`
+#### 9. `metadata_list_publishers`
 
 List publishers with their details, optionally filtered by dataset.
 
@@ -575,7 +621,7 @@ List publishers with their details, optionally filtered by dataset.
 }
 ```
 
-#### 9. `metadata_list_fields`
+#### 10. `metadata_list_fields`
 
 List fields available for a specific schema with their types and descriptions.
 
@@ -608,7 +654,7 @@ List fields available for a specific schema with their types and descriptions.
 }
 ```
 
-#### 10. `metadata_get_cost`
+#### 11. `metadata_get_cost`
 
 Calculate the cost in USD for a historical data query before downloading.
 
@@ -638,7 +684,7 @@ Calculate the cost in USD for a historical data query before downloading.
 }
 ```
 
-#### 11. `metadata_get_dataset_range`
+#### 12. `metadata_get_dataset_range`
 
 Get the available date range for a dataset.
 
@@ -663,7 +709,7 @@ Get the available date range for a dataset.
 
 ### Batch Tools
 
-#### 12. `batch_submit_job`
+#### 13. `batch_submit_job`
 
 Submit a batch data download job for large historical datasets. Returns job ID
 and status. Batch is the intended path for large covered Standard CME exports,
@@ -714,7 +760,7 @@ including `ALL_SYMBOLS`.
 }
 ```
 
-#### 13. `batch_list_jobs`
+#### 14. `batch_list_jobs`
 
 List all batch jobs with their current status. Optionally filter by job states or time range.
 
@@ -757,7 +803,7 @@ List all batch jobs with their current status. Optionally filter by job states o
 }
 ```
 
-#### 14. `batch_download`
+#### 15. `batch_download`
 
 Get download information for a completed batch job. Returns download URLs and metadata.
 
@@ -816,7 +862,7 @@ Get download information for a completed batch job. Returns download URLs and me
 
 ### Reference Tools
 
-#### 15. `reference_search_securities`
+#### 16. `reference_search_securities`
 
 Search security master database for instrument metadata.
 
@@ -860,7 +906,7 @@ Search security master database for instrument metadata.
 }
 ```
 
-#### 16. `reference_get_corporate_actions`
+#### 17. `reference_get_corporate_actions`
 
 Get corporate actions (dividends, splits, etc.) for symbols.
 
@@ -903,7 +949,7 @@ Get corporate actions (dividends, splits, etc.) for symbols.
 }
 ```
 
-#### 17. `reference_get_adjustments`
+#### 18. `reference_get_adjustments`
 
 Get price adjustment factors for backadjusted prices.
 
@@ -940,6 +986,30 @@ Get price adjustment factors for backadjusted prices.
 }
 ```
 
+### Analytics Tools
+
+#### 19. `get_futures_options_smile`
+
+Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3). Pulls
+the chain definitions + latest BBO + open interest, computes IV/greeks via
+Black-76 (Databento carries no greeks), and returns a text summary plus a compact
+chain JSON for the model to render as an interactive Chart.js artifact. `expiry`
+is a date `YYYY-MM-DD` or a mode: `nearest` (default, DTE≥1), `quarterly`
+(nearest Mar/Jun/Sep/Dec), or `most-liquid` (highest open interest).
+
+**Input:**
+```json
+{
+  "root": "ES",
+  "expiry": "nearest",
+  "window": 20
+}
+```
+
+**Output:** a text summary (ATM IV, 25Δ skew, PCR(OI), max pain) followed by a
+chain JSON: `spot`, `atmStrike`, `strikes[]`, `callIV[]`/`putIV[]`,
+`callOI[]`/`putOI[]`, `expirations[]`, and render guidance for the artifact.
+
 ## Usage Examples
 
 ### With Claude Desktop
@@ -948,9 +1018,13 @@ Once configured, you can ask Claude:
 
 **Original Futures Tools:**
 
-> "What's the current ES price?"
+> "What's the current ES price from historical data?"
 
-Claude will use the `get_futures_quote` tool to fetch real-time data.
+Claude will use the `get_futures_quote` tool to fetch the latest Historical REST quote.
+
+> "Get a true live CL.v.0 quote"
+
+Claude will use the `get_live_futures_quote` tool to fetch a Databento Live API quote update.
 
 > "Get the last 10 H4 bars for NQ"
 
@@ -1031,7 +1105,7 @@ All tools return structured errors:
 
 Common errors:
 - Missing API key
-- Invalid symbol (only ES/NQ supported)
+- Invalid symbol or unsupported broad stream (`ALL_SYMBOLS` and comma-separated symbols are rejected for live quotes)
 - No data available (weekends, holidays)
 - API rate limit exceeded
 
@@ -1039,7 +1113,7 @@ Common errors:
 
 Once installed, the skills can be invoked naturally in Claude Code:
 
-**Get real-time quote:**
+**Get live futures quote:**
 ```
 > Get the current ES futures quote
 ```
@@ -1087,7 +1161,7 @@ databento-mcp-server/
 │       ├── symbology.ts
 │       └── reference.ts
 ├── mcp/                      # MCP Server specific code
-│   └── index.ts              # MCP server entry point & 17 tool definitions
+│   └── index.ts              # MCP server entry point & 19 tool definitions
 ├── skills/                   # Claude Code Skills
 │   ├── market-data/
 │   │   ├── SKILL.md          # Skill documentation
@@ -1169,11 +1243,14 @@ npm run dev
 
 ## Limitations
 
-- **Original Tools**: `get_futures_quote` and `get_historical_bars` only support ES and NQ futures
+- **Original Historical Convenience Tools**: `get_futures_quote` and
+  `get_historical_bars` only support ES and NQ futures; `get_live_futures_quote`
+  accepts a single covered Databento futures or futures-options symbol
 - **Historical Standard CME Tools**: `timeseries_get_range` and
   `batch_submit_job` default to the Standard CME dataset allowlist
   (`GLBX.MDP3`) and entitlement windows
-- **Data Delay**: Historical API (not tick-by-tick real-time streaming)
+- **Data Delay**: Historical REST tools can be delayed near the current frontier; use
+  `get_live_futures_quote` when a true Databento Live API quote update is required
 - **Weekend Data**: May show stale data on weekends/holidays
 - **Rate Limits**: Respects DataBento API limits (60 req/min)
 - **Batch Downloads**: Download URLs are returned but file content is not streamed through MCP

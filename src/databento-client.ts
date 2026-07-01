@@ -133,12 +133,12 @@ export class DataBentoClient {
    * Get historical bars for a symbol
    */
   async getHistoricalBars(
-    symbol: "ES" | "NQ",
+    symbol: string,
     timeframe: "1h" | "H4" | "1d",
-    count: number
+    count: number,
+    stypeIn?: "raw_symbol" | "instrument_id" | "continuous" | "parent"
   ): Promise<BarData[]> {
-    const databentoSymbol = SYMBOL_MAP[symbol];
-    if (!databentoSymbol) {
+    if (!symbol || !symbol.trim()) {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
 
@@ -147,8 +147,14 @@ export class DataBentoClient {
       throw new Error(`${timeframe} historical bars are limited to ${maxCount} bars`);
     }
 
-    // Calculate date range based on count and timeframe
-    const endDate = new Date();
+    // ES/NQ are aliases for the continuous front contract; any other symbol is a
+    // raw_symbol unless the caller specifies stype_in explicitly (mirrors the
+    // live-quote tool so historical and live accept the same symbology).
+    const aliasSymbol = stypeIn ? undefined : SYMBOL_MAP[symbol.toUpperCase()];
+    const resolvedSymbol = aliasSymbol ?? symbol;
+    const resolvedStypeIn = stypeIn ?? (aliasSymbol ? "continuous" : "raw_symbol");
+
+    // Calculate the start of the lookback window based on count and timeframe.
     const startDate = new Date();
 
     if (timeframe === "1h") {
@@ -161,13 +167,16 @@ export class DataBentoClient {
 
     const schema = timeframe === "1d" ? "ohlcv-1d" : "ohlcv-1h";
 
+    // `end` is intentionally omitted. DataBento rejects an `end` past a schema's
+    // available frontier (HTTP 422 data_end_after_available_end), and the ohlcv
+    // frontiers lag "now" intraday — so sending end=now broke requests during the
+    // active session. Omitting end returns data up to the latest available bar.
     const params = {
       dataset: DATASET,
-      symbols: databentoSymbol,
-      stype_in: "continuous",
+      symbols: resolvedSymbol,
+      stype_in: resolvedStypeIn,
       stype_out: "instrument_id",
       start: startDate.toISOString().split("T")[0],
-      end: endDate.toISOString(),
       schema: schema,
       encoding: "csv",
       limit: timeframe === "1d" ? count : 1000,

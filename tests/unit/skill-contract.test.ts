@@ -66,6 +66,7 @@ describe("Claude Code skill contract", () => {
     expect(skill).toBeDefined();
     expect(manifest.version).toBe(packageJson.version);
     expect(skill?.version).toBe(packageJson.version);
+    expect(skillText).toMatch(new RegExp(`^version: ${packageJson.version}$`, "m"));
     expect(manifest.metadata.compatibility.node).toBe(packageJson.engines.node);
     expect(manifest.metadata.compatibility.module_type).toBe("CommonJS");
     expect(packageJson.type).toBe("commonjs");
@@ -277,6 +278,7 @@ describe("Claude Code skill contract", () => {
 
   it("keeps the skill self-contained for offline consumers", () => {
     const expectedDatabentoMcpTools = [
+      "get_live_futures_quote",
       "get_futures_quote",
       "get_session_info",
       "get_historical_bars",

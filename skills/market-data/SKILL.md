@@ -1,7 +1,7 @@
 ---
 name: market-data
 description: Market data source routing for Databento and Alpha Vantage MCP workflows
-version: 1.0.0
+version: 1.2.0
 triggers:
   - "databento"
   - "cme market data"
@@ -10,46 +10,54 @@ triggers:
   - "futures historical bars"
   - "cme options"
   - "symbol resolution"
+  - "alpha vantage"
+  - "stock quote"
+  - "stock price"
+  - "live data"
+  - "realtime quote"
+  - "intraday bars"
+  - "equity options"
+  - "forex"
+  - "crypto price"
+  - "company fundamentals"
+  - "technical indicator"
+  - "market data"
 ---
 
 # Market Data Skill
 
-Route market-data requests across configured sources. In Claude Code, this skill
-includes Databento command scripts installed under
-`~/.claude/skills/market-data`. In Claude Desktop, this file is portable routing
-guidance only unless it is packaged into a Desktop Extension; actual tool access
-comes from configured MCP servers.
+Route market-data requests across configured sources. In Claude Desktop, this file is portable routing guidance only; actual tool access comes from configured MCP servers.
 
 Claude Desktop Databento support is provided by an MCP server, not by this skill
 file alone. Connect Claude Desktop to the Databento MCP server from the app
 configuration or through a packaged extension instead of assuming this file can
 run tools by itself. As distributed here, it is not a Claude Desktop extension.
+Claude Desktop should reach the local server through MCP stdio or a packaged
+Desktop Extension, not by running repository-local helper scripts.
 
 ## Scope
 
-- Claude Code: use the Databento commands below when the user asks for
-  Databento market data, metadata, symbology, reference data, or batch jobs.
+- Claude Desktop: use configured Databento and Alpha Vantage MCP servers. This
+  skill file documents routing and operating rules; it does not provide tools by
+  itself.
 - Multi-source market data: do not treat this skill as the default for every
   market-data request. Databento remains the source of record for Standard CME
   historical data, order-book data, Databento symbology, Databento metadata, and
   Databento batch workflows. Use other configured MCP servers for their own
   domains.
-- Claude Desktop: use a configured Databento MCP stdio server or Desktop
-  Extension. This skill file documents routing and operating rules; it does not
-  provide tools by itself.
-- Live Databento API: Databento commands call Databento over the network and
-  require a valid `DATABENTO_API_KEY`.
-- Side effects: the `batch` command can submit Databento batch jobs. Treat
-  `batch submit` as a paid operation unless the user explicitly approves the
-  query scope and cost risk.
+- Live Databento API: Databento MCP tools call Databento over the network and
+  require a valid Databento API key configured in the MCP server or Desktop
+  Extension.
+- Side effects: Databento batch submit can create Databento batch jobs. Treat
+  batch submit as a paid operation unless the user explicitly approves the query
+  scope and cost risk.
 
 ## Portable Claude Desktop Consumer Contract
 
 This skill may be read or reused by someone outside this repository, including a
 Claude Desktop user with their own accounts, keys, and market-data goals.
 
-- Do not assume this repository checkout, build output, `.env` file,
-  `~/.claude/skills/market-data`, or local scripts exist for that user.
+- Do not assume this repository checkout, build output, local environment files, or local scripts exist for that user.
 - Claude Desktop users must configure MCP servers separately: Databento as a
   local MCP server or Desktop Extension, and Alpha Vantage as its own MCP server,
   connector, or extension.
@@ -76,12 +84,19 @@ Use only the operating rules embedded in this file:
 - Prefer Databento for covered CME futures, CME futures options, GLBX.MDP3,
   order-book schemas, Databento symbology, metadata, and batch exports.
 - Prefer Alpha Vantage MCP for equities, ETFs, equity options, fundamentals,
-  indicators, news/sentiment, macro, FX, crypto, and non-CME commodities.
+  indicators, news/sentiment, macro, FX, crypto, and non-CME commodities. For
+  US equity/ETF quote and time-series requests, default to live data
+  (`entitlement=realtime`). FX, crypto, commodities, indices, and macro are
+  already live or fixed-cadence and take no `entitlement`. See "Alpha Vantage
+  Live Data Defaults (entitlement)".
 - Ask one short clarification when an "options" or "market data" request could
   reasonably mean either source.
 - For live or potentially large requests, state the selected source, expected
   data shape, date range, adjustment semantics, and cost/volume risk before
-  invoking tools.
+  invoking tools. Exception: routine Databento single-symbol live quote updates,
+  routine Alpha Vantage live quotes, and small intraday pulls do not need this
+  preamble; default to live data and return it directly when the request is
+  unambiguous.
 
 ## Expected Claude Desktop MCP Tools
 
@@ -90,8 +105,13 @@ the necessary MCP servers connected.
 
 Databento MCP tools expected for this skill:
 
-- Quote/session safety: `get_futures_quote`, `get_session_info`.
-- Timeseries/direct data: `get_historical_bars`, `timeseries_get_range`.
+- Quote/session safety: `get_live_futures_quote` (true Databento Live API
+  top-of-book quote update for a single covered futures or futures-options
+  symbol), `get_futures_quote` (latest Historical REST quote, ES/NQ ONLY),
+  `get_session_info`.
+- Timeseries/direct data: `get_historical_bars` (ES/NQ ONLY), `timeseries_get_range`
+  (the workhorse for everything else — any dataset/symbol/schema, incl. CL, other
+  commodities, and options on futures).
 - Symbology: `symbology_resolve`.
 - Metadata and entitlement checks: `metadata_list_datasets`,
   `metadata_list_schemas`, `metadata_list_publishers`, `metadata_list_fields`,
@@ -126,65 +146,110 @@ Alpha Vantage MCP should remain a separately configured source unless this
 project later builds its own router package. The Databento MCP package must not
 bundle or request Alpha Vantage credentials.
 
-## Prerequisites
+## Claude Code Script Commands
 
-- Node.js `>=22.15.0`.
-- `DATABENTO_API_KEY` in the command environment.
-- Built skill scripts installed in `~/.claude/skills/market-data/scripts`.
+These commands are for a Claude Code skill installation that includes the local
+scripts. In Claude Desktop, prefer the connected MCP tools from the previous
+section instead of shelling out to these paths.
 
-```bash
-export DATABENTO_API_KEY="db-your-api-key-here"
-```
+- `get-quote`: `market-data/scripts/get-quote.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/get-quote.js ES`
+- `get-historical`: `market-data/scripts/get-historical.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/get-historical.js ES 1d 100`
+- `get-session`: `market-data/scripts/get-session.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/get-session.js`
+- `resolve-symbols`: `market-data/scripts/resolve-symbols.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/resolve-symbols.js GLBX.MDP3 ES.FUT parent instrument_id 2026-06-16`
+- `timeseries`: `market-data/scripts/timeseries.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/timeseries.js GLBX.MDP3 ES.c.0 ohlcv-1d 2026-06-01 2026-06-16`
+- `metadata`: `market-data/scripts/metadata.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/metadata.js list-datasets`
+  - Forms: `metadata list-datasets [start_date] [end_date]`,
+    `metadata list-schemas [dataset]`, `metadata list-publishers [dataset]`,
+    `metadata list-fields [schema] [encoding]`,
+    `metadata get-cost dataset start`,
+    `metadata get-dataset-range [dataset]`.
+- `batch`: `market-data/scripts/batch.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/batch.js list`
+  - Forms: `batch list [states]`,
+    `batch submit dataset symbols schema start end`,
+    `batch download <job_id>`.
+- `reference`: `market-data/scripts/reference.js`
+  - Run: `node ~/.claude/skills/market-data/scripts/reference.js search GLBX.MDP3 ES.FUT 2026-06-16`
+  - Forms: `reference search dataset symbols start_date [end_date] [limit]`,
+    `reference corporate-actions dataset symbols start_date [end_date]`,
+    `reference adjustments dataset symbols start_date [end_date]`.
 
-## Command Contract
+Script notes:
 
-| Script | Path | Command | Live API / side effects |
-| --- | --- | --- | --- |
-| `get-quote` | `market-data/scripts/get-quote.js` | `node ~/.claude/skills/market-data/scripts/get-quote.js ES` | Live Databento API read. Supports `ES` or `NQ`; default `ES`. |
-| `get-historical` | `market-data/scripts/get-historical.js` | `node ~/.claude/skills/market-data/scripts/get-historical.js ES 1d 20` | Live Databento API read. Args: symbol `ES`/`NQ`, timeframe `1h`/`H4`/`1d`; count `1..100` for `1h`/`H4`, `1..10000` for `1d`. |
-| `get-session` | `market-data/scripts/get-session.js` | `node ~/.claude/skills/market-data/scripts/get-session.js` | Local session calculation after env/key-format check; optional timestamp argument. |
-| `resolve-symbols` | `market-data/scripts/resolve-symbols.js` | `node ~/.claude/skills/market-data/scripts/resolve-symbols.js GLBX.MDP3 ES.FUT raw_symbol instrument_id 2026-06-16` | Live Databento API read. Args: dataset, comma-separated symbols, input type, output type, start date, optional end date. |
-| `timeseries` | `market-data/scripts/timeseries.js` | `node ~/.claude/skills/market-data/scripts/timeseries.js GLBX.MDP3 ES.FUT ohlcv-1d 2026-06-01 2026-06-16 100` | Live Databento API read. Args: dataset, symbols, schema, start, optional end, optional limit. Direct output is capped by `MCP_DIRECT_MAX_RECORDS` (default 10000). |
-| `metadata` | `market-data/scripts/metadata.js` | `node ~/.claude/skills/market-data/scripts/metadata.js list-datasets` | Live Databento API read. Commands: `list-datasets`, `list-schemas`, `list-publishers`, `list-fields`, `get-cost`, `get-dataset-range`. |
-| `batch` | `market-data/scripts/batch.js` | `node ~/.claude/skills/market-data/scripts/batch.js list` | Live Databento API. `list` and `download` read account/job metadata; `submit` runs zero-cost preflight before creating a batch job. |
-| `reference` | `market-data/scripts/reference.js` | `node ~/.claude/skills/market-data/scripts/reference.js search GLBX.MDP3 ES.FUT 2026-06-16` | Live Databento API read. Commands: `search`, `corporate-actions`, `adjustments`. |
+- The reference dataset argument is output metadata only; Databento Reference API
+  calls do not require a dataset parameter.
+- Session and simple setup scripts perform an env/key-format check only. They do
+  not prove live account entitlement or network access.
 
-### Multi-Command Argument Forms
+## Databento MCP Operating Rules
 
-Use these positional forms when calling scripts that dispatch by subcommand:
-
-- `metadata list-datasets [start_date] [end_date]`
-- `metadata list-schemas [dataset]`
-- `metadata list-publishers [dataset]`
-- `metadata list-fields [schema] [encoding]`
-- `metadata get-cost dataset start`
-- `metadata get-dataset-range [dataset]`
-- `batch list [states]`
-- `batch submit dataset symbols schema start end`
-- `batch download <job_id>`
-- `reference search dataset symbols start_date [end_date] [limit]`
-- `reference corporate-actions dataset symbols start_date [end_date]`
-- `reference adjustments dataset symbols start_date [end_date]`
-
-For `reference` commands, the reference dataset argument is output metadata only;
-the underlying Reference API requests are scoped by symbols, symbol type, and
-date range rather than a Databento dataset request parameter.
+Use Databento through connected MCP tools, not local shell scripts. If the
+Databento MCP server or required tool name is missing in Claude Desktop, stop and
+ask the user to install or enable the Databento MCP package.
 
 Confirm the dataset, symbols, schema, date range, and cost risk with the user
-before running `batch submit`, because it creates a Databento batch job and may
-be paid if preflight is disabled or overridden. `batch submit` requires an
-explicit `end` and runs Databento `metadata.get_cost` zero-cost preflight by
-default.
+before calling `batch_submit_job`, because it creates a Databento batch job and
+may be paid if zero-cost preflight is disabled or overridden. Batch submit
+requires an explicit `end` and should keep Databento `metadata_get_cost`
+zero-cost preflight enabled by default.
 
 Historical Standard CME guardrails:
 
 - L0 `ohlcv-1s`, `ohlcv-1m`, `ohlcv-1h`, `ohlcv-1d`, `definition`,
   `statistics`, and `status`: full available history.
-- L1 `trades`, `mbp-1`, `tbbo`, `bbo-1s`, and `bbo-1m`: rolling last 12 months.
+- L1 `trades`, `mbp-1`, `tbbo`, `bbo-1s`, and `bbo-1m`: rolling last
+  12 months.
 - L2 `mbp-10` and L3 `mbo`: rolling last 1 month.
-- `timeseries` rejects `ALL_SYMBOLS` and caps direct output with
-  `MCP_DIRECT_MAX_RECORDS` (default 10000).
-- Use `batch submit` for large covered exports, including `ALL_SYMBOLS`.
+- Direct `timeseries_get_range` rejects `ALL_SYMBOLS` and caps direct output
+  with `MCP_DIRECT_MAX_RECORDS` (default 10000).
+- Use `batch_submit_job` for large covered exports, including `ALL_SYMBOLS`.
+
+Databento operating reality (verified against the live MCP, 2026-06-29):
+
+- The live quote tool `get_live_futures_quote` accepts any single covered
+  Databento symbol for futures and options on futures. It supports explicit
+  `dataset`, `stype_in`, and `timeout_ms`. Use `stype_in=continuous` for
+  continuous futures such as `CL.v.0`, `stype_in=raw_symbol` or
+  `instrument_id` for exact listed instruments, and `stype_in=parent` only when
+  a first update from a parent group such as `ES.FUT` or `ES.OPT` is acceptable.
+- The convenience tools `get_futures_quote` and `get_historical_bars` remain
+  ES/NQ only. For non-ES/NQ historical bars or broader schemas, use
+  `timeseries_get_range`.
+- `get_live_futures_quote` is the true Databento Live API path. It opens a
+  short-lived Raw API socket subscription for `schema=mbp-1`, returns the first
+  top-of-book update, then closes the socket. It is a short-lived live update
+  tool, not an MBO snapshot tool and not a persistent push/stream tool. ES and
+  NQ without `stype_in` are convenience aliases for `ES.v.0` and `NQ.v.0`.
+- `get_futures_quote` is the latest quote path via Databento Historical REST
+  (`ES.c.0`/`NQ.c.0`) and uses a local 30-second cache. Treat it as a
+  separate historical-data feature, not as a degraded live-data mode, and do not
+  describe it as true live streaming.
+- The Historical API serves intraday/last-24h data at low latency: top-of-book
+  and trade schemas (`mbp-1`, `tbbo`, `trades`, `bbo-*`, `ohlcv-1s/1m`) can reach
+  near the current catalog frontier, but this is still historical pull data. Deep
+  book (`mbo`, `mbp-10`) can lag by hours, so it is NOT near-real-time — do not
+  use it for current quotes.
+- Always check `metadata_get_dataset_range` for the current `end` first; an `end`
+  after the available frontier returns HTTP 422 (`data_end_after_available_end`).
+- Symbology combinations are restricted: `raw_symbol`/`continuous`/`parent` inputs
+  must use `stype_out=instrument_id` (raw→raw and continuous→raw_symbol both 422).
+  Times need full ISO 8601 with seconds and `Z` (e.g. `2026-06-29T09:00:00Z`);
+  bare `HH:MM` is rejected.
+- Databento returns raw market data only (quotes, book, trades, definitions,
+  statistics). It does NOT compute greeks or implied volatility — derive those
+  yourself (unlike Alpha Vantage equity options, which include greeks/IV).
+- Options on futures: parent symbology is `{ROOT}.OPT` (e.g. WTI options =
+  `LO.OPT`). A full chain is thousands of contracts — pull it via
+  `batch_submit_job`, not a synchronous parent request. For a synchronous quote,
+  target a specific contract by raw symbol. WTI option raw-symbol format:
+  `LO{monthcode}{year} {C|P}{strike×100}` — e.g. `LOQ6 C7000` = $70.00 call on the
+  August WTI future. (Verified: that contract returned a live two-sided market.)
 
 ## Multi-Source Market Data Routing
 
@@ -208,6 +273,77 @@ use `TOOL_LIST` to discover functions, `TOOL_GET` to inspect a function schema,
 and `TOOL_CALL` to invoke a function such as `TIME_SERIES_DAILY` or
 `COMPANY_OVERVIEW`. Do not call Databento scripts as a fallback for Alpha
 Vantage-only tasks.
+
+## Alpha Vantage Live Data Defaults (entitlement)
+
+For Alpha Vantage MCP requests, return live data by default. Do not ask the user
+whether they want live data and do not add an explanation about end-of-day versus
+realtime unless the user asks or unless live data is unavailable for the request.
+
+The `entitlement` parameter only exists on the US equity/ETF price functions.
+For every other asset class the data is already live or fixed-cadence and there
+is no `entitlement` parameter to set. Verified scope (checked against the
+server's `TOOL_GET` schemas):
+
+- Functions that DO accept `entitlement` (US equities/ETFs): `GLOBAL_QUOTE`,
+  `REALTIME_BULK_QUOTES`, `TIME_SERIES_INTRADAY`, `TIME_SERIES_DAILY`,
+  `TIME_SERIES_DAILY_ADJUSTED`, `TIME_SERIES_WEEKLY`,
+  `TIME_SERIES_WEEKLY_ADJUSTED`, `TIME_SERIES_MONTHLY`,
+  `TIME_SERIES_MONTHLY_ADJUSTED`.
+- Functions that do NOT accept `entitlement` and are already realtime by nature:
+  FX (`FX_INTRADAY`, `FX_DAILY`, `FX_WEEKLY`, `FX_MONTHLY`), crypto
+  (`CURRENCY_EXCHANGE_RATE`, `CRYPTO_INTRADAY`, `DIGITAL_CURRENCY_*`), live
+  metals (`GOLD_SILVER_SPOT`), and the realtime options family.
+- Functions with no `entitlement` because they are fixed-cadence or research
+  data: commodities (`WTI`, `BRENT`, `NATURAL_GAS`, metals, agricultural),
+  macro/economic indicators, index series (`INDEX_DATA`), fundamentals,
+  dividends/splits, earnings, and news/sentiment.
+
+Operating rules:
+
+- For the US equity/ETF price functions listed above, pass
+  `entitlement=realtime` by default. This is the default even when the user only
+  says "quote", "price", "market data", or "live data" without specifying
+  entitlement.
+- Without `entitlement=realtime`, these functions return the last completed
+  session (end-of-day), which looks stale on weekends and market holidays.
+  Defaulting to realtime avoids this.
+- For FX, crypto, commodities, indices, macro, and any other function that has no
+  `entitlement` parameter, just call the function normally. Do NOT add
+  `entitlement`; it is not a valid parameter there and may error. The data is
+  already live or at its native refresh cadence.
+- Historical OHLCV equity series (`TIME_SERIES_DAILY`, `_WEEKLY`, `_MONTHLY`,
+  and their adjusted variants, plus `TIME_SERIES_INTRADAY`) accept `entitlement`.
+  Passing `entitlement=realtime` does NOT change any past bars; it only makes the
+  most recent data point reflect the live, still-forming current-day bar instead
+  of the last completed session. So defaulting to realtime is safe for historical
+  pulls. Caveat: if the request is a strict backtest on completed candles, the
+  current-day bar is in-progress, not a finalized close. Either omit `entitlement`
+  for that case or drop the latest in-progress bar before computing.
+- **Equity/ETF options (Alpha Vantage)**: for current option-chain data, default
+  to the realtime functions — `REALTIME_OPTIONS` (quotes/greeks/IV),
+  `REALTIME_OPTIONS_FMV` (fair-value mark), `REALTIME_PUT_CALL_RATIO`,
+  `REALTIME_VOLUME_OPEN_INTEREST_RATIO` — rather than the historical ones. Use
+  `HISTORICAL_OPTIONS` / `HISTORICAL_PUT_CALL_RATIO` only when a past date is
+  requested. These options functions have NO `entitlement` parameter, so do not
+  pass one. Liveness is gated at the account/key level by Alpha Vantage's
+  "realtime US options data" entitlement: a key that holds it gets live prices
+  from these exact same calls automatically, while a key without it receives
+  delayed or end-of-day values. The skill therefore always calls the realtime
+  options functions by default so that the moment a more advanced (options-
+  entitled) key is configured, live option prices flow through with zero changes
+  to the call. With the current key, if the user explicitly needs live options
+  and the response is not live, tell them the key's plan does not include the
+  realtime US options entitlement (upgradeable on the Alpha Vantage side);
+  otherwise no explanation is needed.
+- **Options on futures are NOT an Alpha Vantage workflow.** CME futures options
+  (e.g. options on ES, CL, NG) route to Databento, not to the Alpha Vantage
+  options functions above. Alpha Vantage options coverage is equity/ETF options
+  only (AAPL, SPY, QQQ, etc.). See the routing table.
+- When unsure whether a function accepts `entitlement`, check with `TOOL_GET`
+  before `TOOL_CALL` and pass `entitlement=realtime` only if the schema exposes it.
+- `entitlement=delayed` (15-minute delayed) is only a fallback to use if a
+  realtime equity call is explicitly rejected by the key.
 
 ## Data Shape Differences
 
@@ -237,7 +373,8 @@ Rules for agents:
 
 ## Routing Examples
 
-- `AAPL options` -> Alpha Vantage MCP, because this means equity options.
+- `AAPL options` -> Alpha Vantage MCP, because this means equity options. Default
+  to `REALTIME_OPTIONS` (live with an options-entitled key, delayed/EOD otherwise).
 - `ES options` -> Databento, because this means CME futures options unless the
   user says otherwise.
 - `GLBX.MDP3 mbp-10` -> Databento, because dataset and schema are Databento
@@ -251,7 +388,7 @@ Rules for agents:
 
 ## When to Use This Skill
 
-- **Standard CME Futures Data**: Get current quotes for ES, NQ, and covered CME futures workflows
+- **Standard CME Futures Data**: Get current live quotes for covered CME futures and options-on-futures symbols
 - **CME Futures Options Routing**: Keep CME options on futures with Databento when covered
 - **Databento Historical Analysis**: Retrieve covered Standard CME OHLCV bars and tick/order-book data for backtesting
 - **Symbol Management**: Resolve symbols across different symbology types
@@ -261,10 +398,11 @@ Rules for agents:
 
 ## Available Capabilities
 
-### 1. Real-Time Futures Quotes
-Get current price quotes for ES (E-mini S&P 500) or NQ (E-mini Nasdaq-100) futures.
+### 1. Real-Time Futures And Futures-Options Quotes
+Get current top-of-book quote updates for a single covered Databento futures or
+options-on-futures symbol.
 
-**Usage**: "Get current ES quote" or "What's the NQ price?"
+**Usage**: "Get current CL.v.0 quote" or "Get a live quote for ES.OPT parent"
 
 ### 2. Historical Bars
 Retrieve OHLCV historical data for futures contracts.
@@ -303,10 +441,96 @@ Access security master database, corporate actions, and price adjustments.
 
 **Usage**: "Search Databento reference data for ES" or "Fetch CME symbol adjustment factors"
 
+## Alpha Vantage Capabilities
+
+The connected Alpha Vantage MCP server exposes a broad function set beyond
+equities. Discover with `TOOL_LIST`, inspect with `TOOL_GET`, invoke with
+`TOOL_CALL`. Major groups:
+
+- US equities/ETFs: `GLOBAL_QUOTE`, `REALTIME_BULK_QUOTES` (up to 100 symbols),
+  `TIME_SERIES_INTRADAY` (1/5/15/30/60min), `TIME_SERIES_DAILY[_ADJUSTED]`,
+  `TIME_SERIES_WEEKLY[_ADJUSTED]`, `TIME_SERIES_MONTHLY[_ADJUSTED]`,
+  `SYMBOL_SEARCH`, `MARKET_STATUS`, `TOP_GAINERS_LOSERS`, `LISTING_STATUS`.
+  These accept `entitlement`; default to `realtime` (see the entitlement section).
+- Equity/ETF options (equity options only — NOT options on futures, which go to
+  Databento): default to the realtime functions `REALTIME_OPTIONS`,
+  `REALTIME_OPTIONS_FMV`, `REALTIME_PUT_CALL_RATIO`,
+  `REALTIME_VOLUME_OPEN_INTEREST_RATIO` for current chains (greeks/IV available
+  via `require_greeks=true`); use `HISTORICAL_OPTIONS` /
+  `HISTORICAL_PUT_CALL_RATIO` for past dates. No `entitlement` parameter exists;
+  live prices require the key's realtime US options entitlement and otherwise
+  return delayed/EOD from the same calls.
+- FX: `FX_INTRADAY`, `FX_DAILY`, `FX_WEEKLY`, `FX_MONTHLY` (realtime, no
+  entitlement).
+- Crypto: `CURRENCY_EXCHANGE_RATE`, `CRYPTO_INTRADAY`, `DIGITAL_CURRENCY_DAILY`,
+  `DIGITAL_CURRENCY_WEEKLY`, `DIGITAL_CURRENCY_MONTHLY`.
+- Commodities and metals: `WTI`, `BRENT`, `NATURAL_GAS`, `COPPER`, `ALUMINUM`,
+  `WHEAT`, `CORN`, `COTTON`, `SUGAR`, `COFFEE`, `ALL_COMMODITIES`,
+  `GOLD_SILVER_SPOT` (live spot), `GOLD_SILVER_HISTORY`.
+- Indices: `INDEX_DATA` (200+ indices such as SPX, DJI, NDX, VIX, RUT),
+  `INDEX_CATALOG`.
+- Fundamentals and corporate data: `COMPANY_OVERVIEW`, `ETF_PROFILE`,
+  `INCOME_STATEMENT`, `BALANCE_SHEET`, `CASH_FLOW`, `EARNINGS`,
+  `EARNINGS_ESTIMATES`, `EARNINGS_CALL_TRANSCRIPT`, `DIVIDENDS`, `SPLITS`,
+  `INSIDER_TRANSACTIONS`, `INSTITUTIONAL_HOLDINGS`, `EARNINGS_CALENDAR`,
+  `IPO_CALENDAR`.
+- Macro/economic (US): `REAL_GDP`, `REAL_GDP_PER_CAPITA`, `TREASURY_YIELD`,
+  `FEDERAL_FUNDS_RATE`, `CPI`, `INFLATION`, `RETAIL_SALES`, `DURABLES`,
+  `UNEMPLOYMENT`, `NONFARM_PAYROLL`.
+- News and analytics: `NEWS_SENTIMENT`, `ANALYTICS_FIXED_WINDOW`,
+  `ANALYTICS_SLIDING_WINDOW`.
+- Technical indicators (50+): trend/MA (`SMA`, `EMA`, `WMA`, `DEMA`, `TEMA`,
+  `VWAP`, `MACD`, ...), momentum (`RSI`, `STOCH`, `CCI`, `MOM`, `ROC`, ...),
+  volatility (`BBANDS`, `ATR`, `NATR`, `TRANGE`), volume (`OBV`, `AD`, `ADOSC`,
+  `MFI`), and Hilbert-transform cycle indicators.
+
+`PING`, `ADD_TWO_NUMBERS`, `SEARCH`, and `FETCH` are utility/helper functions,
+not market data.
+
+## Commodities Coverage (verified)
+
+Two sources cover commodities differently. Route by what the user needs.
+
+Databento GLBX.MDP3 — futures and options on futures (CME/CBOT/NYMEX/COMEX),
+full depth, near-real-time top-of-book. Verified front-month roots resolve on
+2026-06-29:
+
+- Energy: `CL` (WTI crude), `BZ` (Brent), `NG` (Henry Hub natural gas), `HO`
+  (NY Harbor ULSD / heating oil), `RB` (RBOB gasoline).
+- Metals: `GC` (gold), `SI` (silver), `HG` (copper), `PL` (platinum), `PA`
+  (palladium).
+- Grains/oilseeds (CBOT): `ZC` (corn), `ZS` (soybeans), `ZW` (wheat), plus `ZL`
+  (soybean oil), `ZM` (soybean meal).
+- Livestock (CME): `LE` (live cattle), `HE` (lean hogs), `GF` (feeder cattle).
+- Options on any of these via `{ROOT}.OPT` parent (e.g. `LO.OPT` for WTI options).
+- NOT in GLBX.MDP3: ICE softs — coffee (`KC`), sugar (`SB`), cotton (`CT`), cocoa
+  (`CC`) trade on ICE Futures US, a separate Databento dataset not in this
+  subscription. Do not look for them in GLBX.MDP3.
+- Constructible from these futures: forward/term-structure curves (pull a root
+  across contract months), and crack spreads (CL vs RB and HO). These were
+  previously assumed unavailable; with GLBX.MDP3 futures they are computable.
+
+Alpha Vantage — benchmark/global spot price series (NOT futures, no curve, no
+options). Verified functions:
+
+- `WTI`, `BRENT`, `NATURAL_GAS` (daily/weekly/monthly), `COPPER`, `ALUMINUM`,
+  `WHEAT`, `CORN`, `COTTON`, `SUGAR`, `COFFEE`, `ALL_COMMODITIES` (monthly/
+  quarterly/annual), and `GOLD_SILVER_SPOT` (live spot) / `GOLD_SILVER_HISTORY`.
+- None take `entitlement`; they are fixed-cadence series, not live ticks.
+- Useful when the user wants a benchmark price level/series (incl. softs like
+  coffee/sugar/cotton, which Databento GLBX.MDP3 lacks), not exchange microstructure.
+
+Routing: tradeable futures/options, intraday/near-real-time, term structure, or
+crack spreads → Databento. Benchmark spot levels and longer macro series, or any
+soft commodity → Alpha Vantage.
+
 ## Examples
 
-**Get real-time quote**:
-> "Show me the current ES futures quote"
+**Get live futures quote**:
+> "Show me the current CL.v.0 futures quote" -> `get_live_futures_quote` with `stype_in=continuous`.
+
+**Latest historical quote**:
+> "Show me the latest ES quote from historical data" -> `get_futures_quote`.
 
 **Historical analysis**:
 > "Get the last 100 daily bars for NQ"
@@ -322,6 +546,26 @@ Access security master database, corporate actions, and price adjustments.
 
 **Reference data**:
 > "Search Databento reference data for ES symbols in 2024"
+
+**Alpha Vantage live equity quote**:
+> "INOD live data" -> `GLOBAL_QUOTE` with `entitlement=realtime`.
+
+**Alpha Vantage intraday**:
+> "AAPL 5-minute bars today" -> `TIME_SERIES_INTRADAY` interval=5min,
+> `entitlement=realtime`.
+
+**Alpha Vantage FX/crypto**:
+> "EUR/USD now" -> `CURRENCY_EXCHANGE_RATE` or `FX_INTRADAY` (no entitlement).
+> "BTC price" -> `CURRENCY_EXCHANGE_RATE` (no entitlement).
+
+**Alpha Vantage fundamentals/macro**:
+> "MSFT fundamentals" -> `COMPANY_OVERVIEW`. "US CPI" -> `CPI` (no entitlement).
+
+**Alpha Vantage live equity options**:
+> "AAPL options chain now" -> `REALTIME_OPTIONS` (add `require_greeks=true` for
+> greeks/IV). Returns live with an options-entitled key, delayed/EOD otherwise.
+> No `entitlement` parameter. Options on futures (e.g. "ES options") go to
+> Databento instead.
 
 ## Error Handling
 

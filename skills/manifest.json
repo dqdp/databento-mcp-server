@@ -1,6 +1,6 @@
 {
   "name": "Market Data Skills",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Market data source routing for Databento and Alpha Vantage MCP workflows",
   "author": "DataBento MCP Server Team",
   "skills": [
@@ -8,13 +8,13 @@
       "name": "market-data",
       "path": "market-data/SKILL.md",
       "description": "Market data source routing for Databento and Alpha Vantage MCP workflows",
-      "version": "1.0.0",
+      "version": "1.2.0",
       "type": "data-api",
       "scripts": [
         {
           "name": "get-quote",
           "path": "market-data/scripts/get-quote.js",
-          "description": "Get real-time futures quotes (ES, NQ)"
+          "description": "Get latest Historical REST futures quotes (ES, NQ)"
         },
         {
           "name": "get-historical",

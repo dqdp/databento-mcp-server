@@ -16,12 +16,17 @@ import { TimeseriesClient } from "../src/api/timeseries-client.js";
 import { ReferenceClient } from "../src/api/reference-client.js";
 import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
+import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
+import { buildSmile, clampNowToAvailable, resolveExpirySelector } from "../src/analytics/pull-chain.js";
+import { loadSmileStatic } from "../src/analytics/smile-cache.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
   parseDatabentoToolArguments,
 } from "./tool-contracts.js";
+
+export const DATABENTO_MCP_SERVER_VERSION = "1.2.0";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -103,6 +108,7 @@ async function assertBatchCostPreflight(
 
 export interface DatabentoMcpClients {
   databentoClient: Pick<DataBentoClient, "getQuote" | "getSessionInfo" | "getHistoricalBars">;
+  liveClient: Pick<DatabentoLiveClient, "getLiveFuturesQuote">;
   metadataClient: Pick<
     MetadataClient,
     "listDatasets" | "listSchemas" | "listPublishers" | "listFields" | "getCost" | "getDatasetRange"
@@ -128,6 +134,7 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 
   return {
     databentoClient: new DataBentoClient(apiKey),
+    liveClient: new DatabentoLiveClient(apiKey),
     metadataClient: new MetadataClient(http),
     referenceClient: new ReferenceClient(apiKey),
     timeseriesClient: new TimeseriesClient(http),
@@ -162,6 +169,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
   return async (request: CallToolRequest): Promise<CallToolResult> => {
     const {
       databentoClient,
+      liveClient,
       metadataClient,
       referenceClient,
       timeseriesClient,
@@ -211,6 +219,51 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
         };
       }
 
+      case "get_live_futures_quote": {
+        const { symbol, dataset, stype_in, timeout_ms } = args as {
+          symbol: string;
+          dataset?: string;
+          stype_in?: "raw_symbol" | "instrument_id" | "continuous" | "parent";
+          timeout_ms?: number;
+        };
+        const quote = await liveClient.getLiveFuturesQuote(symbol, {
+          dataset,
+          stypeIn: stype_in,
+          timeoutMs: timeout_ms,
+        });
+
+        const result = {
+          symbol: quote.symbol,
+          liveSymbol: quote.liveSymbol,
+          stypeIn: quote.stypeIn,
+          dataset: quote.dataset,
+          schema: quote.schema,
+          instrumentId: quote.instrumentId,
+          price: quote.price,
+          bid: quote.bid,
+          ask: quote.ask,
+          spread: +(quote.ask - quote.bid).toFixed(2),
+          bidSize: quote.bidSize,
+          askSize: quote.askSize,
+          bidCount: quote.bidCount,
+          askCount: quote.askCount,
+          timestamp: quote.timestamp.toISOString(),
+          receiveTimestamp: quote.receiveTimestamp.toISOString(),
+          dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
+          sessionId: quote.sessionId,
+          source: "DataBento Live API",
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
       case "get_session_info": {
         const { timestamp } = args as { timestamp?: string };
         const ts = timestamp ? new Date(timestamp) : undefined;
@@ -235,13 +288,14 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       }
 
       case "get_historical_bars": {
-        const { symbol, timeframe, count } = args as {
-          symbol: "ES" | "NQ";
+        const { symbol, timeframe, count, stype_in } = args as {
+          symbol: string;
           timeframe: "1h" | "H4" | "1d";
           count: number;
+          stype_in?: "raw_symbol" | "instrument_id" | "continuous" | "parent";
         };
 
-        const bars = await databentoClient.getHistoricalBars(symbol, timeframe, count);
+        const bars = await databentoClient.getHistoricalBars(symbol, timeframe, count, stype_in);
 
         const result = {
           symbol,
@@ -352,6 +406,56 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
               type: "text",
               text: JSON.stringify(result, null, 2),
             },
+          ],
+        };
+      }
+
+      case "get_futures_options_smile": {
+        const { root, expiry, window } = args as { root: string; expiry?: string; window?: number };
+        const rootUpper = root.toUpperCase();
+        const { mode, expiry: expiryDate } = resolveExpirySelector(expiry);
+
+        // The historical feed lags wall-clock by minutes; querying up to `now` 422s
+        // (data_end_after_available_end). Clamp `now` to the dataset's available_end so every
+        // pull's window stays inside the available range. Best-effort: if the metadata call
+        // fails, fall back to wall-clock (the pull may still land within the lag).
+        let availableEnd: string | undefined;
+        try {
+          const range = (await metadataClient.getDatasetRange({ dataset: "GLBX.MDP3" })) as { end?: string; end_date?: string };
+          availableEnd = range?.end ?? range?.end_date;
+        } catch {
+          availableEnd = undefined;
+        }
+        const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
+        const today = nowIso.slice(0, 10);
+
+        // Static definitions + OI are daily-cached (reused across same-day refreshes) and passed
+        // into buildSmile so it doesn't re-pull the parent twice every call.
+        const { defs, oi } = await loadSmileStatic(timeseriesClient, rootUpper, { asOf: today, end: nowIso });
+        const chain = await buildSmile(timeseriesClient, rootUpper, {
+          today,
+          now: nowIso,
+          expiry: expiryDate,
+          mode,
+          window,
+          cachedDefs: defs,
+          cachedOi: oi,
+        });
+
+        const pct = (x: number | null) => (x == null ? "n/a" : `${(x * 100).toFixed(1)}%`);
+        const summary =
+          `${chain.symbol} options · exp ${chain.expiration} · ${chain.dte} DTE · spot ${chain.spot}\n` +
+          `ATM IV ${pct(chain.atmIV)} · 25Δ skew ${chain.skew25 == null ? "n/a" : `${(chain.skew25 * 100).toFixed(1)}pt`} · ` +
+          `PCR(OI) ${chain.pcrOI == null ? "n/a" : chain.pcrOI.toFixed(2)} · max pain ${chain.maxPain}\n` +
+          `Render the JSON below as an interactive Chart.js artifact — three panels, dark-mode friendly: ` +
+          `(1) volatility smile — plot the OTM legs vs \`strikes\`: \`putIV\` where strike <= \`atmStrike\`, \`callIV\` where strike >= \`atmStrike\`, mark \`atmStrike\`; ` +
+          `(2) open interest by strike — \`callOI\`/\`putOI\` grouped bars with a vertical line at \`maxPain\`; ` +
+          `(3) a metric strip — \`atmIV\`, \`skew25\`, \`pcrOI\`, \`maxPain\`, \`spot\`, \`dte\`. IV values are decimals (0.15 = 15%).`;
+
+        return {
+          content: [
+            { type: "text", text: summary },
+            { type: "text", text: JSON.stringify(chain) },
           ],
         };
       }
@@ -740,7 +844,7 @@ export function createDatabentoMcpServer(
   const server = new Server(
     {
       name: "databento-mcp-server",
-      version: "1.0.0",
+      version: DATABENTO_MCP_SERVER_VERSION,
     },
     {
       capabilities: {

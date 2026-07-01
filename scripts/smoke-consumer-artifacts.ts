@@ -14,6 +14,7 @@ type TextContent = {
 
 type McpbManifest = {
   manifest_version: string;
+  version: string;
   server: {
     entry_point: string;
     mcp_config: {
@@ -32,6 +33,7 @@ const extensionArtifactDir = path.join(projectRoot, extensionArtifactRelativePat
 const skillArchivePath = path.join(consumerRoot, "market-data-skill.zip");
 const extensionArchivePath = path.join(consumerRoot, "databento-mcp-desktop-extension.mcpb");
 const apiKey = "db-test-key";
+const packageJson = readJson<{ version: string }>(path.join(projectRoot, "package.json"));
 
 function readJson<T>(filePath: string): T {
   return JSON.parse(readFileSync(filePath, "utf8")) as T;
@@ -107,6 +109,10 @@ function assertConsumerSkillMarkdown(skillPath: string, manifestPath: string) {
   );
 
   const skillText = readFileSync(skillPath, "utf8");
+  assert(
+    new RegExp(`^version: ${packageJson.version}$`, "m").test(skillText),
+    "consumer skill artifact version should match package.json"
+  );
   assert(!/https?:\/\//.test(skillText), "consumer skill must not contain external documentation URLs");
   assert(!/\[[^\]]+\]\([^)]+\)/.test(skillText), "consumer skill must not contain markdown links");
   assert(
@@ -155,6 +161,7 @@ function assertManifest(extensionDir: string) {
   const manifest = readJson<McpbManifest>(path.join(extensionDir, "manifest.json"));
 
   assert(manifest.manifest_version === "0.3", "MCPB manifest version should be 0.3");
+  assert(manifest.version === packageJson.version, "MCPB manifest version should match package.json");
   assert(
     manifest.server.entry_point === "server/mcp/extension-entrypoint.js",
     "MCPB manifest should point to the UtilityProcess-safe staged server entrypoint"
@@ -253,7 +260,12 @@ async function assertStagedMcpServerWorks(extensionDir: string) {
 
     const tools = await client.listTools();
     const toolNames = tools.tools.map((tool) => tool.name);
-    for (const requiredTool of ["get_session_info", "timeseries_get_range", "batch_submit_job"]) {
+    for (const requiredTool of [
+      "get_live_futures_quote",
+      "get_session_info",
+      "timeseries_get_range",
+      "batch_submit_job",
+    ]) {
       assert(toolNames.includes(requiredTool), `staged MCP tools/list is missing ${requiredTool}`);
     }
 

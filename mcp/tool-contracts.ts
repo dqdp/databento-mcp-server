@@ -10,6 +10,8 @@ import {
 
 const FUTURES_SYMBOLS = ["ES", "NQ"] as const;
 const FUTURES_TIMEFRAMES = ["1h", "H4", "1d"] as const;
+const LIVE_QUOTE_MIN_TIMEOUT_MS = 1;
+const LIVE_QUOTE_MAX_TIMEOUT_MS = 30000;
 const SYMBOLOGY_TYPES = ["raw_symbol", "instrument_id", "continuous", "parent"] as const;
 const TIMESERIES_SCHEMAS = [
   "mbp-1",
@@ -167,7 +169,16 @@ function directTimeseriesArgs<T extends z.ZodRawShape>(shape: T): ToolArgumentSc
 
 function historicalBarsArgs(): ToolArgumentSchema {
   return toolArgs({
-    symbol: z.enum(FUTURES_SYMBOLS).describe("Futures symbol"),
+    symbol: z
+      .string()
+      .trim()
+      .min(1)
+      .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+        message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
+      })
+      .describe(
+        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+      ),
     timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
     count: z
       .number()
@@ -176,6 +187,10 @@ function historicalBarsArgs(): ToolArgumentSchema {
       .describe(
         `Number of bars to retrieve. Max ${MAX_INTRADAY_HISTORICAL_BARS} for 1h/H4, max ${MAX_DAILY_HISTORICAL_BARS} for 1d.`
       ),
+    stype_in: z
+      .enum(SYMBOLOGY_TYPES)
+      .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
+      .optional(),
   }).superRefine((args, context) => {
     const maxCount = args.timeframe === "1d" ? MAX_DAILY_HISTORICAL_BARS : MAX_INTRADAY_HISTORICAL_BARS;
     if (args.count > maxCount) {
@@ -282,11 +297,44 @@ const nonEmptyString = (description: string) => z.string().min(1).describe(descr
 export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   {
     name: "get_futures_quote",
-    description: "Get current price quote for ES or NQ futures contracts",
+    description: "Get the latest ES or NQ futures quote from Databento Historical REST data. This is not a true live socket subscription.",
     schema: toolArgs({
       symbol: z
         .enum(FUTURES_SYMBOLS)
         .describe("Futures symbol (ES = E-mini S&P 500, NQ = E-mini Nasdaq-100)"),
+    }),
+  },
+  {
+    name: "get_live_futures_quote",
+    description: "Get a true live top-of-book quote update for a futures or futures-options symbol through the Databento Live API socket feed.",
+    schema: toolArgs({
+      symbol: z
+        .string()
+        .trim()
+        .min(1)
+        .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+          message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
+        })
+        .describe(
+          "Single Databento symbol. ES and NQ are aliases for ES.v.0/NQ.v.0 continuous front contracts. Use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+        ),
+      dataset: z
+        .string()
+        .trim()
+        .min(1)
+        .describe("Databento dataset code. Defaults to GLBX.MDP3 for CME Globex futures and options on futures.")
+        .optional(),
+      stype_in: z
+        .enum(SYMBOLOGY_TYPES)
+        .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
+        .optional(),
+      timeout_ms: z
+        .number()
+        .int()
+        .min(LIVE_QUOTE_MIN_TIMEOUT_MS)
+        .max(LIVE_QUOTE_MAX_TIMEOUT_MS)
+        .describe("Maximum time to wait for the first live quote, in milliseconds. Defaults to 10000.")
+        .optional(),
     }),
   },
   {
@@ -325,6 +373,19 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
       stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type, defaults to 'raw_symbol'").optional(),
       stype_out: z.enum(SYMBOLOGY_TYPES).describe("Output symbology type, defaults to 'instrument_id'").optional(),
       limit: z.number().int().min(1).describe("Maximum records to return; defaults to MCP_DIRECT_MAX_RECORDS (10000) and cannot exceed it").optional(),
+    }),
+  },
+  {
+    name: "get_futures_options_smile",
+    description:
+      "Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3), e.g. root 'ES'. Pulls the chain definitions + latest BBO + open interest, computes IV/greeks (Black-76 — Databento carries no greeks), and returns a text summary plus a compact chain JSON. `expiry` is a date 'YYYY-MM-DD' or a mode: 'nearest' (default, DTE>=1), 'quarterly' (nearest Mar/Jun/Sep/Dec), or 'most-liquid' (highest open interest). Render the returned JSON as an interactive volatility-smile dashboard artifact.",
+    schema: toolArgs({
+      root: nonEmptyString("Futures root, e.g. 'ES' (E-mini S&P 500). CME / GLBX.MDP3 only."),
+      expiry: z
+        .string()
+        .describe("Target expiration: a date 'YYYY-MM-DD', or a mode 'nearest' | 'quarterly' | 'most-liquid'.")
+        .optional(),
+      window: z.number().int().min(1).max(200).describe("Strikes on each side of ATM (default 20, max 200).").optional(),
     }),
   },
   {
