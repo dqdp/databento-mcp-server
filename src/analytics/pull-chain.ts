@@ -36,8 +36,16 @@ export interface TimeseriesSource {
 export async function loadDefinitions(
   src: TimeseriesSource,
   root: string,
-  opts: { asOf: string; dataset?: string },
+  opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<DefinitionRec[]> {
+  // Intentionally NO `limit`: this reference set must be COMPLETE (a truncated definition set
+  // silently drops strikes/expirations). We reduce it internally to a compact chain — it never
+  // lands in the model's context — so the 10k direct-response cap (a context-size guard) does
+  // not apply. The per-refresh bbo pull IS bounded: its instrument_id list is checked against
+  // the client's 2000-symbol cap, which throws cleanly for an over-large single expiration.
+  // `end` MUST be supplied for a live pull and clamped to the dataset's available_end — a
+  // date-only `start` with no `end` expands to [start, start+1d), whose end is in the future
+  // relative to the historical API's (lagged) available range and 422s.
   const resp = await src.getRange({
     dataset: opts.dataset ?? DATASET,
     symbols: `${root}.OPT`,
@@ -45,9 +53,23 @@ export async function loadDefinitions(
     stype_out: 'instrument_id',
     schema: 'definition',
     start: opts.asOf,
+    end: opts.end,
     encoding: 'csv',
   });
   return normalizeDefinitions(resp.data);
+}
+
+/**
+ * The earlier of `nowIso` and the dataset's `availableEndIso` (the historical API lags wall
+ * clock by minutes, so an `end` at wall-now 422s). Returns `nowIso` when the available end is
+ * missing/unparseable. Pure, so the handler's clamp is unit-tested.
+ */
+export function clampNowToAvailable(nowIso: string, availableEndIso?: string): string {
+  if (!availableEndIso) return nowIso;
+  const avail = Date.parse(availableEndIso);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(avail) || Number.isNaN(now)) return nowIso;
+  return avail < now ? new Date(avail).toISOString() : nowIso;
 }
 
 /** Distinct OPTION expirations (C/P only — futures excluded), sorted ascending. */
@@ -70,6 +92,24 @@ function isQuarterly(exp: string): boolean {
 }
 
 export type ExpirationMode = 'nearest' | 'quarterly';
+export type SmileMode = ExpirationMode | 'most-liquid';
+
+const SMILE_MODES: readonly SmileMode[] = ['nearest', 'quarterly', 'most-liquid'];
+
+/**
+ * Disambiguate the tool's single `expiry` arg into a selection: a mode keyword
+ * ('nearest'|'quarterly'|'most-liquid', case-insensitive) or an explicit date string. Blank/
+ * undefined -> {} (defaults to nearest downstream). An unrecognized string passes through as
+ * an `expiry` and is rejected by chooseExpiration with the available list. Pure, so the
+ * handler's parsing is unit-tested rather than hidden in the switch.
+ */
+export function resolveExpirySelector(expiry?: string): { mode?: SmileMode; expiry?: string } {
+  const trimmed = expiry?.trim();
+  if (!trimmed) return {};
+  const norm = trimmed.toLowerCase();
+  if (SMILE_MODES.includes(norm as SmileMode)) return { mode: norm as SmileMode };
+  return { expiry: trimmed };
+}
 
 /**
  * Pick the target expiration: an explicit `expiry` (must exist), else the nearest expiration
@@ -116,6 +156,9 @@ export function chooseMostLiquid(defs: DefinitionRec[], oi: Map<number, number>,
       best = exp;
     }
   }
+  // Every expiration tied at 0 (statistics not settled yet) is not a liquidity signal — the
+  // "winner" would be an arbitrary iteration-order pick. Fail cleanly instead of silently.
+  if (bestOi <= 0) throw new Error('no open interest to rank expirations by (statistics may not have settled yet)');
   return best;
 }
 
@@ -127,7 +170,7 @@ export function chooseMostLiquid(defs: DefinitionRec[], oi: Map<number, number>,
 export async function loadOpenInterest(
   src: TimeseriesSource,
   root: string,
-  opts: { asOf: string; dataset?: string },
+  opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<Map<number, number>> {
   const resp = await src.getRange({
     dataset: opts.dataset ?? DATASET,
@@ -136,6 +179,7 @@ export async function loadOpenInterest(
     stype_out: 'instrument_id',
     schema: 'statistics',
     start: opts.asOf,
+    end: opts.end,
     encoding: 'csv',
   });
   const oi = new Map<number, number>();
@@ -209,8 +253,10 @@ export interface BuildSmileOpts {
  */
 export async function buildSmile(src: TimeseriesSource, root: string, opts: BuildSmileOpts): Promise<Chain> {
   const asOf = opts.asOf ?? opts.today;
-  const defs = opts.cachedDefs ?? (await loadDefinitions(src, root, { asOf, dataset: opts.dataset }));
-  const oi = opts.cachedOi ?? (await loadOpenInterest(src, root, { asOf, dataset: opts.dataset }));
+  // Clamp the static pulls' `end` to `now` (already clamped to the dataset's available_end by
+  // the caller) so a date-only start doesn't expand into the future and 422.
+  const defs = opts.cachedDefs ?? (await loadDefinitions(src, root, { asOf, end: opts.now, dataset: opts.dataset }));
+  const oi = opts.cachedOi ?? (await loadOpenInterest(src, root, { asOf, end: opts.now, dataset: opts.dataset }));
 
   let expiration: string;
   if (opts.mode === 'most-liquid') {
@@ -220,6 +266,14 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
   }
 
   const snap = await pullQuotesSnapshot(src, defs, expiration, { now: opts.now, dataset: opts.dataset });
+  if (snap.quotes.length === 0) {
+    // No BBO in the recent window: almost always the market is closed (overnight/weekend) or
+    // the window is too narrow. Surface that explicitly rather than letting the reducer throw
+    // an opaque "no future quote" deep inside buildChain.
+    throw new Error(
+      `no BBO for ${root} ${expiration} in the last ${Math.round(BBO_WINDOW_MS / 60000)} min — market may be closed or the window too narrow`,
+    );
+  }
   const recs: ChainRec[] = [snap.futureDef, ...snap.expirationDefs, ...snap.quotes];
   for (const d of snap.expirationDefs) {
     const v = oi.get(d.instrument_id);
@@ -228,5 +282,11 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
   const state = newState();
   for (const rec of recs) applyTick(state, rec);
   const T = Math.max(1, dteDays(expiration, opts.today)) / 365;
-  return buildChain(root, state, expiration, T, { window: opts.window ?? 20, r: opts.r ?? 0 });
+  // Pass the FULL expiration universe so nExpirations/expirations reflect the whole chain, not
+  // just the one expiration we pulled quotes for (state only holds the selected expiration).
+  return buildChain(root, state, expiration, T, {
+    window: opts.window ?? 20,
+    r: opts.r ?? 0,
+    allExpirations: listExpirations(defs),
+  });
 }

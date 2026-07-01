@@ -15,6 +15,8 @@ import {
   loadOpenInterest,
   pullQuotesSnapshot,
   buildSmile,
+  resolveExpirySelector,
+  clampNowToAvailable,
 } from '../../../src/analytics/pull-chain.js';
 
 const EXP1 = '2026-07-17';
@@ -189,5 +191,196 @@ describe('pullQuotesSnapshot + buildSmile', () => {
     for (const v of chain.callIV) if (v != null) expect(v).toBeCloseTo(SIG, 2);
     for (const v of chain.putIV) if (v != null) expect(v).toBeCloseTo(SIG, 2);
     expect(chain.callOItotal).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveExpirySelector — the handler's expiry -> {mode|expiry} disambiguation,
+// extracted as a pure fn so the mode-parsing is covered (was untested + case-sensitive).
+// ---------------------------------------------------------------------------
+describe('resolveExpirySelector', () => {
+  it('maps mode keywords to a mode (case-insensitive, trimmed)', () => {
+    expect(resolveExpirySelector('nearest')).toEqual({ mode: 'nearest' });
+    expect(resolveExpirySelector('NEAREST')).toEqual({ mode: 'nearest' }); // the case-sensitivity bug
+    expect(resolveExpirySelector('Quarterly')).toEqual({ mode: 'quarterly' });
+    expect(resolveExpirySelector('  most-liquid ')).toEqual({ mode: 'most-liquid' });
+    expect(resolveExpirySelector('Most-Liquid')).toEqual({ mode: 'most-liquid' });
+  });
+
+  it('treats a date as an explicit expiry (trimmed), not a mode', () => {
+    expect(resolveExpirySelector('2026-09-18')).toEqual({ expiry: '2026-09-18' });
+    expect(resolveExpirySelector(' 2026-09-18 ')).toEqual({ expiry: '2026-09-18' });
+  });
+
+  it('returns empty for undefined/blank (default nearest downstream)', () => {
+    expect(resolveExpirySelector(undefined)).toEqual({});
+    expect(resolveExpirySelector('   ')).toEqual({});
+  });
+
+  it('passes an unrecognized string through as an expiry (rejected downstream by chooseExpiration)', () => {
+    expect(resolveExpirySelector('july')).toEqual({ expiry: 'july' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildSmile branches + edges: multi-expiration reporting, mode selection through
+// the full pull, and clean errors on empty-market / bad-underlying (were untested).
+// ---------------------------------------------------------------------------
+describe('buildSmile — multi-expiration selection + error surfaces', () => {
+  const TODAY = '2026-06-30';
+  const NOW = '2026-06-30T14:00:00Z';
+  const JUL = '2026-07-17'; // weekly -> nearest
+  const SEP = '2026-09-18'; // quarterly -> nearest quarterly
+  const DEC = '2026-12-18'; // quarterly, heaviest OI -> most-liquid
+  const SIG = 0.2;
+
+  // One future + a 7400/7500 C/P grid per expiration, priced by Black-76, with per-contract OI.
+  const specs = [
+    { exp: JUL, futId: 100, F: 7460, oi: 1000 },
+    { exp: SEP, futId: 200, F: 7470, oi: 2000 },
+    { exp: DEC, futId: 300, F: 7480, oi: 9000 }, // heaviest -> most-liquid picks DEC
+  ];
+  const STRIKES = [7400, 7500];
+
+  function makeSource(opts: { emptyBbo?: boolean; noStats?: boolean } = {}) {
+    let defCsv = `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n`;
+    let bboCsv = `instrument_id,ts_event,bid_px_00,ask_px_00\n`;
+    let statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n`;
+    let id = 1000;
+    for (const s of specs) {
+      defCsv += `${s.futId},FUT${s.exp},F,${ns(s.exp)},0,\n`;
+      bboCsv += `${s.futId},1,${(s.F - 1) * 1e9},${(s.F + 1) * 1e9}\n`;
+      const T = (Date.parse(`${s.exp}T00:00:00Z`) - Date.parse(`${TODAY}T00:00:00Z`)) / 86_400_000 / 365;
+      for (const K of STRIKES) {
+        for (const isCall of [true, false]) {
+          const cls = isCall ? 'C' : 'P';
+          defCsv += `${id},OPT${s.exp}${cls}${K},${cls},${ns(s.exp)},${s.futId},${K * 1e9}\n`;
+          const p = Math.round(black76(s.F, K, T, SIG, { isCall }).price * 1e9);
+          bboCsv += `${id},1,${p - 500000000},${p + 500000000}\n`;
+          statCsv += `${id},0,0,${s.oi},9\n`;
+          id++;
+        }
+      }
+    }
+    return vi.fn(async (req: { schema: string }) => {
+      if (req.schema === 'definition') return { data: defCsv };
+      if (req.schema === 'statistics') return { data: opts.noStats ? `instrument_id,ts_ref,price,quantity,stat_type\n` : statCsv };
+      if (req.schema === 'bbo-1m') return { data: opts.emptyBbo ? `instrument_id,ts_event,bid_px_00,ask_px_00\n` : bboCsv };
+      throw new Error(`unexpected schema ${req.schema}`);
+    });
+  }
+
+  it('reports ALL option expirations in nExpirations/expirations (not just the selected one)', async () => {
+    const getRange = makeSource();
+    const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW }); // default nearest -> JUL
+    expect(chain.expiration).toBe(JUL);
+    expect(chain.nExpirations).toBe(3);
+    expect(chain.expirations).toEqual([JUL, SEP, DEC]);
+  });
+
+  it("quarterly mode picks the nearest Mar/Jun/Sep/Dec expiration (SEP over the JUL weekly)", async () => {
+    const getRange = makeSource();
+    const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, mode: 'quarterly' });
+    expect(chain.expiration).toBe(SEP);
+    expect(chain.nExpirations).toBe(3);
+  });
+
+  it('most-liquid mode picks the heaviest-OI expiration (DEC), distinct from nearest/quarterly', async () => {
+    const getRange = makeSource();
+    const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, mode: 'most-liquid' });
+    expect(chain.expiration).toBe(DEC);
+  });
+
+  it('honors a VALID explicit expiry date, selecting that expiration (not the default nearest)', async () => {
+    const getRange = makeSource();
+    const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, expiry: SEP });
+    expect(chain.expiration).toBe(SEP); // explicit date beats the JUL default
+    expect(chain.spot).toBe(7470); // forward from SEP's future, proving the pull filtered to SEP
+    expect(chain.strikes).toEqual(STRIKES);
+    for (const v of chain.callIV) if (v != null) expect(v).toBeCloseTo(SIG, 2);
+  });
+
+  it('throws a clear market-closed error when the BBO window is empty', async () => {
+    const getRange = makeSource({ emptyBbo: true });
+    await expect(buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW })).rejects.toThrow(/market.*closed|no bbo|no quotes/i);
+  });
+
+  it('throws on an unknown explicit expiry (surfaces available list)', async () => {
+    const getRange = makeSource();
+    await expect(buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, expiry: '2099-01-01' })).rejects.toThrow(/no expiration/i);
+  });
+
+  it('most-liquid throws cleanly when open interest is unavailable (pre-settlement)', async () => {
+    const getRange = makeSource({ noStats: true });
+    await expect(buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, mode: 'most-liquid' })).rejects.toThrow(/open interest/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clampNowToAvailable — the historical-lag ceiling for query `end` (a bbo `end` at wall-now
+// 422s: data_end_after_available_end). Pure, so the clamp is unit-tested apart from the fetch.
+// ---------------------------------------------------------------------------
+describe('clampNowToAvailable', () => {
+  it('returns the available end when it is earlier than now (the lag case)', () => {
+    expect(clampNowToAvailable('2026-07-01T08:27:00.000Z', '2026-07-01T08:20:00.000Z')).toBe('2026-07-01T08:20:00.000Z');
+  });
+  it('returns now when the available end is later (no clamp needed)', () => {
+    expect(clampNowToAvailable('2026-07-01T08:00:00.000Z', '2026-07-01T08:20:00.000Z')).toBe('2026-07-01T08:00:00.000Z');
+  });
+  it('normalizes the available end (with trailing ns) through Date', () => {
+    expect(clampNowToAvailable('2026-07-01T09:00:00.000Z', '2026-07-01T08:20:00.000000000Z')).toBe('2026-07-01T08:20:00.000Z');
+  });
+  it('falls back to now when the available end is missing or unparseable', () => {
+    expect(clampNowToAvailable('2026-07-01T08:00:00.000Z')).toBe('2026-07-01T08:00:00.000Z');
+    expect(clampNowToAvailable('2026-07-01T08:00:00.000Z', 'not-a-date')).toBe('2026-07-01T08:00:00.000Z');
+  });
+});
+
+describe('static pulls pass the clamped `end`', () => {
+  const defCsv = `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n201,ESN6 C6300,C,${ns('2026-07-17')},100,6300000000000\n`;
+  const statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n201,0,0,1500,9\n`;
+
+  it('loadDefinitions forwards end so the date-only start does not expand into the future', async () => {
+    const getRange = vi.fn().mockResolvedValue({ data: defCsv });
+    await loadDefinitions({ getRange }, 'ES', { asOf: '2026-07-01', end: '2026-07-01T08:20:00.000Z' });
+    expect(getRange.mock.calls[0][0]).toMatchObject({ start: '2026-07-01', end: '2026-07-01T08:20:00.000Z', schema: 'definition' });
+  });
+
+  it('loadOpenInterest forwards end too', async () => {
+    const getRange = vi.fn().mockResolvedValue({ data: statCsv });
+    await loadOpenInterest({ getRange }, 'ES', { asOf: '2026-07-01', end: '2026-07-01T08:20:00.000Z' });
+    expect(getRange.mock.calls[0][0]).toMatchObject({ start: '2026-07-01', end: '2026-07-01T08:20:00.000Z', schema: 'statistics' });
+  });
+});
+
+describe('selector fallback branches (previously uncovered)', () => {
+  const def = (id: number, cls: 'C' | 'P' | 'F', exp: string): DefinitionRec => ({
+    type: 'definition',
+    instrument_id: id,
+    instrument_class: cls,
+    strike: cls === 'F' ? null : 6300,
+    expiration: exp,
+    underlying: '0',
+  });
+
+  it('quarterly mode with NO quarterly expiration falls back to the whole pool', () => {
+    // only July + August weeklies (no Mar/Jun/Sep/Dec) -> quarterly filter is empty -> nearest of all
+    const defs = [def(201, 'C', '2026-07-17'), def(202, 'C', '2026-08-21')];
+    expect(chooseExpiration(defs, { today: '2026-06-30', mode: 'quarterly' })).toBe('2026-07-17');
+  });
+
+  it('all-0-DTE definitions fall back to the soonest rather than throwing', () => {
+    const defs = [def(201, 'C', '2026-06-30'), def(202, 'C', '2026-06-29')];
+    expect(chooseExpiration(defs, { today: '2026-06-30' })).toBe('2026-06-29');
+  });
+
+  it('chooseMostLiquid throws the empty-pool error when every expiration is 0-DTE', () => {
+    const defs = [def(201, 'C', '2026-06-30'), def(202, 'C', '2026-06-30')];
+    const oi = new Map([
+      [201, 5000],
+      [202, 5000],
+    ]);
+    // distinct from the bestOi<=0 throw: here the DTE>=1 pool is empty -> totals.size === 0
+    expect(() => chooseMostLiquid(defs, oi, { today: '2026-06-30' })).toThrow(/no DTE>=1 expiration/i);
   });
 });

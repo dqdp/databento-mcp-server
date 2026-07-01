@@ -5,6 +5,7 @@ import {
   createDatabentoMcpServer,
   type DatabentoMcpClients,
 } from "../../mcp/index.js";
+import { clearSmileStaticCache } from "../../src/analytics/smile-cache.js";
 
 function textPayload(result: any) {
   expect(result.content).toHaveLength(1);
@@ -137,6 +138,10 @@ describe("MCP server integration", () => {
       expect(response.tools).toHaveLength(19);
       expect(toolsByName.get("get_futures_options_smile")?.description).toContain("volatility-smile");
       expect(toolsByName.get("get_futures_options_smile")?.inputSchema.required).toEqual(["root"]);
+      expect((toolsByName.get("get_futures_options_smile")?.inputSchema.properties as any)?.window).toMatchObject({
+        minimum: 1,
+        maximum: 200,
+      });
       expect(toolsByName.get("get_live_futures_quote")?.description).toContain("Databento Live API");
       expect(toolsByName.get("get_live_futures_quote")?.inputSchema.required).toEqual([
         "symbol",
@@ -972,6 +977,12 @@ describe("get_futures_options_smile tool", () => {
   const EXP = "2027-03-19";
   const nsE = (BigInt(Date.parse(`${EXP}T00:00:00Z`)) * 1_000_000n).toString();
   const FUT = 100;
+  // Freeze the clock: the handler derives `today` from the system clock, and the fixture mids
+  // are only sensible at a fixed DTE — without freezing, the test drifts into a nonsense IV
+  // regime once real time passes EXP. Fake ONLY Date so the async MCP transport still runs.
+  const NOW_FROZEN = "2026-07-01T14:00:00.000Z";
+  const BBO_TS = "2026-07-01T13:45:00.000Z";
+  const bboTsNs = (BigInt(Date.parse(BBO_TS)) * 1_000_000n).toString();
   // ROOT.OPT carries options only (the future is in ROOT.FUT). Fixed mids above intrinsic so IV solves finite.
   const defCsv =
     `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n` +
@@ -981,21 +992,38 @@ describe("get_futures_options_smile tool", () => {
     `204,ESH7 P7500,P,${nsE},${FUT},7500000000000\n`;
   const bboCsv =
     `instrument_id,ts_event,bid_px_00,ask_px_00\n` +
-    `${FUT},1,7466000000000,7468000000000\n` +
-    `201,1,120000000000,124000000000\n` +
-    `202,1,44000000000,48000000000\n` +
-    `203,1,64000000000,68000000000\n` +
-    `204,1,88000000000,92000000000\n`;
+    `${FUT},${bboTsNs},7466000000000,7468000000000\n` +
+    `201,${bboTsNs},120000000000,124000000000\n` +
+    `202,${bboTsNs},44000000000,48000000000\n` +
+    `203,${bboTsNs},64000000000,68000000000\n` +
+    `204,${bboTsNs},88000000000,92000000000\n`;
   const statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n201,0,0,1500,9\n202,0,0,1200,9\n203,0,0,900,9\n204,0,0,800,9\n`;
 
-  it("pulls the chain and returns a summary + chain JSON", async () => {
-    const clients = createMockClients();
-    (clients.timeseriesClient as any).getRange = vi.fn(async (req: any) => {
+  // The static defs+OI cache is module-level; reset it so each test starts cold. Freeze Date.
+  beforeEach(() => {
+    clearSmileStaticCache();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW_FROZEN));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const makeGetRange = (overrides: { bboCsv?: string } = {}) =>
+    vi.fn(async (req: any) => {
       const data =
-        req.schema === "definition" ? defCsv : req.schema === "statistics" ? statCsv : req.schema === "bbo-1m" ? bboCsv : null;
+        req.schema === "definition"
+          ? defCsv
+          : req.schema === "statistics"
+            ? statCsv
+            : req.schema === "bbo-1m"
+              ? overrides.bboCsv ?? bboCsv
+              : null;
       if (data == null) throw new Error(`unexpected schema ${req.schema}`);
       return { data, schema: req.schema, symbols: [], dateRange: {}, recordCount: 0 };
     });
+
+  it("pulls the chain and returns a summary + chain JSON", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange();
     const { client, server } = await connectTestClient(clients);
     try {
       const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
@@ -1006,8 +1034,122 @@ describe("get_futures_options_smile tool", () => {
       expect(chain.expiration).toBe(EXP);
       expect(chain.spot).toBe(7467);
       expect(chain.strikes).toEqual([7400, 7500]);
-      expect(chain.callIV.some((v: number | null) => typeof v === "number")).toBe(true);
+      // Meaningful IV: finite, positive, in a sane band (rejects NaN / sentinel / garbage) —
+      // not the old `typeof v === 'number'`, which held even when IVs drifted into nonsense.
+      const atmIv = chain.callIV[chain.strikes.indexOf(chain.atmStrike)];
+      expect(Number.isFinite(atmIv)).toBe(true);
+      expect(atmIv).toBeGreaterThan(0);
+      expect(atmIv).toBeLessThan(2);
       expect(chain.callOItotal).toBeGreaterThanOrEqual(1500);
+      expect(chain.asOf).toBe(BBO_TS); // ts_event ns -> ISO, never the raw UNDEF sentinel
+      expect(chain.window).toBe(20); // default window plumbed through
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("routes a mode keyword case-insensitively (MOST-LIQUID is a mode, not an expiry)", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange();
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({
+        name: "get_futures_options_smile",
+        arguments: { root: "ES", expiry: "MOST-LIQUID" },
+      });
+      // Case-insensitive parsing: NOT treated as a literal expiry "MOST-LIQUID" (which would
+      // fail with "no expiration MOST-LIQUID"); resolves to the single available expiration.
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0].text).toContain("ES options · exp 2027-03-19");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("surfaces an unknown explicit expiry as a clean MCP error, not a crash", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange();
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({
+        name: "get_futures_options_smile",
+        arguments: { root: "ES", expiry: "2099-01-01" },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/no expiration 2099-01-01/i);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("surfaces a clear market-closed error when the BBO window is empty", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange({ bboCsv: `instrument_id,ts_event,bid_px_00,ask_px_00\n` });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/market may be closed|no bbo/i);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("caches the static definitions + OI across same-day calls (parent pulled once)", async () => {
+    const clients = createMockClients();
+    const getRange = makeGetRange();
+    (clients.timeseriesClient as any).getRange = getRange;
+    const { client, server } = await connectTestClient(clients);
+    try {
+      await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      const second: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      const bySchema = (s: string) => getRange.mock.calls.filter((c: any[]) => c[0].schema === s).length;
+      expect(bySchema("definition")).toBe(1); // cached — not re-pulled on the second call
+      expect(bySchema("statistics")).toBe(1);
+      expect(bySchema("bbo-1m")).toBe(2); // the dynamic quote pull still runs each call
+      // The cached second call still returns a valid smile (not an error masked by the counts).
+      expect(second.isError).toBeFalsy();
+      expect(JSON.parse(second.content[1].text).expiration).toBe(EXP);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("clamps every query `end` to the dataset available_end (historical lag)", async () => {
+    const clients = createMockClients();
+    const getRange = makeGetRange();
+    (clients.timeseriesClient as any).getRange = getRange;
+    // available_end is 10 min behind the frozen wall clock (14:00) — the lag case.
+    (clients.metadataClient.getDatasetRange as any).mockResolvedValue({ end: "2026-07-01T13:50:00.000Z" });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      expect(result.isError).toBeFalsy();
+      // No pull may request past available_end; the bbo window ends exactly at it.
+      for (const [req] of getRange.mock.calls as any[]) {
+        if (req.end) expect(Date.parse(req.end)).toBeLessThanOrEqual(Date.parse("2026-07-01T13:50:00.000Z"));
+      }
+      const bbo = (getRange.mock.calls as any[]).find(([r]) => r.schema === "bbo-1m")![0];
+      expect(bbo.end).toBe("2026-07-01T13:50:00.000Z");
+      expect(Date.parse(bbo.start)).toBe(Date.parse("2026-07-01T13:35:00.000Z")); // 15-min window
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("plumbs an explicit window through to the chain", async () => {
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange();
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES", window: 1 } });
+      expect(JSON.parse(result.content[1].text).window).toBe(1);
     } finally {
       await client.close();
       await server.close();

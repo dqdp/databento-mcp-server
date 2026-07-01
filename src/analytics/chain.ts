@@ -126,6 +126,13 @@ export interface BuildChainOpts {
   window?: number;
   r?: number;
   prev?: Chain | null;
+  /**
+   * The FULL option-expiration universe for `nExpirations`/`expirations`. The reducer state
+   * only holds the ONE expiration we pulled/streamed, so left to itself buildChain would
+   * always report 1. Callers that know the whole chain (the snapshot pull) pass it here so a
+   * consumer can see the other expirations and offer to switch. Omitted -> derive from state.
+   */
+  allExpirations?: string[];
 }
 
 function delta25(strikeKeys: Iterable<number>, dl: Map<number, number | null>, target: number, lo: number, hi: number): number | null {
@@ -233,7 +240,9 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   };
   const maxPain = coi || poi ? strikes.reduce((best, k) => (payout(k) < payout(best) ? k : best), strikes[0]) : atm;
 
-  const exps = [...new Set([...state.defs.values()].filter((d) => d.cls === 'C' || d.cls === 'P').map((d) => d.expiration))].sort();
+  const exps =
+    opts.allExpirations ??
+    [...new Set([...state.defs.values()].filter((d) => d.cls === 'C' || d.cls === 'P').map((d) => d.expiration))].sort();
   const col = (m: Map<number, number | null>): (number | null)[] => win.map((K) => m.get(K) ?? null);
 
   return {

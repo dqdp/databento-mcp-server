@@ -12,6 +12,7 @@ import type { ChainRec, DefinitionRec, InstrumentClass, QuoteRec, StatisticsRec 
 const PRICE_SCALE = 1e9;
 const UNDEF_PX = '9223372036854775807'; // INT64_MAX — compare as a string (exceeds JS safe int)
 const UNDEF_I32 = '2147483647'; // INT32_MAX — undefined size/quantity sentinel
+const UNDEF_TS = '18446744073709551615'; // UINT64_MAX — undefined nanosecond-timestamp sentinel
 const STAT_TYPE_OPEN_INTEREST = '9';
 
 /** Header-driven CSV parse. Databento CSV has no embedded commas/quotes in these fields. */
@@ -34,6 +35,12 @@ function nsToDate(ns: string): string {
   if (!ns || !/^\d+$/.test(ns)) return '';
   const ms = Number(BigInt(ns) / 1_000_000n);
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Nanoseconds-since-epoch -> ISO timestamp (UTC), or null for empty/non-numeric/UNDEF. */
+function nsToIso(ns: string | undefined): string | null {
+  if (!ns || ns === UNDEF_TS || !/^\d+$/.test(ns)) return null;
+  return new Date(Number(BigInt(ns) / 1_000_000n)).toISOString();
 }
 
 function scaledPrice(raw: string | undefined): number | null {
@@ -59,14 +66,16 @@ export function normalizeDefinitions(csv: string): DefinitionRec[] {
   return out;
 }
 
-/** `bbo-1s` / `mbp-1` schema -> quote records (latest bid/ask). */
+/** `bbo-1m` (or `bbo-1s` / `mbp-1`) schema -> quote records (latest bid/ask). */
 export function normalizeQuotes(csv: string): QuoteRec[] {
   return rows(csv).map((r) => ({
     type: 'quote',
     instrument_id: Number(r['instrument_id']),
     bid: scaledPrice(r['bid_px_00']),
     ask: scaledPrice(r['ask_px_00']),
-    ts: r['ts_event'] ?? null,
+    // Live bbo-1m often carries an UNDEF ts_event (u64 max); fall back to ts_recv, else null,
+    // so the raw sentinel never leaks into the chain's asOf.
+    ts: nsToIso(r['ts_event']) ?? nsToIso(r['ts_recv']),
   }));
 }
 

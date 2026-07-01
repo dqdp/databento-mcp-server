@@ -18,7 +18,8 @@ import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
 import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
-import { buildSmile } from "../src/analytics/pull-chain.js";
+import { buildSmile, clampNowToAvailable, resolveExpirySelector } from "../src/analytics/pull-chain.js";
+import { loadSmileStatic } from "../src/analytics/smile-cache.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
@@ -411,17 +412,34 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
 
       case "get_futures_options_smile": {
         const { root, expiry, window } = args as { root: string; expiry?: string; window?: number };
-        const now = new Date();
-        const today = now.toISOString().slice(0, 10);
-        const MODES = ["nearest", "quarterly", "most-liquid"] as const;
-        const asMode = expiry && (MODES as readonly string[]).includes(expiry) ? (expiry as (typeof MODES)[number]) : undefined;
+        const rootUpper = root.toUpperCase();
+        const { mode, expiry: expiryDate } = resolveExpirySelector(expiry);
 
-        const chain = await buildSmile(timeseriesClient, root.toUpperCase(), {
+        // The historical feed lags wall-clock by minutes; querying up to `now` 422s
+        // (data_end_after_available_end). Clamp `now` to the dataset's available_end so every
+        // pull's window stays inside the available range. Best-effort: if the metadata call
+        // fails, fall back to wall-clock (the pull may still land within the lag).
+        let availableEnd: string | undefined;
+        try {
+          const range = (await metadataClient.getDatasetRange({ dataset: "GLBX.MDP3" })) as { end?: string; end_date?: string };
+          availableEnd = range?.end ?? range?.end_date;
+        } catch {
+          availableEnd = undefined;
+        }
+        const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
+        const today = nowIso.slice(0, 10);
+
+        // Static definitions + OI are daily-cached (reused across same-day refreshes) and passed
+        // into buildSmile so it doesn't re-pull the parent twice every call.
+        const { defs, oi } = await loadSmileStatic(timeseriesClient, rootUpper, { asOf: today, end: nowIso });
+        const chain = await buildSmile(timeseriesClient, rootUpper, {
           today,
-          now: now.toISOString(),
-          expiry: asMode ? undefined : expiry,
-          mode: asMode,
+          now: nowIso,
+          expiry: expiryDate,
+          mode,
           window,
+          cachedDefs: defs,
+          cachedOi: oi,
         });
 
         const pct = (x: number | null) => (x == null ? "n/a" : `${(x * 100).toFixed(1)}%`);

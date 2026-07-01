@@ -385,7 +385,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
         .string()
         .describe("Target expiration: a date 'YYYY-MM-DD', or a mode 'nearest' | 'quarterly' | 'most-liquid'.")
         .optional(),
-      window: z.number().int().min(1).describe("Strikes on each side of ATM (default 20).").optional(),
+      window: z.number().int().min(1).max(200).describe("Strikes on each side of ATM (default 20, max 200).").optional(),
     }),
   },
   {

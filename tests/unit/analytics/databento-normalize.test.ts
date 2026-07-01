@@ -66,6 +66,26 @@ describe('normalizeQuotes (bbo)', () => {
     expect(q.bid).toBeNull();
     expect(q.ask).toBeNull();
   });
+
+  it('converts a valid ns ts_event to an ISO timestamp for asOf', () => {
+    const q = recs.find((r) => r.instrument_id === 100)!;
+    expect(q.ts).toBe(new Date(Number(1789600000000000000n / 1_000_000n)).toISOString());
+  });
+
+  it('falls back to ts_recv when ts_event is the UINT64_MAX UNDEF sentinel (real bbo-1m shape)', () => {
+    // Live bbo-1m frequently carries ts_event = 18446744073709551615 (u64 max) with a valid
+    // ts_recv; the raw sentinel must never leak into asOf.
+    const csvTs =
+      `instrument_id,ts_recv,ts_event,bid_px_00,ask_px_00\n` +
+      `100,1789600000000000000,18446744073709551615,7466000000000,7468000000000\n` +
+      `201,18446744073709551615,18446744073709551615,7466000000000,7468000000000\n`;
+    const q = normalizeQuotes(csvTs);
+    expect(q.find((r) => r.instrument_id === 100)!.ts).toBe(
+      new Date(Number(1789600000000000000n / 1_000_000n)).toISOString(),
+    );
+    // both UNDEF -> null (no readable time available)
+    expect(q.find((r) => r.instrument_id === 201)!.ts).toBeNull();
+  });
 });
 
 describe('normalizeStatistics (open interest = stat_type 9)', () => {
