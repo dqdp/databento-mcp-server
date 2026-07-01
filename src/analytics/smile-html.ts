@@ -21,6 +21,7 @@ export function renderSmileHtml(chain: Chain): string {
   const sym = escHtml(chain.symbol);
   const exp = escHtml(chain.expiration);
   const asof = escHtml(chain.asOf ?? 'n/a');
+  const selLabel = chain.selection ? escHtml(chain.selection) : '';
   const skew = chain.skew25 == null ? 'n/a' : `${(chain.skew25 * 100).toFixed(1)}pt`;
   const metrics: [string, string][] = [
     ['Forward', chain.spot.toFixed(2)],
@@ -50,6 +51,10 @@ export function renderSmileHtml(chain: Chain): string {
   .cards{ display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; margin-bottom:22px; }
   .card{ background:var(--card); border-radius:8px; padding:10px 12px; }
   .card .k{ font-size:12px; color:var(--mut); } .card .v{ font-size:22px; font-weight:600; margin-top:2px; }
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 14px; }
+  .chip{ font-size:12px; padding:3px 9px; border-radius:12px; background:var(--card); color:var(--fg); }
+  .chip.sel{ background:rgba(42,120,214,.15); color:#3987e5; }
+  .chip.snap{ color:var(--mut); }
   .legend{ display:flex; flex-wrap:wrap; gap:16px; font-size:12px; color:var(--mut); margin:0 0 6px; }
   .legend span{ display:flex; align-items:center; gap:5px; }
   .sw{ width:14px; height:2px; display:inline-block; } .box{ width:10px; height:10px; border-radius:2px; display:inline-block; }
@@ -60,12 +65,16 @@ export function renderSmileHtml(chain: Chain): string {
 <body>
 <div class="wrap">
   <h1>${sym} options · ${exp} · ${chain.dte} DTE</h1>
-  <div class="sub">Black-76 implied vol from live GLBX.MDP3 quotes · forward from the underlying future · as of ${asof}</div>
+  <div class="chips">
+    ${selLabel ? `<span class="chip sel">${selLabel} series</span>` : ''}
+    <span class="chip snap">snapshot · as of ${asof}</span>
+  </div>
+  <div class="sub">Black-76 implied vol from the latest GLBX.MDP3 quotes · forward from the underlying future. Static snapshot — not a live stream.</div>
   <div class="cards">${cards}</div>
 
   <div class="legend">
-    <span><span class="sw" style="background:var(--call)"></span>Call IV</span>
-    <span><span class="sw" style="border-top:2px dashed var(--put);height:0"></span>Put IV</span>
+    <span><span class="sw" style="background:var(--put)"></span>Put IV (OTM, K ≤ ATM)</span>
+    <span><span class="sw" style="background:var(--call)"></span>Call IV (OTM, K ≥ ATM)</span>
     <span><span class="sw" style="border-top:1px solid var(--mut);height:0"></span>ATM ${chain.atmStrike}</span>
   </div>
   <div class="panel"><canvas id="smile"></canvas></div>
@@ -95,10 +104,13 @@ export function renderSmileHtml(chain: Chain): string {
     if(label){ cx.setLineDash([]); cx.fillStyle=color; cx.font='11px sans-serif'; cx.textAlign='center'; cx.fillText(label,x,chart.chartArea.top-3); }
     cx.restore();
   }
+  // The smile = OTM composite by halves: puts for K <= ATM, calls for K >= ATM (they meet at ATM).
+  var putSide = C.strikes.map(function(k,i){ return k<=C.atmStrike ? pctv(C.putIV[i]) : null; });
+  var callSide = C.strikes.map(function(k,i){ return k>=C.atmStrike ? pctv(C.callIV[i]) : null; });
   new Chart(document.getElementById('smile'),{ type:'line',
     data:{ labels:C.strikes, datasets:[
-      { label:'Call IV', data:C.callIV.map(pctv), borderColor:call, borderWidth:2, pointRadius:0, tension:.35, spanGaps:true },
-      { label:'Put IV', data:C.putIV.map(pctv), borderColor:put, borderWidth:2, borderDash:[5,4], pointRadius:0, tension:.35, spanGaps:true } ] },
+      { label:'Put IV (OTM)', data:putSide, borderColor:put, borderWidth:2, pointRadius:0, tension:.35, spanGaps:false },
+      { label:'Call IV (OTM)', data:callSide, borderColor:call, borderWidth:2, pointRadius:0, tension:.35, spanGaps:false } ] },
     options:{ responsive:true, maintainAspectRatio:false, interaction:{mode:'index',intersect:false},
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{ title:function(t){return 'Strike '+C.strikes[t[0].dataIndex];}, label:function(c){return c.dataset.label+': '+c.parsed.y+'%';} } } },
       scales:{ x:{ title:{display:true,text:'Strike',color:mut}, ticks:{color:mut,autoSkip:true,maxTicksLimit:11}, grid:{display:false} },

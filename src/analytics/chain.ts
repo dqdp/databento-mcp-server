@@ -93,6 +93,7 @@ export interface Chain {
   expiration: string;
   dte: number;
   asOf: string | null;
+  selection?: string; // how the expiration was chosen: 'most-liquid' | 'nearest' | 'quarterly' | explicit date
   spot: number;
   spotEstimated: boolean;
   atmStrike: number;

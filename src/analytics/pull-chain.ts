@@ -363,9 +363,11 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
   const T = Math.max(1, dteDays(expiration, opts.today)) / 365;
   // Pass the FULL expiration universe so nExpirations/expirations reflect the whole chain, not
   // just the one expiration we pulled quotes for (state only holds the selected expiration).
-  return buildChain(root, state, expiration, T, {
+  const chain = buildChain(root, state, expiration, T, {
     window: opts.window ?? 20,
     r: opts.r ?? 0,
     allExpirations: listExpirations(defs),
   });
+  const selection = opts.mode ?? (opts.expiry ? `expiry ${opts.expiry}` : 'nearest');
+  return { ...chain, selection };
 }
