@@ -27,7 +27,7 @@ import {
   parseDatabentoToolArguments,
 } from "./tool-contracts.js";
 
-export const DATABENTO_MCP_SERVER_VERSION = "1.2.0";
+export const DATABENTO_MCP_SERVER_VERSION = "1.3.0";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {

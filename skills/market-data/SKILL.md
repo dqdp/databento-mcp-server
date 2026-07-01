@@ -1,7 +1,7 @@
 ---
 name: market-data
 description: Market data source routing for Databento and Alpha Vantage MCP workflows
-version: 1.2.0
+version: 1.3.0
 triggers:
   - "databento"
   - "cme market data"
