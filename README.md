@@ -4,6 +4,16 @@ Professional market data access via DataBento API, available as both an MCP serv
 
 ## What's New
 
+**Live futures-options volatility smile (v1.3.0)**
+
+The connector can now host a **tick-live** volatility-smile web page for options on CME
+futures (ES, CL, GC, NG, …), streamed from the Databento **Live socket** — the smile's
+points move in real time as quotes tick, not on a polling delay. It is **off by default**:
+set `SMILE_WEB_PORT` (in the Desktop connector configuration or the environment) and open
+`http://127.0.0.1:<port>/smile/ES`. The page is loopback-only and unauthenticated, and it
+opens metered Databento Live sockets while a chart is open. See
+[Live futures-options smile page](#live-futures-options-smile-page).
+
 **Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
 This project now supports two deployment modes:
@@ -271,6 +281,8 @@ in `docs/claude-desktop-simple-install.md`.
 | `MCP_RATE_LIMIT_MAX_REQUESTS` | HTTP only | `120` | Max requests per rate-limit window per bearer token or fallback IP |
 | `MCP_RATE_LIMIT_WINDOW_MS` | HTTP only | `60000` | Rate-limit window in milliseconds |
 | `TRUST_PROXY` | Remote HTTP | `false` | Require trusted proxy `X-Forwarded-Proto: https` for remote/proxy exposure |
+| `SMILE_WEB_PORT` | ❌ | - | If set, also host the live futures-options smile page on this port (off when unset) |
+| `SMILE_WEB_HOST` | ❌ | `127.0.0.1` | Bind host for the smile page; **loopback only** (`127.0.0.1`/`localhost`/`::1`) — a non-loopback value is refused (the page is unauthenticated) |
 
 ## Available Tools
 
@@ -1025,6 +1037,41 @@ strikes around the forward before requesting BBO.
 **Output:** a text summary (ATM IV, 25Δ skew, PCR(OI), max pain) followed by a
 chain JSON: `spot`, `atmStrike`, `strikes[]`, `callIV[]`/`putIV[]`,
 `callOI[]`/`putOI[]`, `expirations[]`, and render guidance for the artifact.
+
+### Live futures-options smile page
+
+The `get_futures_options_smile` tool returns a **snapshot**. For a **tick-live** view,
+the connector can host an HTML page whose smile updates in real time from the Databento
+**Live socket** (push), not a polling delay.
+
+**Enable it** by setting a port — either in the Claude Desktop connector configuration
+("Live smile web port") or via the environment:
+
+```bash
+SMILE_WEB_PORT=8770 node dist/mcp/mcp/index.js       # inside the connector process
+# then open  http://127.0.0.1:8770/smile/ES          # also CL, GC, NG, …
+#            http://127.0.0.1:8770/smile/CL?expiry=most-liquid&interval=10
+```
+
+It is **off by default** (no port ⇒ not hosted). A standalone dev server is also
+available without the MCP process:
+
+```bash
+npx tsx scripts/smile-live-server.ts 8770 --live      # --live = Live socket; omit for polled Historical
+```
+
+**How it works.** Live has no snapshot-on-subscribe, so each dashboard **seeds one
+expiration ±window from the Historical API**, then opens a persistent Live session on
+just that chain's instrument IDs (one option series + the future — never the whole
+parent). As quotes tick, IV/greeks recompute via Black-76 (warm-started from the prior
+IV), and per-point deltas are **coalesced** (~300 ms) into one rebuilt chain that the
+page applies to the existing Chart.js points (they move; the chart is not redrawn).
+Whole-expiration aggregates (open interest, PCR, max pain) come from the seed.
+
+**Security & cost.** The page performs **no authentication**, so it binds **loopback
+only** — a non-loopback `SMILE_WEB_HOST` is refused. Each open chart holds a metered
+Databento Live socket; sessions are reused per `(root, expiration, window)` and bounded
+by an LRU cap. Close the page to release the socket.
 
 ## Usage Examples
 
