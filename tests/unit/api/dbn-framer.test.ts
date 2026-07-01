@@ -52,4 +52,12 @@ describe('DbnFramer', () => {
     f.write(Buffer.from('XXXXXXXX'));
     expect(() => [...f.records()]).toThrow(/DBN/);
   });
+
+  it('throws on a record length below the header size', () => {
+    const f = new DbnFramer();
+    const bad = Buffer.alloc(80);
+    bad[0] = 2; // ×4 = 8, below the 16-byte header
+    f.write(Buffer.concat([prelude(0), bad]));
+    expect(() => [...f.records()]).toThrow(/length/i);
+  });
 });

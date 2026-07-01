@@ -31,14 +31,17 @@ describe('Coalescer', () => {
     expect(flushes).toBe(2);
   });
 
-  it('maxWait bounds latency under a continuous stream (flushes without idle)', () => {
-    let flushes = 0;
-    const c = new Coalescer(200, () => flushes++, 1000);
+  it('maxWait forces a flush MID-stream (bounds latency, not just at the end)', () => {
+    const start = Date.now();
+    const fireAt: number[] = [];
+    const c = new Coalescer(200, () => fireAt.push(Date.now() - start), 1000);
     for (let t = 0; t < 1200; t += 100) {
       c.mark();
-      vi.advanceTimersByTime(100); // never idle for a full window
+      vi.advanceTimersByTime(100); // never idle for a full 200ms window
     }
-    expect(flushes).toBeGreaterThanOrEqual(1); // maxWait forced at least one flush mid-stream
+    expect(fireAt.length).toBeGreaterThanOrEqual(1);
+    expect(fireAt[0]).toBeLessThanOrEqual(1000); // fired at/under maxWait…
+    expect(fireAt[0]).toBeLessThan(1200); // …strictly before the stream ended (would starve without maxWait)
   });
 
   it('stop() cancels a pending flush', () => {

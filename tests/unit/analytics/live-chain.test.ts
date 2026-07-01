@@ -46,11 +46,13 @@ describe('live-chain buffer', () => {
   it('a streamed quote tick updates only that strike and marks it changed', () => {
     const lc = seed();
     buildLiveChain(lc); // initial
-    lc.changed.clear();
+    expect(lc.changed.size).toBe(0); // build resets "changed since last flush"
     // 7500 call now implies 0.30
     onLiveQuote(lc, q(203, black76(F, 7500, T, 0.3, { isCall: true }).price));
     expect(lc.changed.has(203)).toBe(true);
     expect(lc.changed.size).toBe(1);
+    buildLiveChain(lc);
+    expect(lc.changed.size).toBe(0); // and again after the next flush
     const chain = buildLiveChain(lc);
     const i = chain.strikes.indexOf(7500);
     expect(chain.callIV[i]!).toBeCloseTo(0.3, 2);

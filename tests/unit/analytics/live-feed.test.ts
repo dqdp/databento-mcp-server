@@ -70,4 +70,26 @@ describe('LiveSmileFeed', () => {
     const other = Buffer.alloc(80); other[0] = 20; other[1] = 99; // unknown rtype
     expect(() => feed.onData(Buffer.concat([prelude(), other]))).not.toThrow();
   });
+
+  it('does not crash when a flush fires before a forward exists (no snapshot-on-subscribe)', () => {
+    let flushes = 0;
+    // seed WITHOUT a future quote -> buildChain throws "no future quote yet" on flush
+    const noFwd = { ...seedOpts, quotes: [q(201, black76(F, 7400, T, SIG, { isCall: true }).price)] };
+    const feed = new LiveSmileFeed({ ...noFwd, coalesceMs: 100, onChain: () => { flushes++; } });
+    feed.onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.3, { isCall: true }).price)]));
+    expect(() => vi.advanceTimersByTime(150)).not.toThrow(); // the timer flush is guarded
+    expect(flushes).toBe(0); // nothing emitted until the buffer is buildable
+  });
+
+  it('surfaces a gateway ERROR record via onError instead of silently dropping it', () => {
+    const errors: string[] = [];
+    const feed = new LiveSmileFeed({ ...seedOpts, coalesceMs: 100, onChain: () => {}, onError: (e) => errors.push(e.message) });
+    const err = Buffer.alloc(48);
+    err[0] = 12; // ×4 = 48
+    err[1] = 21; // DBN ERROR rtype
+    err.write('bad symbol', 16, 'ascii'); // null-terminated message after the 16-byte header
+    feed.onData(Buffer.concat([prelude(), err]));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/gateway error.*bad symbol/i);
+  });
 });

@@ -71,7 +71,7 @@ export function onLiveQuote(lc: LiveChain, rec: QuoteRec): void {
   lc.changed.add(rec.instrument_id);
 }
 
-/** Rebuild the chain from the buffer (warm-started from the previous build). */
+/** Rebuild the chain from the buffer (warm-started from the previous build); resets `changed`. */
 export function buildLiveChain(lc: LiveChain): Chain {
   const chain = buildChain(lc.symbol, lc.state, lc.expiration, lc.T, {
     window: lc.window,
@@ -79,5 +79,6 @@ export function buildLiveChain(lc: LiveChain): Chain {
     prev: lc.prev,
   });
   lc.prev = chain;
+  lc.changed.clear(); // "changed since the last flush" — reset so scoped re-solve stays bounded
   return chain;
 }
