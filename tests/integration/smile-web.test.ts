@@ -106,6 +106,12 @@ describe('smile-web server', () => {
     }
   });
 
+  it('clamps a crafted oversized window (no runaway pull)', async () => {
+    const res = await fetch(`${base}/smile/ES.json?window=999999`);
+    expect(res.status).toBe(200); // window clamped to <=200, request still succeeds
+    expect((await res.json()).strikes).toEqual([7400, 7500]);
+  });
+
   it('unknown path -> 404', async () => {
     const res = await fetch(`${base}/nope`);
     expect(res.status).toBe(404);

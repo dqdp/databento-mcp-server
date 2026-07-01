@@ -42,8 +42,10 @@ export function createSmileServer(clients: SmileClients): http.Server {
         const isJson = Boolean(m[2]);
         const expiry = url.searchParams.get('expiry') ?? undefined;
         const windowStr = url.searchParams.get('window');
-        const window = windowStr ? Number(windowStr) : undefined;
-        const interval = Number(url.searchParams.get('interval') ?? '10') || 10;
+        // Clamp untrusted query params so a crafted request can't force a giant pull/render:
+        // window matches the MCP tool's 1..200 bound; interval to a sane 2..300s.
+        const window = windowStr ? Math.min(200, Math.max(1, Math.floor(Number(windowStr)) || 20)) : undefined;
+        const interval = Math.min(300, Math.max(2, Math.floor(Number(url.searchParams.get('interval'))) || 10));
 
         if (isJson) {
           try {

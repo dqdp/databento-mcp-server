@@ -28,6 +28,9 @@ if (!apiKey) {
 const port = Number(process.argv[2] ?? process.env.SMILE_PORT ?? 8768);
 const { timeseriesClient, metadataClient } = createDefaultDatabentoMcpClients(apiKey);
 
-createSmileServer({ timeseriesClient, metadataClient }).listen(port, () => {
-  console.log(`smile live server → http://localhost:${port}/smile/CL   (try ?expiry=most-liquid&interval=10)`);
+// Bind to loopback only: this local dev server makes AUTHENTICATED Databento calls, so it must
+// not be reachable from the LAN. (Override with SMILE_HOST if you really need to.)
+const host = process.env.SMILE_HOST ?? '127.0.0.1';
+createSmileServer({ timeseriesClient, metadataClient }).listen(port, host, () => {
+  console.log(`smile live server → http://${host}:${port}/smile/CL   (try ?expiry=most-liquid&interval=10)`);
 });
