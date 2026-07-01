@@ -5,12 +5,16 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { DefinitionRec } from '../../../src/analytics/chain.js';
+import { black76 } from '../../../src/analytics/black76.js';
+import { normalizeDefinitions } from '../../../src/analytics/databento-normalize.js';
 import {
   loadDefinitions,
   listExpirations,
   chooseExpiration,
   chooseMostLiquid,
   loadOpenInterest,
+  pullQuotesSnapshot,
+  buildSmile,
 } from '../../../src/analytics/pull-chain.js';
 
 const EXP1 = '2026-07-17';
@@ -126,5 +130,64 @@ describe('loadOpenInterest', () => {
     expect(oi.get(201)).toBe(1500);
     expect(oi.get(202)).toBe(800);
     expect(oi.has(100)).toBe(false);
+  });
+});
+
+describe('pullQuotesSnapshot + buildSmile', () => {
+  const TODAY = '2026-06-30';
+  const NOW = '2026-06-30T14:00:00Z';
+  const EXP = '2026-09-18';
+  const F = 7467;
+  const SIG = 0.2;
+  const FUT_ID = 100;
+  const T = (Date.parse(`${EXP}T00:00:00Z`) - Date.parse(`${TODAY}T00:00:00Z`)) / 86_400_000 / 365; // must match buildSmile's T
+
+  // parent definitions are OPTIONS ONLY (the underlying future ESU6 lives in ES.FUT, not ES.OPT)
+  let defCsv = `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n`;
+  let bboCsv = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT_ID},1,7466000000000,7468000000000\n`;
+  let statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n`;
+  let id = 201;
+  for (const K of [7400, 7500]) {
+    for (const isCall of [true, false]) {
+      const cls = isCall ? 'C' : 'P';
+      defCsv += `${id},ESU6 ${cls}${K},${cls},${ns(EXP)},${FUT_ID},${K * 1e9}\n`;
+      const p = Math.round(black76(F, K, T, SIG, { isCall }).price * 1e9);
+      bboCsv += `${id},1,${p - 500000000},${p + 500000000}\n`;
+      statCsv += `${id},0,0,1000,9\n`;
+      id++;
+    }
+  }
+  const source = () =>
+    vi.fn(async (req: { schema: string }) => {
+      if (req.schema === 'definition') return { data: defCsv };
+      if (req.schema === 'statistics') return { data: statCsv };
+      if (req.schema === 'bbo-1m') return { data: bboCsv };
+      throw new Error(`unexpected schema ${req.schema}`);
+    });
+
+  it('pullQuotesSnapshot pulls bbo-1m for the expiration options + the future, and synthesizes the F-def', async () => {
+    const getRange = source();
+    const defs = normalizeDefinitions(defCsv);
+    const snap = await pullQuotesSnapshot({ getRange }, defs, EXP, { now: NOW });
+
+    const req = getRange.mock.calls[0][0] as any;
+    expect(req.schema).toBe('bbo-1m');
+    expect(req.stype_in).toBe('instrument_id');
+    expect(String(req.symbols).split(',').map(Number)).toEqual(expect.arrayContaining([201, 202, 203, 204, FUT_ID]));
+    expect(snap.futureDef).toMatchObject({ type: 'definition', instrument_class: 'F', instrument_id: FUT_ID, strike: null });
+    expect(snap.quotes.find((q) => q.instrument_id === FUT_ID)).toMatchObject({ bid: 7466, ask: 7468 });
+  });
+
+  it('buildSmile composes definitions + OI + quotes into a chain with solved IV', async () => {
+    const getRange = source();
+    const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW });
+
+    expect(chain.symbol).toBe('ES');
+    expect(chain.expiration).toBe(EXP);
+    expect(chain.spot).toBe(F);
+    expect(chain.strikes).toEqual([7400, 7500]);
+    for (const v of chain.callIV) if (v != null) expect(v).toBeCloseTo(SIG, 2);
+    for (const v of chain.putIV) if (v != null) expect(v).toBeCloseTo(SIG, 2);
+    expect(chain.callOItotal).toBeGreaterThanOrEqual(1000);
   });
 });

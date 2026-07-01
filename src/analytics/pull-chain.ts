@@ -7,8 +7,9 @@
  * expiration. The DYNAMIC quote snapshot (narrow bbo + statistics per refresh) is a later
  * step and composes on top of this.
  */
-import type { DefinitionRec } from './chain.js';
-import { normalizeDefinitions, normalizeStatistics } from './databento-normalize.js';
+import type { Chain, ChainRec, DefinitionRec, QuoteRec } from './chain.js';
+import { applyTick, buildChain, newState } from './chain.js';
+import { normalizeDefinitions, normalizeQuotes, normalizeStatistics } from './databento-normalize.js';
 
 const DATASET = 'GLBX.MDP3';
 
@@ -140,4 +141,92 @@ export async function loadOpenInterest(
   const oi = new Map<number, number>();
   for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);
   return oi;
+}
+
+const BBO_WINDOW_MS = 15 * 60 * 1000; // last ~15 min of 1-min BBO; last record per instrument = the snapshot
+
+export interface QuoteSnapshot {
+  quotes: QuoteRec[];
+  futureDef: DefinitionRec; // synthesized: the underlying future isn't in ROOT.OPT (it's ROOT.FUT)
+  expirationDefs: DefinitionRec[];
+}
+
+/**
+ * DYNAMIC per-refresh pull: narrow bbo-1m for one expiration's options + the underlying future
+ * (from `underlying_id`). The future's definition isn't in ROOT.OPT, so synthesize a class-F
+ * definition (id = underlying_id) — that's all the reducer needs to set the forward.
+ */
+export async function pullQuotesSnapshot(
+  src: TimeseriesSource,
+  defs: DefinitionRec[],
+  expiration: string,
+  opts: { now: string; dataset?: string },
+): Promise<QuoteSnapshot> {
+  const expirationDefs = defs.filter(
+    (d) => (d.instrument_class === 'C' || d.instrument_class === 'P') && d.expiration === expiration,
+  );
+  if (expirationDefs.length === 0) throw new Error(`no options for expiration ${expiration}`);
+  const futureId = Number(expirationDefs[0].underlying);
+  const symbols = [...expirationDefs.map((d) => d.instrument_id), futureId].join(',');
+  const resp = await src.getRange({
+    dataset: opts.dataset ?? DATASET,
+    symbols,
+    stype_in: 'instrument_id',
+    stype_out: 'instrument_id',
+    schema: 'bbo-1m',
+    start: new Date(Date.parse(opts.now) - BBO_WINDOW_MS).toISOString(),
+    end: opts.now,
+    encoding: 'csv',
+  });
+  const futureDef: DefinitionRec = {
+    type: 'definition',
+    instrument_id: futureId,
+    instrument_class: 'F',
+    strike: null,
+    expiration,
+    underlying: '',
+  };
+  return { quotes: normalizeQuotes(resp.data), futureDef, expirationDefs };
+}
+
+export interface BuildSmileOpts {
+  today: string; // YYYY-MM-DD (DTE / T)
+  now: string; // ISO (bbo window end)
+  expiry?: string;
+  mode?: ExpirationMode | 'most-liquid';
+  window?: number;
+  r?: number;
+  asOf?: string; // definition/statistics as-of (default today)
+  dataset?: string;
+  cachedDefs?: DefinitionRec[]; // reuse the once/day static pulls across refreshes
+  cachedOi?: Map<number, number>;
+}
+
+/**
+ * Compose the whole snapshot: static definitions + OI (loaded or cached), pick the expiration
+ * per the requested mode, pull the narrow quote snapshot, and reduce to a chain (IV via
+ * Black-76). T = DTE / 365.
+ */
+export async function buildSmile(src: TimeseriesSource, root: string, opts: BuildSmileOpts): Promise<Chain> {
+  const asOf = opts.asOf ?? opts.today;
+  const defs = opts.cachedDefs ?? (await loadDefinitions(src, root, { asOf, dataset: opts.dataset }));
+  const oi = opts.cachedOi ?? (await loadOpenInterest(src, root, { asOf, dataset: opts.dataset }));
+
+  let expiration: string;
+  if (opts.mode === 'most-liquid') {
+    expiration = chooseMostLiquid(defs, oi, { today: opts.today });
+  } else {
+    expiration = chooseExpiration(defs, { expiry: opts.expiry, today: opts.today, mode: opts.mode });
+  }
+
+  const snap = await pullQuotesSnapshot(src, defs, expiration, { now: opts.now, dataset: opts.dataset });
+  const recs: ChainRec[] = [snap.futureDef, ...snap.expirationDefs, ...snap.quotes];
+  for (const d of snap.expirationDefs) {
+    const v = oi.get(d.instrument_id);
+    if (v != null) recs.push({ type: 'statistics', instrument_id: d.instrument_id, stat_type: 'open_interest', value: v });
+  }
+  const state = newState();
+  for (const rec of recs) applyTick(state, rec);
+  const T = Math.max(1, dteDays(expiration, opts.today)) / 365;
+  return buildChain(root, state, expiration, T, { window: opts.window ?? 20, r: opts.r ?? 0 });
 }
