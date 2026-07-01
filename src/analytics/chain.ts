@@ -93,6 +93,7 @@ export interface Chain {
   expiration: string;
   dte: number;
   asOf: string | null;
+  selection?: string; // how the expiration was chosen: 'most-liquid' | 'nearest' | 'quarterly' | explicit date
   spot: number;
   spotEstimated: boolean;
   atmStrike: number;
@@ -226,19 +227,33 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   const put25IV = p25 != null ? piv.get(p25) ?? null : null;
   const skew25 = call25IV != null && put25IV != null ? put25IV - call25IV : null;
 
+  // OI aggregates (totals, PCR, max pain) over the FULL expiration, independent of which
+  // strikes were quoted — the quote pull may be narrowed to a band around the forward, but OI
+  // is loaded for the whole chain. Deriving these from the quoted band only would band-clamp
+  // max pain and skew PCR. Per-strike display arrays (callOI/putOI, below) stay windowed.
+  const allCoi = new Map<number, number>();
+  const allPoi = new Map<number, number>();
+  for (const [iid, d] of state.defs) {
+    if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
+    const v = state.oi.get(iid);
+    if (v == null) continue;
+    const m = d.cls === 'C' ? allCoi : allPoi;
+    m.set(d.strike, (m.get(d.strike) ?? 0) + v);
+  }
   let coi = 0;
   let poi = 0;
-  for (const v of coiL.values()) if (v) coi += v;
-  for (const v of poiL.values()) if (v) poi += v;
+  for (const v of allCoi.values()) coi += v;
+  for (const v of allPoi.values()) poi += v;
   const pcrOI = coi ? poi / coi : null;
 
+  const oiStrikes = [...new Set([...allCoi.keys(), ...allPoi.keys()])].sort((a, b) => a - b);
   const payout = (Kp: number): number => {
     let total = 0;
-    for (const K of calls.keys()) if (K < Kp) total += (coiL.get(K) ?? 0) * (Kp - K);
-    for (const K of puts.keys()) if (K > Kp) total += (poiL.get(K) ?? 0) * (K - Kp);
+    for (const [K, v] of allCoi) if (K < Kp) total += v * (Kp - K);
+    for (const [K, v] of allPoi) if (K > Kp) total += v * (K - Kp);
     return total;
   };
-  const maxPain = coi || poi ? strikes.reduce((best, k) => (payout(k) < payout(best) ? k : best), strikes[0]) : atm;
+  const maxPain = oiStrikes.length ? oiStrikes.reduce((best, k) => (payout(k) < payout(best) ? k : best), oiStrikes[0]) : atm;
 
   const exps =
     opts.allExpirations ??

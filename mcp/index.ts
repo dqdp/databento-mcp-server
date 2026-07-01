@@ -18,7 +18,7 @@ import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
 import { DatabentoLiveClient } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
-import { buildSmile, clampNowToAvailable, resolveExpirySelector } from "../src/analytics/pull-chain.js";
+import { buildSmile, clampNowToAvailable, resolveExpirySelector, resolveOptionsRoot } from "../src/analytics/pull-chain.js";
 import { loadSmileStatic } from "../src/analytics/smile-cache.js";
 import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
@@ -443,8 +443,10 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
         });
 
         const pct = (x: number | null) => (x == null ? "n/a" : `${(x * 100).toFixed(1)}%`);
+        const optRoot = resolveOptionsRoot(rootUpper);
+        const rootLabel = optRoot === rootUpper ? `${chain.symbol} options` : `${chain.symbol} options (on ${rootUpper} futures)`;
         const summary =
-          `${chain.symbol} options · exp ${chain.expiration} · ${chain.dte} DTE · spot ${chain.spot}\n` +
+          `${rootLabel} · exp ${chain.expiration} · ${chain.dte} DTE · spot ${chain.spot}\n` +
           `ATM IV ${pct(chain.atmIV)} · 25Δ skew ${chain.skew25 == null ? "n/a" : `${(chain.skew25 * 100).toFixed(1)}pt`} · ` +
           `PCR(OI) ${chain.pcrOI == null ? "n/a" : chain.pcrOI.toFixed(2)} · max pain ${chain.maxPain}\n` +
           `Render the JSON below as an interactive Chart.js artifact — three panels, dark-mode friendly: ` +

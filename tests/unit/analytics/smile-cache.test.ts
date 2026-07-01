@@ -51,7 +51,14 @@ describe('loadSmileStatic', () => {
   it('keys by root, so different roots do not collide', async () => {
     const getRange = source();
     await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-06-30' });
-    await loadSmileStatic({ getRange }, 'CL', { asOf: '2026-06-30' });
+    await loadSmileStatic({ getRange }, 'NQ', { asOf: '2026-06-30' });
     expect(getRange).toHaveBeenCalledTimes(4);
+  });
+
+  it('resolves the futures root so CL and LO share one cache entry', async () => {
+    const getRange = source();
+    await loadSmileStatic({ getRange }, 'CL', { asOf: '2026-06-30' }); // resolves to LO
+    await loadSmileStatic({ getRange }, 'LO', { asOf: '2026-06-30' }); // same entry -> cache hit
+    expect(getRange).toHaveBeenCalledTimes(2);
   });
 });

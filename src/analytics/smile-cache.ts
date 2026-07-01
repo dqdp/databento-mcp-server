@@ -7,7 +7,7 @@
  * don't accumulate.
  */
 import type { DefinitionRec } from './chain.js';
-import { loadDefinitions, loadOpenInterest, type TimeseriesSource } from './pull-chain.js';
+import { loadDefinitions, loadOpenInterest, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
 
 export interface SmileStatic {
   defs: DefinitionRec[];
@@ -24,6 +24,7 @@ export async function loadSmileStatic(
   root: string,
   opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<SmileStatic> {
+  root = resolveOptionsRoot(root); // key + pulls on the options-chain parent root ("CL" -> "LO")
   // Keyed by (dataset, root, asOf) only — NOT `end`. `end` is just the query ceiling (it
   // advances every call as the historical feed catches up); the definitions/OI for a day are
   // static, so a later same-day call safely reuses the first pull's result.

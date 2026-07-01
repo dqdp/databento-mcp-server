@@ -103,6 +103,10 @@ export interface TimeseriesGetRangeRequest {
   /** Maximum number of records to return */
   limit?: number;
 
+  /** Per-request abort timeout (ms); falls back to the client default. Large parent pulls
+   * (full option-chain definitions/statistics) need more than the 15s default. */
+  timeout?: number;
+
   /** Encoding format for response, defaults to "csv" */
   encoding?: Encoding | string;
 }
