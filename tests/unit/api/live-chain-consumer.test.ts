@@ -105,6 +105,8 @@ describe('LiveChainConsumer', () => {
     vi.advanceTimersByTime(1100);
     expect(h.sockets).toHaveLength(2); // socket[1] is healthy
     h.sockets[0].emit('close'); // OS-delayed close from the ALREADY-dead socket[0]
+    // A late OS 'error' on the retired socket must be swallowed, not crash (no listeners == fatal):
+    expect(() => h.sockets[0].emit('error', new Error('late'))).not.toThrow();
     vi.advanceTimersByTime(2000);
     expect(h.sockets).toHaveLength(2); // ignored: no socket[2], socket[1] untouched
   });

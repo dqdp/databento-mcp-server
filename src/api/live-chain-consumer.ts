@@ -119,9 +119,14 @@ export class LiveChainConsumer {
   private teardownSocket(): void {
     this.clearHandshakeTimer();
     if (!this.socket) return;
-    this.socket.removeAllListeners();
-    this.socket.destroy();
-    this.socket = null;
+    const socket = this.socket;
+    this.socket = null; // detach first so any handler that still fires fails the identity guard
+    socket.removeAllListeners();
+    // Keep a no-op 'error' sink: a delayed OS error on the retired socket with zero listeners is
+    // an unhandled 'error' event, which crashes the process (fatal once this server is hosted in
+    // the connector). removeAllListeners drops the stale reconnect handlers; this only swallows.
+    socket.on('error', () => {});
+    socket.destroy();
   }
 
   private armHandshakeTimeout(socket: LiveSocket): void {

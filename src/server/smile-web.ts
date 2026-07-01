@@ -79,11 +79,12 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     const session = await building;
     const err = session.error();
     if (err) {
-      // A gateway ERROR (rejected subscription / entitlement) latches permanently and no quotes
-      // ever clear it; evict + tear down so the next poll re-seeds rather than wedging this key
-      // into a forever-503 with its socket still held.
-      session.stop();
+      // A gateway ERROR (rejected subscription / entitlement) sets session.error(); it only clears
+      // on a later successful flush, but a rejected subscription never produces one, so it would
+      // wedge this key into a forever-503 with its socket held. Evict FIRST (delete before stop, so
+      // a throwing stop can't leave the poisoned promise cached) so the next poll re-seeds.
       if (sessions.get(key) === building) sessions.delete(key);
+      session.stop();
       throw new Error(err);
     }
     return session.current();
