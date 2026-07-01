@@ -19,6 +19,7 @@ import {
 const LIVE_CLIENT_ID = 'databento-mcp-server';
 const DEFAULT_LIVE_PORT = 13000;
 const MAX_SYMBOLS = 2000; // the gateway's per-subscription symbol cap
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15_000; // CRAM + subscribe must complete within this
 
 export interface LiveChainConsumerOptions {
   apiKey: string;
@@ -29,6 +30,7 @@ export interface LiveChainConsumerOptions {
   socketFactory?: LiveSocketFactory;
   reconnect?: boolean;
   reconnectDelayMs?: number;
+  handshakeTimeoutMs?: number; // fail+recover a socket that connects but never completes CRAM
   onData: (chunk: Buffer) => void; // post-handshake DBN bytes -> LiveSmileFeed.onData
   onOpen?: () => void; // subscribed + streaming
   onError?: (err: Error) => void;
@@ -47,6 +49,7 @@ export class LiveChainConsumer {
   private readonly factory: LiveSocketFactory;
   private readonly reconnect: boolean;
   private readonly reconnectDelayMs: number;
+  private readonly handshakeTimeoutMs: number;
   private readonly onData: (chunk: Buffer) => void;
   private readonly onOpen?: () => void;
   private readonly onError?: (err: Error) => void;
@@ -57,6 +60,7 @@ export class LiveChainConsumer {
   private controlBuffer: Buffer = Buffer.alloc(0);
   private stopped = false;
   private reconnecting = false;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: LiveChainConsumerOptions) {
     this.apiKey = opts.apiKey;
@@ -67,6 +71,7 @@ export class LiveChainConsumer {
     this.factory = opts.socketFactory ?? createDefaultSocket;
     this.reconnect = opts.reconnect ?? false;
     this.reconnectDelayMs = opts.reconnectDelayMs ?? 1000;
+    this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.onData = opts.onData;
     this.onOpen = opts.onOpen;
     this.onError = opts.onError;
@@ -84,17 +89,58 @@ export class LiveChainConsumer {
 
   private connect(): void {
     const host = this.gateway ?? getDatabentoLiveGatewayHost(this.dataset);
+    // Retire any prior socket before replacing it so a delayed error/close/end from the DEAD
+    // socket can't schedule a second reconnect that tears down the fresh one.
+    this.teardownSocket();
     const socket = this.factory({ host, port: this.port });
     this.socket = socket;
     this.streaming = false;
     this.controlBuffer = Buffer.alloc(0);
-    socket.on('data', (chunk: Buffer) => this.onSocketData(chunk));
+    // Every handler ignores events from a socket that is no longer the active one (belt-and-braces
+    // with teardownSocket's removeAllListeners: a queued event can still fire after replacement).
+    socket.on('data', (chunk: Buffer) => {
+      if (this.socket === socket) this.onSocketData(chunk);
+    });
     socket.on('error', (err: Error) => {
+      if (this.socket !== socket) return;
       this.onError?.(new Error(`Databento Live socket error: ${err.message}`));
       this.scheduleReconnect();
     });
-    socket.on('close', () => this.scheduleReconnect());
-    socket.on('end', () => this.scheduleReconnect());
+    socket.on('close', () => {
+      if (this.socket === socket) this.scheduleReconnect();
+    });
+    socket.on('end', () => {
+      if (this.socket === socket) this.scheduleReconnect();
+    });
+    this.armHandshakeTimeout(socket);
+  }
+
+  /** Detach + destroy the current socket and cancel its handshake watchdog. */
+  private teardownSocket(): void {
+    this.clearHandshakeTimer();
+    if (!this.socket) return;
+    this.socket.removeAllListeners();
+    this.socket.destroy();
+    this.socket = null;
+  }
+
+  private armHandshakeTimeout(socket: LiveSocket): void {
+    if (this.handshakeTimeoutMs <= 0) return;
+    this.clearHandshakeTimer();
+    this.handshakeTimer = setTimeout(() => {
+      this.handshakeTimer = null;
+      if (this.socket !== socket || this.streaming || this.stopped) return;
+      this.onError?.(new Error(`Databento Live handshake timed out after ${this.handshakeTimeoutMs}ms`));
+      this.teardownSocket();
+      this.scheduleReconnect();
+    }, this.handshakeTimeoutMs);
+  }
+
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer) {
+      clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+    }
   }
 
   private onSocketData(chunk: Buffer): void {
@@ -136,7 +182,11 @@ export class LiveChainConsumer {
     }
     if (msg.success !== undefined) {
       if (msg.success !== '1' && msg.success.toLowerCase() !== 'true') {
+        // Auth failure is permanent — reconnecting would hot-loop the same bad credentials and
+        // burn metered Live connections. Surface it, mark stopped, and tear the socket down.
         this.onError?.(new Error(`Databento Live authentication failed: ${msg.error || 'unknown error'}`));
+        this.stopped = true;
+        this.teardownSocket();
         return;
       }
       this.socket.write(
@@ -144,6 +194,7 @@ export class LiveChainConsumer {
       );
       this.socket.write(serializeGatewayControl({ start_session: '0' }));
       this.streaming = true;
+      this.clearHandshakeTimer(); // handshake completed — cancel the watchdog
       this.onOpen?.();
     }
   }
@@ -160,6 +211,6 @@ export class LiveChainConsumer {
   stop(): void {
     this.stopped = true;
     this.socket?.end();
-    this.socket?.destroy();
+    this.teardownSocket();
   }
 }

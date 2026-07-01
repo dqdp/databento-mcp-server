@@ -95,4 +95,53 @@ describe('LiveChainConsumer', () => {
     vi.advanceTimersByTime(2000);
     expect(h.sockets).toHaveLength(1); // no reconnect after stop
   });
+
+  it('a delayed event from a replaced socket does not churn the healthy reconnected one', () => {
+    // P1: reconnect must not let a stale error+close double-fire from the DEAD socket tear down
+    // the healthy socket that already replaced it.
+    const h = make({ reconnect: true });
+    h.c.start([201]);
+    h.sockets[0].emit('error', new Error('network blip')); // socket[0] dies -> schedule reconnect
+    vi.advanceTimersByTime(1100);
+    expect(h.sockets).toHaveLength(2); // socket[1] is healthy
+    h.sockets[0].emit('close'); // OS-delayed close from the ALREADY-dead socket[0]
+    vi.advanceTimersByTime(2000);
+    expect(h.sockets).toHaveLength(2); // ignored: no socket[2], socket[1] untouched
+  });
+
+  it('does not reconnect after an auth failure (no hot-loop on bad credentials)', () => {
+    // P1: success=0 is a permanent failure; the socket must be torn down and NOT retried even
+    // with reconnect:true (the production wiring), else it hot-loops the same bad key forever.
+    const h = make({ reconnect: true });
+    h.c.start([201]);
+    h.sockets[0].emit('data', Buffer.from('cram=ABC\n'));
+    h.sockets[0].emit('data', Buffer.from('success=0|error=bad key\n'));
+    expect(h.errors.some((m) => /bad key|auth/i.test(m))).toBe(true);
+    expect(h.sockets[0].destroyed).toBe(true); // torn down, not left open
+    h.sockets[0].emit('close'); // gateway drops the rejected socket
+    vi.advanceTimersByTime(2000);
+    expect(h.sockets).toHaveLength(1); // no reconnect with the same bad credentials
+  });
+
+  it('times out a hung handshake, surfaces an error, and reconnects', () => {
+    // P2: a gateway that accepts TCP but never sends cram=/success= would otherwise hang
+    // forever (no close/error), silently serving stale seed data. A handshake timeout recovers it.
+    const h = make({ reconnect: true, handshakeTimeoutMs: 5000 });
+    h.c.start([201]);
+    vi.advanceTimersByTime(5000); // gateway sent nothing
+    expect(h.errors.some((m) => /handshake|timed out/i.test(m))).toBe(true);
+    expect(h.sockets[0].destroyed).toBe(true);
+    vi.advanceTimersByTime(1100); // reconnect delay
+    expect(h.sockets).toHaveLength(2);
+  });
+
+  it('does not fire the handshake timeout once streaming has started', () => {
+    const h = make({ handshakeTimeoutMs: 5000 });
+    h.c.start([201]);
+    h.sockets[0].emit('data', Buffer.from('cram=ABC\n'));
+    h.sockets[0].emit('data', Buffer.from('success=1\n')); // handshake complete -> streaming
+    vi.advanceTimersByTime(10000);
+    expect(h.errors).toHaveLength(0);
+    expect(h.sockets[0].destroyed).toBe(false);
+  });
 });
