@@ -5,7 +5,13 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { DefinitionRec } from '../../../src/analytics/chain.js';
-import { loadDefinitions, listExpirations, chooseExpiration } from '../../../src/analytics/pull-chain.js';
+import {
+  loadDefinitions,
+  listExpirations,
+  chooseExpiration,
+  chooseMostLiquid,
+  loadOpenInterest,
+} from '../../../src/analytics/pull-chain.js';
 
 const EXP1 = '2026-07-17';
 const EXP2 = '2026-09-18';
@@ -67,5 +73,58 @@ describe('expiration selectors', () => {
 
   it('throws on an unknown explicit expiry', () => {
     expect(() => chooseExpiration(defs, { expiry: '2099-01-01', today: '2026-06-30' })).toThrow();
+  });
+
+  it('quarterly mode picks the nearest month in {3,6,9,12}, skipping a nearer weekly', () => {
+    // EXP1 = 2026-07-17 (July, non-quarterly), EXP2 = 2026-09-18 (Sep, quarterly)
+    expect(chooseExpiration(defs, { today: '2026-06-30', mode: 'quarterly' })).toBe(EXP2);
+    expect(chooseExpiration(defs, { today: '2026-06-30' })).toBe(EXP1); // default 'nearest' = the July weekly
+  });
+});
+
+describe('chooseMostLiquid (by open interest)', () => {
+  const EXP_A = '2026-09-18';
+  const EXP_B = '2026-12-18';
+  const def = (id: number, exp: string): DefinitionRec => ({
+    type: 'definition',
+    instrument_id: id,
+    instrument_class: 'C',
+    strike: 6300,
+    expiration: exp,
+    underlying: '0',
+  });
+  const defs = [def(201, EXP_A), def(202, EXP_A), def(301, EXP_B), def(302, EXP_B)];
+  const oi = new Map([
+    [201, 1000],
+    [202, 1000],
+    [301, 5000],
+    [302, 5000],
+  ]);
+
+  it('ranks by summed OI, not by date (later but heavier wins)', () => {
+    expect(chooseMostLiquid(defs, oi, { today: '2026-06-30' })).toBe(EXP_B);
+  });
+
+  it('excludes a 0-DTE expiration even with huge OI', () => {
+    const d2 = [...defs, def(400, '2026-06-30')];
+    const oi2 = new Map([...oi, [400, 99999]]);
+    expect(chooseMostLiquid(d2, oi2, { today: '2026-06-30' })).toBe(EXP_B);
+  });
+});
+
+describe('loadOpenInterest', () => {
+  it('pulls parent statistics and returns OI by instrument', async () => {
+    const statCsv =
+      `instrument_id,ts_ref,price,quantity,stat_type\n` +
+      `201,0,0,1500,9\n` +
+      `202,0,0,800,9\n` +
+      `100,0,975000000000,2147483647,7\n`; // stat_type 7 -> ignored
+    const getRange = vi.fn().mockResolvedValue({ data: statCsv });
+    const oi = await loadOpenInterest({ getRange }, 'ES', { asOf: '2026-06-30' });
+
+    expect(getRange.mock.calls[0][0]).toMatchObject({ symbols: 'ES.OPT', stype_in: 'parent', schema: 'statistics' });
+    expect(oi.get(201)).toBe(1500);
+    expect(oi.get(202)).toBe(800);
+    expect(oi.has(100)).toBe(false);
   });
 });
