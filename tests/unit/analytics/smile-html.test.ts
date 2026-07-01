@@ -42,3 +42,32 @@ describe('renderSmileHtml', () => {
     expect(out).toContain('\\u003c/script>'); // the < was escaped
   });
 });
+
+describe('renderSmileHtml — live (polling) mode', () => {
+  const live = renderSmileHtml(chain, { live: { jsonUrl: '/smile/LO.json', interval: 10 } });
+
+  it('embeds the poll URL and a poll loop', () => {
+    expect(live).toContain('/smile/LO.json');
+    expect(live).toMatch(/fetch\(/);
+  });
+
+  it('renders a UI interval selector defaulting to the requested interval', () => {
+    expect(live).toMatch(/<select[^>]*id="iv"/);
+    expect(live).toMatch(/<option[^>]*value="10"[^>]*selected/);
+    expect(live).toMatch(/value="5"/);
+    expect(live).toMatch(/value="30"/);
+    expect(live).toMatch(/value="60"/);
+  });
+
+  it('shows a LIVE badge (not the static snapshot chip)', () => {
+    expect(live).toMatch(/LIVE/);
+    expect(live).not.toContain('snapshot · as of'); // live mode replaces the snapshot chip
+  });
+
+  it('the static (no-opts) render stays a snapshot with no poll loop', () => {
+    const staticHtml = renderSmileHtml(chain);
+    expect(staticHtml).toContain('snapshot · as of');
+    expect(staticHtml).not.toContain('id="iv"');
+    expect(staticHtml).not.toMatch(/setInterval\(/);
+  });
+});
