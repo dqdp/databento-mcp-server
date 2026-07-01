@@ -8,7 +8,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { createDefaultDatabentoMcpClients } from '../mcp/index.js';
-import { createSmileServer } from '../src/server/smile-web.js';
+import { LiveChainConsumer } from '../src/api/live-chain-consumer.js';
+import { createSmileServer, type SmileServerOptions } from '../src/server/smile-web.js';
 
 try {
   for (const line of readFileSync(new URL('../.env', import.meta.url), 'utf8').split('\n')) {
@@ -25,9 +26,30 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const port = Number(process.argv[2] ?? process.env.SMILE_PORT ?? 8768);
+const args = process.argv.slice(2);
+const liveMode = args.includes('--live'); // true tick stream via the Live socket; else polled Historical
+const port = Number(args.find((a) => /^\d+$/.test(a)) ?? process.env.SMILE_PORT ?? 8768);
+// Bind to loopback only: this local dev server makes AUTHENTICATED Databento calls, so it must
+// not be reachable from the LAN. (Override with SMILE_HOST if you really need to.)
+const host = process.env.SMILE_HOST ?? '127.0.0.1';
 const { timeseriesClient, metadataClient } = createDefaultDatabentoMcpClients(apiKey);
 
-createSmileServer({ timeseriesClient, metadataClient }).listen(port, () => {
-  console.log(`smile live server → http://localhost:${port}/smile/CL   (try ?expiry=most-liquid&interval=10)`);
+const options: SmileServerOptions = liveMode
+  ? {
+      live: {
+        makeConsumer: (onData) =>
+          new LiveChainConsumer({
+            apiKey,
+            dataset: 'GLBX.MDP3',
+            onData,
+            reconnect: true,
+            onError: (e) => console.error('[live]', e.message),
+          }),
+        coalesceMs: 300,
+      },
+    }
+  : {};
+
+createSmileServer({ timeseriesClient, metadataClient }, options).listen(port, host, () => {
+  console.log(`smile ${liveMode ? 'LIVE-socket' : 'polled'} server → http://${host}:${port}/smile/CL   (try ?expiry=most-liquid)`);
 });

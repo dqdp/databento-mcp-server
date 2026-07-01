@@ -8,9 +8,16 @@
  */
 import http from 'node:http';
 import type { Chain } from '../analytics/chain.js';
+import { seedLiveFromHistorical } from '../analytics/live-seed.js';
+import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
+
+export interface SmileServerOptions {
+  /** Serve the .json from a persistent Live-socket buffer instead of a polled Historical pull. */
+  live?: { makeConsumer: ConsumerFactory; coalesceMs?: number };
+}
 
 /** An empty chain so the live page renders INSTANTLY; the first client poll fills it. */
 function placeholder(root: string): Chain {
@@ -28,8 +35,23 @@ function send(res: http.ServerResponse, status: number, type: string, body: stri
   res.end(body);
 }
 
-export function createSmileServer(clients: SmileClients): http.Server {
-  return http.createServer((req, res) => {
+export function createSmileServer(clients: SmileClients, options: SmileServerOptions = {}): http.Server {
+  // In live mode: one persistent Live session per (root, expiry, window), reused across polls.
+  const sessions = new Map<string, LiveSmileSession>();
+  async function liveCurrent(root: string, expiry: string | undefined, window: number | undefined): Promise<Chain | null> {
+    const key = `${resolveOptionsRoot(root.toUpperCase())}|${expiry ?? ''}|${window ?? ''}`;
+    let session = sessions.get(key);
+    if (!session) {
+      const { seed, instrumentIds } = await seedLiveFromHistorical(clients, root, { expiry, window });
+      session = new LiveSmileSession(seed, instrumentIds, options.live!.makeConsumer, { coalesceMs: options.live!.coalesceMs });
+      sessions.set(key, session);
+    }
+    const err = session.error();
+    if (err) throw new Error(err);
+    return session.current();
+  }
+
+  const server = http.createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
@@ -42,13 +64,18 @@ export function createSmileServer(clients: SmileClients): http.Server {
         const isJson = Boolean(m[2]);
         const expiry = url.searchParams.get('expiry') ?? undefined;
         const windowStr = url.searchParams.get('window');
-        const window = windowStr ? Number(windowStr) : undefined;
-        const interval = Number(url.searchParams.get('interval') ?? '10') || 10;
+        // Clamp untrusted query params so a crafted request can't force a giant pull/render:
+        // window matches the MCP tool's 1..200 bound; interval to a sane 2..300s.
+        const window = windowStr ? Math.min(200, Math.max(1, Math.floor(Number(windowStr)) || 20)) : undefined;
+        const interval = Math.min(300, Math.max(2, Math.floor(Number(url.searchParams.get('interval'))) || 10));
 
         if (isJson) {
           try {
-            const chain = await fetchSmileSnapshot(clients, root, { expiry, window });
-            send(res, 200, 'application/json', JSON.stringify(chain));
+            const chain = options.live
+              ? await liveCurrent(root, expiry, window)
+              : await fetchSmileSnapshot(clients, root, { expiry, window });
+            if (chain) send(res, 200, 'application/json', JSON.stringify(chain));
+            else send(res, 503, 'application/json', JSON.stringify({ error: 'live buffer warming up' }));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
           }
@@ -68,4 +95,11 @@ export function createSmileServer(clients: SmileClients): http.Server {
       }
     })();
   });
+
+  // Tear down all Live sessions (and their sockets) when the server stops.
+  server.on('close', () => {
+    for (const s of sessions.values()) s.stop();
+    sessions.clear();
+  });
+  return server;
 }

@@ -110,4 +110,33 @@ describe('smile-web server', () => {
     const res = await fetch(`${base}/nope`);
     expect(res.status).toBe(404);
   });
+
+  it('live mode serves the Live buffer (seeded from Historical, then updated by a piped tick)', async () => {
+    const preludeBytes = () => { const b = Buffer.alloc(8); b.write('DBN', 0, 'ascii'); b[3] = 2; b.writeUInt32LE(0, 4); return b; };
+    const l1rec = (iid: number, mid: number) => {
+      const b = Buffer.alloc(80); b[0] = 20; b[1] = 1; b.writeUInt32LE(iid, 4);
+      b.writeBigInt64LE(BigInt(Math.round((mid - 0.5) * 1e9)), 48);
+      b.writeBigInt64LE(BigInt(Math.round((mid + 0.5) * 1e9)), 56);
+      return b;
+    };
+    let feedOnData: (chunk: Buffer) => void = () => {};
+    const fakeConsumer = { start: () => {}, stop: () => {} };
+    const live = createSmileServer(clients, { live: { makeConsumer: (cb) => { feedOnData = cb; return fakeConsumer; }, coalesceMs: 20 } });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const c1 = await (await fetch(`${b}/smile/ES.json`)).json();
+      expect(c1.symbol).toBe('ES');
+      expect(c1.spot).toBe(F); // seeded from the Historical snapshot at once
+
+      // pipe a live tick straight into the session's feed: 7500 call reprices to 0.30 IV
+      feedOnData(Buffer.concat([preludeBytes(), l1rec(203, black76(F, 7500, T, 0.3, { isCall: true }).price)]));
+      await new Promise((r) => setTimeout(r, 60)); // let the coalescer flush (real timer)
+
+      const c2 = await (await fetch(`${b}/smile/ES.json`)).json();
+      expect(c2.callIV[c2.strikes.indexOf(7500)]).toBeCloseTo(0.3, 2);
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
 });
