@@ -48,6 +48,10 @@
       "description": "Get historical Databento market data with guarded direct output"
     },
     {
+      "name": "get_futures_options_smile",
+      "description": "Build a Black-76 volatility-smile snapshot for options on a CME future (chain IV/greeks, open interest, 25-delta skew, max pain) for the model to render as a Chart.js artifact"
+    },
+    {
       "name": "metadata_list_datasets",
       "description": "List Databento datasets"
     },

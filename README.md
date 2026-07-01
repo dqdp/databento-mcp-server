@@ -7,7 +7,7 @@ Professional market data access via DataBento API, available as both an MCP serv
 **Version 3.0 - Dual Deployment: MCP Server + Claude Code Skills**
 
 This project now supports two deployment modes:
-- **MCP Server**: Local stdio for Claude Desktop (18 tools) and a remote Streamable HTTP MVP
+- **MCP Server**: Local stdio for Claude Desktop (19 tools) and a remote Streamable HTTP MVP
 - **Claude Code Skills**: Native skills for Claude Code CLI (8 skill scripts)
 
 Both modes share the same core functionality:
@@ -274,12 +274,13 @@ in `docs/claude-desktop-simple-install.md`.
 
 ## Available Tools
 
-The MCP server provides 18 tools organized into 6 categories:
+The MCP server provides 19 tools organized into 7 categories:
 
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Original** | 4 tools | ES/NQ historical quotes, single-symbol live quotes, session info, historical bars |
 | **Timeseries** | 1 tool | Historical market data streaming with flexible schemas |
+| **Analytics** | 1 tool | Futures-options volatility smile (Black-76 IV/greeks, skew, max pain) |
 | **Symbology** | 1 tool | Symbol resolution and conversion |
 | **Metadata** | 6 tools | Dataset discovery, schema info, cost estimation |
 | **Batch** | 3 tools | Large-scale data download job management |
@@ -985,6 +986,30 @@ Get price adjustment factors for backadjusted prices.
 }
 ```
 
+### Analytics Tools
+
+#### 19. `get_futures_options_smile`
+
+Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3). Pulls
+the chain definitions + latest BBO + open interest, computes IV/greeks via
+Black-76 (Databento carries no greeks), and returns a text summary plus a compact
+chain JSON for the model to render as an interactive Chart.js artifact. `expiry`
+is a date `YYYY-MM-DD` or a mode: `nearest` (default, DTE≥1), `quarterly`
+(nearest Mar/Jun/Sep/Dec), or `most-liquid` (highest open interest).
+
+**Input:**
+```json
+{
+  "root": "ES",
+  "expiry": "nearest",
+  "window": 20
+}
+```
+
+**Output:** a text summary (ATM IV, 25Δ skew, PCR(OI), max pain) followed by a
+chain JSON: `spot`, `atmStrike`, `strikes[]`, `callIV[]`/`putIV[]`,
+`callOI[]`/`putOI[]`, `expirations[]`, and render guidance for the artifact.
+
 ## Usage Examples
 
 ### With Claude Desktop
@@ -1136,7 +1161,7 @@ databento-mcp-server/
 │       ├── symbology.ts
 │       └── reference.ts
 ├── mcp/                      # MCP Server specific code
-│   └── index.ts              # MCP server entry point & 18 tool definitions
+│   └── index.ts              # MCP server entry point & 19 tool definitions
 ├── skills/                   # Claude Code Skills
 │   ├── market-data/
 │   │   ├── SKILL.md          # Skill documentation
