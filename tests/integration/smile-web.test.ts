@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { createSmileServer } from '../../src/server/smile-web.js';
+import { createSmileServer, MAX_LIVE_SESSIONS } from '../../src/server/smile-web.js';
 import { black76 } from '../../src/analytics/black76.js';
 import { clearSmileStaticCache } from '../../src/analytics/smile-cache.js';
 
@@ -115,5 +115,122 @@ describe('smile-web server', () => {
   it('unknown path -> 404', async () => {
     const res = await fetch(`${base}/nope`);
     expect(res.status).toBe(404);
+  });
+
+  it('live mode serves the Live buffer (seeded from Historical, then updated by a piped tick)', async () => {
+    const preludeBytes = () => { const b = Buffer.alloc(8); b.write('DBN', 0, 'ascii'); b[3] = 2; b.writeUInt32LE(0, 4); return b; };
+    const l1rec = (iid: number, mid: number) => {
+      const b = Buffer.alloc(80); b[0] = 20; b[1] = 1; b.writeUInt32LE(iid, 4);
+      b.writeBigInt64LE(BigInt(Math.round((mid - 0.5) * 1e9)), 48);
+      b.writeBigInt64LE(BigInt(Math.round((mid + 0.5) * 1e9)), 56);
+      return b;
+    };
+    let feedOnData: (chunk: Buffer) => void = () => {};
+    const fakeConsumer = { start: () => {}, stop: () => {} };
+    const live = createSmileServer(clients, { live: { makeConsumer: (cb) => { feedOnData = cb; return fakeConsumer; }, coalesceMs: 20 } });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const c1 = await (await fetch(`${b}/smile/ES.json`)).json();
+      expect(c1.symbol).toBe('ES');
+      expect(c1.spot).toBe(F); // seeded from the Historical snapshot at once
+
+      // pipe a live tick straight into the session's feed: 7500 call reprices to 0.30 IV
+      feedOnData(Buffer.concat([preludeBytes(), l1rec(203, black76(F, 7500, T, 0.3, { isCall: true }).price)]));
+      await new Promise((r) => setTimeout(r, 60)); // let the coalescer flush (real timer)
+
+      const c2 = await (await fetch(`${b}/smile/ES.json`)).json();
+      expect(c2.callIV[c2.strikes.indexOf(7500)]).toBeCloseTo(0.3, 2);
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it('live mode dedups concurrent first-polls for one key into a single session (no orphaned socket)', async () => {
+    // P1: two overlapping cold polls must not each open (and orphan) an authenticated Live socket.
+    let consumers = 0;
+    const live = createSmileServer(clients, {
+      live: { makeConsumer: () => { consumers++; return { start() {}, stop() {} }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const [c1, c2] = await Promise.all([
+        fetch(`${b}/smile/ES.json`).then((r) => r.json()),
+        fetch(`${b}/smile/ES.json`).then((r) => r.json()),
+      ]);
+      expect(c1.symbol).toBe('ES');
+      expect(c2.symbol).toBe('ES');
+      expect(consumers).toBe(1); // in-flight construction deduped
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it('live mode collapses equivalent expiry selectors (nearest / NEAREST / absent) onto one session', async () => {
+    // P2: the session key must normalize the expiry selector, else the same expiration opens
+    // several live sockets.
+    let consumers = 0;
+    const live = createSmileServer(clients, {
+      live: { makeConsumer: () => { consumers++; return { start() {}, stop() {} }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      await (await fetch(`${b}/smile/ES.json`)).json(); // absent -> nearest
+      await (await fetch(`${b}/smile/ES.json?expiry=nearest`)).json();
+      await (await fetch(`${b}/smile/ES.json?expiry=NEAREST`)).json();
+      expect(consumers).toBe(1); // one session for all three
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it('a gateway ERROR record evicts the poisoned session so a later poll re-seeds', async () => {
+    // P1: an rtype-21 ERROR latches the session error; the key must be evicted + torn down so the
+    // next poll re-seeds, not wedged into a permanent 503 with the socket still held.
+    const prelude = () => { const p = Buffer.alloc(8); p.write('DBN', 0, 'ascii'); p[3] = 2; p.writeUInt32LE(0, 4); return p; };
+    const errRec = (msg: string) => {
+      const body = Buffer.from(msg, 'ascii');
+      const total = Math.ceil((16 + body.length + 1) / 4) * 4;
+      const rb = Buffer.alloc(total); rb[0] = total / 4; rb[1] = 21; body.copy(rb, 16); return rb;
+    };
+    let feedOnData: (chunk: Buffer) => void = () => {};
+    let consumers = 0;
+    const live = createSmileServer(clients, {
+      live: { makeConsumer: (cb) => { feedOnData = cb; consumers++; return { start() {}, stop() {} }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      expect((await (await fetch(`${b}/smile/ES.json`)).json()).symbol).toBe('ES');
+      expect(consumers).toBe(1);
+      feedOnData(Buffer.concat([prelude(), errRec('subscription rejected')])); // gateway rejects
+      const bad = await fetch(`${b}/smile/ES.json`);
+      expect(bad.status).toBe(503);
+      expect((await (await fetch(`${b}/smile/ES.json`)).json()).symbol).toBe('ES'); // re-seeded
+      expect(consumers).toBe(2); // a fresh session, not the poisoned one
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it('bounds the live-session map and stops sessions evicted by the cap', async () => {
+    // P2: one persistent socket per key, never evicted, is a resource leak. Cap the map (LRU).
+    const stops: number[] = [];
+    let created = 0;
+    const live = createSmileServer(clients, {
+      live: { makeConsumer: () => { const seq = created++; return { start() {}, stop() { stops.push(seq); } }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const n = MAX_LIVE_SESSIONS + 8;
+      for (let w = 1; w <= n; w++) await (await fetch(`${b}/smile/ES.json?window=${w}`)).json(); // distinct keys
+      expect(created).toBe(n);
+      expect(stops).toHaveLength(n - MAX_LIVE_SESSIONS); // oldest evicted + stopped
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
   });
 });

@@ -8,9 +8,19 @@
  */
 import http from 'node:http';
 import type { Chain } from '../analytics/chain.js';
-import { resolveOptionsRoot } from '../analytics/pull-chain.js';
+import { seedLiveFromHistorical } from '../analytics/live-seed.js';
+import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
+import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
+
+export interface SmileServerOptions {
+  /** Serve the .json from a persistent Live-socket buffer instead of a polled Historical pull. */
+  live?: { makeConsumer: ConsumerFactory; coalesceMs?: number };
+}
+
+/** Cap the number of concurrent Live sessions (each holds an authenticated socket); LRU-evicted. */
+export const MAX_LIVE_SESSIONS = 32;
 
 /** An empty chain so the live page renders INSTANTLY; the first client poll fills it. */
 function placeholder(root: string): Chain {
@@ -28,8 +38,59 @@ function send(res: http.ServerResponse, status: number, type: string, body: stri
   res.end(body);
 }
 
-export function createSmileServer(clients: SmileClients): http.Server {
-  return http.createServer((req, res) => {
+export function createSmileServer(clients: SmileClients, options: SmileServerOptions = {}): http.Server {
+  // In live mode: one persistent Live session per (root, expiry, window), reused across polls. The
+  // map holds the in-flight CONSTRUCTION promise (not the resolved session) so two concurrent cold
+  // polls for the same key dedup onto one session — each session opens an authenticated Live
+  // socket, and a lost race would orphan one forever (never stop()'d, even on server.close).
+  const sessions = new Map<string, Promise<LiveSmileSession>>();
+
+  function sessionKey(root: string, expiry: string | undefined, window: number | undefined): string {
+    // Normalize the expiry selector so equivalent requests (nearest / NEAREST / absent all mean
+    // "nearest") collapse onto ONE session instead of each opening its own socket. An explicit
+    // date and `most-liquid` pass through as-is.
+    const sel = resolveExpirySelector(expiry);
+    const normExpiry = sel.expiry ?? sel.mode ?? 'nearest';
+    return `${resolveOptionsRoot(root.toUpperCase())}|${normExpiry}|${window ?? ''}`;
+  }
+
+  async function liveCurrent(root: string, expiry: string | undefined, window: number | undefined): Promise<Chain | null> {
+    const key = sessionKey(root, expiry, window);
+    let building = sessions.get(key);
+    if (building) {
+      sessions.delete(key); // LRU touch: mark most-recently-polled (Map preserves insertion order)
+      sessions.set(key, building);
+    } else {
+      building = (async () => {
+        const { seed, instrumentIds } = await seedLiveFromHistorical(clients, root, { expiry, window });
+        return new LiveSmileSession(seed, instrumentIds, options.live!.makeConsumer, { coalesceMs: options.live!.coalesceMs });
+      })();
+      sessions.set(key, building);
+      building.catch(() => { if (sessions.get(key) === building) sessions.delete(key); }); // don't cache a failed seed
+      // Evict the least-recently-polled sessions beyond the cap, stopping their sockets.
+      while (sessions.size > MAX_LIVE_SESSIONS) {
+        const oldest = sessions.keys().next().value as string | undefined;
+        if (oldest === undefined || oldest === key) break;
+        const victim = sessions.get(oldest)!;
+        sessions.delete(oldest);
+        void victim.then((s) => s.stop()).catch(() => {});
+      }
+    }
+    const session = await building;
+    const err = session.error();
+    if (err) {
+      // A gateway ERROR (rejected subscription / entitlement) sets session.error(); it only clears
+      // on a later successful flush, but a rejected subscription never produces one, so it would
+      // wedge this key into a forever-503 with its socket held. Evict FIRST (delete before stop, so
+      // a throwing stop can't leave the poisoned promise cached) so the next poll re-seeds.
+      if (sessions.get(key) === building) sessions.delete(key);
+      session.stop();
+      throw new Error(err);
+    }
+    return session.current();
+  }
+
+  const server = http.createServer((req, res) => {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
@@ -49,8 +110,11 @@ export function createSmileServer(clients: SmileClients): http.Server {
 
         if (isJson) {
           try {
-            const chain = await fetchSmileSnapshot(clients, root, { expiry, window });
-            send(res, 200, 'application/json', JSON.stringify(chain));
+            const chain = options.live
+              ? await liveCurrent(root, expiry, window)
+              : await fetchSmileSnapshot(clients, root, { expiry, window });
+            if (chain) send(res, 200, 'application/json', JSON.stringify(chain));
+            else send(res, 503, 'application/json', JSON.stringify({ error: 'live buffer warming up' }));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
           }
@@ -70,4 +134,11 @@ export function createSmileServer(clients: SmileClients): http.Server {
       }
     })();
   });
+
+  // Tear down all Live sessions (and their sockets) when the server stops.
+  server.on('close', () => {
+    for (const p of sessions.values()) void p.then((s) => s.stop()).catch(() => {});
+    sessions.clear();
+  });
+  return server;
 }

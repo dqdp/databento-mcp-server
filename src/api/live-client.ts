@@ -68,7 +68,7 @@ export interface DatabentoLiveClientOptions {
   quoteCacheTtlMs?: number;
 }
 
-type GatewayControlMessage = Record<string, string>;
+export type GatewayControlMessage = Record<string, string>;
 
 type DbnDecodeResult =
   | { status: "need-more" }
@@ -97,14 +97,14 @@ function createDefaultSocket({ host, port }: { host: string; port: number }): Li
   return net.createConnection({ host, port });
 }
 
-function serializeGatewayControl(fields: GatewayControlMessage): string {
+export function serializeGatewayControl(fields: GatewayControlMessage): string {
   const tokens = Object.entries(fields)
     .filter(([, value]) => value !== undefined && value !== "")
     .map(([key, value]) => `${key}=${value}`);
   return `${tokens.join("|")}\n`;
 }
 
-function parseGatewayControlLine(line: Buffer): GatewayControlMessage {
+export function parseGatewayControlLine(line: Buffer): GatewayControlMessage {
   const text = line.toString("utf8").trim();
   const fields: GatewayControlMessage = {};
 
