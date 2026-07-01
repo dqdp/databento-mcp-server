@@ -4,13 +4,16 @@
  * for one root and prints the resulting chain, so we verify the pull/normalize/Black-76
  * pipeline against live data shapes.
  *
- *   npx tsx scripts/smoke-smile-live.ts [ROOT] [expiry|mode]
+ *   npx tsx scripts/smoke-smile-live.ts [ROOT] [expiry|mode] [--html <path>]
  *   e.g. npx tsx scripts/smoke-smile-live.ts ES
- *        npx tsx scripts/smoke-smile-live.ts ES quarterly
+ *        npx tsx scripts/smoke-smile-live.ts CL most-liquid
+ *        npx tsx scripts/smoke-smile-live.ts CL most-liquid --html .preview/cl-smile.html
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createDefaultDatabentoMcpClients } from "../mcp/index.js";
 import { buildSmile, clampNowToAvailable, resolveExpirySelector } from "../src/analytics/pull-chain.js";
+import { renderSmileHtml } from "../src/analytics/smile-html.js";
 
 // Load .env (self-locating) without adding a dotenv dependency.
 try {
@@ -28,8 +31,12 @@ if (!apiKey) {
   process.exit(1);
 }
 
-const root = (process.argv[2] ?? "ES").toUpperCase();
-const { mode, expiry } = resolveExpirySelector(process.argv[3]);
+const args = process.argv.slice(2);
+const htmlIdx = args.indexOf("--html");
+const htmlPath = htmlIdx >= 0 ? args[htmlIdx + 1] : undefined;
+const positional = args.filter((a, i) => a !== "--html" && !(htmlIdx >= 0 && i === htmlIdx + 1));
+const root = (positional[0] ?? "ES").toUpperCase();
+const { mode, expiry } = resolveExpirySelector(positional[1]);
 
 const { timeseriesClient, metadataClient } = createDefaultDatabentoMcpClients(apiKey);
 
@@ -76,6 +83,12 @@ async function main() {
   if (chain.strikes.length === 0) throw new Error("no strikes in the smile");
   if (ivCount === 0) throw new Error("no IV solved on any strike");
   if (chain.nExpirations < 1) throw new Error("nExpirations < 1");
+
+  if (htmlPath) {
+    mkdirSync(dirname(htmlPath), { recursive: true });
+    writeFileSync(htmlPath, renderSmileHtml(chain));
+    console.log(`HTML dashboard -> ${htmlPath}`);
+  }
 
   console.log(`\nLive smile smoke passed in ${ms} ms (${root}${mode ? ` / ${mode}` : expiry ? ` / ${expiry}` : ""}).`);
 }

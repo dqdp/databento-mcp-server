@@ -79,6 +79,24 @@ describe('TimeseriesClient', () => {
       });
     });
 
+    it('forwards a per-request timeout to http.get (large parent pulls need > the 15s default)', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+      await client.getRange({
+        dataset: 'GLBX.MDP3',
+        symbols: 'ES.OPT',
+        schema: Schema.OHLCV_1H,
+        start: '2026-07-01',
+        timeout: 90000,
+      });
+      expect(mockHttp.get).toHaveBeenCalledWith('/v0/timeseries.get_range', expect.any(Object), { timeout: 90000 });
+    });
+
+    it('omits request options (plain 2-arg call) when no timeout is set', async () => {
+      vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
+      await client.getRange({ dataset: 'GLBX.MDP3', symbols: 'ES.c.0', schema: Schema.OHLCV_1H, start: '2024-01-01' });
+      expect(vi.mocked(mockHttp.get).mock.calls[0]).toHaveLength(2);
+    });
+
     it('should fetch data with all parameters', async () => {
       vi.mocked(mockHttp.get).mockResolvedValueOnce(mockOHLCV1HResponse);
 

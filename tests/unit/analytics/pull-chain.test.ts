@@ -17,6 +17,7 @@ import {
   buildSmile,
   resolveExpirySelector,
   clampNowToAvailable,
+  resolveOptionsRoot,
 } from '../../../src/analytics/pull-chain.js';
 
 const EXP1 = '2026-07-17';
@@ -167,15 +168,17 @@ describe('pullQuotesSnapshot + buildSmile', () => {
       throw new Error(`unexpected schema ${req.schema}`);
     });
 
-  it('pullQuotesSnapshot pulls bbo-1m for the expiration options + the future, and synthesizes the F-def', async () => {
+  it('pullQuotesSnapshot pulls the future first, then the expiration options, and synthesizes the F-def', async () => {
     const getRange = source();
     const defs = normalizeDefinitions(defCsv);
     const snap = await pullQuotesSnapshot({ getRange }, defs, EXP, { now: NOW });
 
-    const req = getRange.mock.calls[0][0] as any;
-    expect(req.schema).toBe('bbo-1m');
-    expect(req.stype_in).toBe('instrument_id');
-    expect(String(req.symbols).split(',').map(Number)).toEqual(expect.arrayContaining([201, 202, 203, 204, FUT_ID]));
+    // step 1: the underlying future ALONE (one symbol — never a long URI)
+    expect(getRange.mock.calls[0][0]).toMatchObject({ schema: 'bbo-1m', symbols: String(FUT_ID), stype_in: 'instrument_id' });
+    // step 2: the expiration's option instrument_ids
+    const optReq = getRange.mock.calls[1][0] as any;
+    expect(optReq.schema).toBe('bbo-1m');
+    expect(String(optReq.symbols).split(',').map(Number)).toEqual(expect.arrayContaining([201, 202, 203, 204]));
     expect(snap.futureDef).toMatchObject({ type: 'definition', instrument_class: 'F', instrument_id: FUT_ID, strike: null });
     expect(snap.quotes.find((q) => q.instrument_id === FUT_ID)).toMatchObject({ bid: 7466, ask: 7468 });
   });
@@ -278,6 +281,12 @@ describe('buildSmile — multi-expiration selection + error surfaces', () => {
     expect(chain.expirations).toEqual([JUL, SEP, DEC]);
   });
 
+  it('resolves a futures root to its options root for the chain symbol (CL -> LO)', async () => {
+    const getRange = makeSource();
+    const chain = await buildSmile({ getRange }, 'CL', { today: TODAY, now: NOW });
+    expect(chain.symbol).toBe('LO'); // crude options live under LO, not CL
+  });
+
   it("quarterly mode picks the nearest Mar/Jun/Sep/Dec expiration (SEP over the JUL weekly)", async () => {
     const getRange = makeSource();
     const chain = await buildSmile({ getRange }, 'ES', { today: TODAY, now: NOW, mode: 'quarterly' });
@@ -350,6 +359,85 @@ describe('static pulls pass the clamped `end`', () => {
     const getRange = vi.fn().mockResolvedValue({ data: statCsv });
     await loadOpenInterest({ getRange }, 'ES', { asOf: '2026-07-01', end: '2026-07-01T08:20:00.000Z' });
     expect(getRange.mock.calls[0][0]).toMatchObject({ start: '2026-07-01', end: '2026-07-01T08:20:00.000Z', schema: 'statistics' });
+  });
+});
+
+describe('resolveOptionsRoot (futures root -> options-chain parent root)', () => {
+  it('maps commodity/FX futures roots to their live-verified options parent', () => {
+    expect(resolveOptionsRoot('CL')).toBe('LO'); // WTI crude
+    expect(resolveOptionsRoot('NG')).toBe('ON'); // Henry Hub (NOT LN)
+    expect(resolveOptionsRoot('GC')).toBe('OG'); // gold
+    expect(resolveOptionsRoot('HG')).toBe('HXE'); // copper (non-algorithmic)
+    expect(resolveOptionsRoot('ZN')).toBe('OZN'); // 10y note
+    expect(resolveOptionsRoot('6E')).toBe('EUU'); // EUR FX
+  });
+  it('is case/space-insensitive, idempotent, and passes unlisted/equity roots through', () => {
+    expect(resolveOptionsRoot(' cl ')).toBe('LO');
+    expect(resolveOptionsRoot('LO')).toBe('LO'); // already an options root
+    expect(resolveOptionsRoot('ES')).toBe('ES'); // equity index resolves directly
+    expect(resolveOptionsRoot('ZZZ')).toBe('ZZZ'); // unlisted -> try <root>.OPT
+  });
+});
+
+describe('static pulls request a generous timeout (large parent sets exceed the 15s default)', () => {
+  const defCsv = `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n201,ESN6 C6300,C,${ns('2026-07-17')},100,6300000000000\n`;
+  const statCsv = `instrument_id,ts_ref,price,quantity,stat_type\n201,0,0,1500,9\n`;
+  it('loadDefinitions passes a >= 60s timeout', async () => {
+    const getRange = vi.fn().mockResolvedValue({ data: defCsv });
+    await loadDefinitions({ getRange }, 'ES', { asOf: '2026-07-01' });
+    expect(getRange.mock.calls[0][0].timeout).toBeGreaterThanOrEqual(60_000);
+  });
+  it('loadOpenInterest passes a >= 60s timeout', async () => {
+    const getRange = vi.fn().mockResolvedValue({ data: statCsv });
+    await loadOpenInterest({ getRange }, 'ES', { asOf: '2026-07-01' });
+    expect(getRange.mock.calls[0][0].timeout).toBeGreaterThanOrEqual(60_000);
+  });
+});
+
+describe('pullQuotesSnapshot — two-step narrowed pull (scales to big chains)', () => {
+  const EXP = '2026-09-18';
+  const FUT = 100;
+  const NOW = '2026-06-30T14:00:00Z';
+  // 200 strikes 50.0 .. 149.5, calls + puts each, one underlying future.
+  const bigDefs: DefinitionRec[] = [];
+  for (let i = 0; i < 200; i++) {
+    const K = 50 + i * 0.5;
+    bigDefs.push({ type: 'definition', instrument_id: 1000 + i * 2, instrument_class: 'C', strike: K, expiration: EXP, underlying: String(FUT) });
+    bigDefs.push({ type: 'definition', instrument_id: 1001 + i * 2, instrument_class: 'P', strike: K, expiration: EXP, underlying: String(FUT) });
+  }
+  const futBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,99500000000,100500000000\n`; // forward = 100
+
+  it('narrows the option bbo pull to ±pullWindow strikes around the forward (no 414-sized URI)', async () => {
+    const getRange = vi.fn(async () => ({ data: futBbo }));
+    const snap = await pullQuotesSnapshot({ getRange }, bigDefs, EXP, { now: NOW, pullWindow: 10 });
+    expect(getRange.mock.calls[0][0].symbols).toBe(String(FUT)); // step 1: future alone
+    const optIds = String(getRange.mock.calls[1][0].symbols).split(',');
+    expect(optIds.length).toBe(42); // ±10 strikes -> 21 strikes × (call+put), not all 400
+    const ks = [...new Set(snap.expirationDefs.map((d) => d.strike))].sort((a, b) => (a! - b!));
+    expect(ks[0]).toBe(95); // 100 - 10*0.5
+    expect(ks[ks.length - 1]).toBe(105); // 100 + 10*0.5
+  });
+
+  it('throws a clear no-forward error when the underlying future has no quote', async () => {
+    const getRange = vi.fn(async () => ({ data: `instrument_id,ts_event,bid_px_00,ask_px_00\n` }));
+    await expect(pullQuotesSnapshot({ getRange }, bigDefs, EXP, { now: NOW, pullWindow: 10 })).rejects.toThrow(
+      /no forward|market may be closed/i,
+    );
+  });
+
+  it('clamps the band to the low edge when the forward is below all strikes', async () => {
+    const lowFut = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,9000000000,11000000000\n`; // forward = 10
+    const getRange = vi.fn(async () => ({ data: lowFut }));
+    const snap = await pullQuotesSnapshot({ getRange }, bigDefs, EXP, { now: NOW, pullWindow: 10 });
+    const ks = [...new Set(snap.expirationDefs.map((d) => d.strike))].sort((a, b) => a! - b!);
+    expect(ks[0]).toBe(50); // lowest available strike (no negative slice index)
+    expect(ks.length).toBe(11); // ATM at index 0 -> [0, 10]
+  });
+
+  it('keeps all strikes when pullWindow exceeds the strike count', async () => {
+    const getRange = vi.fn(async () => ({ data: futBbo }));
+    const snap = await pullQuotesSnapshot({ getRange }, bigDefs, EXP, { now: NOW, pullWindow: 9999 });
+    expect(new Set(snap.expirationDefs.map((d) => d.strike)).size).toBe(200);
   });
 });
 

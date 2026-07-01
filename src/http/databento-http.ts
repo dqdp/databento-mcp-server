@@ -24,6 +24,8 @@ export const DATABENTO_CONFIG: DataBentoConfig = {
 
 interface RequestOptions {
   retry?: boolean;
+  /** Per-request abort timeout (ms). Falls back to the client's config timeout. */
+  timeout?: number;
 }
 
 /**
@@ -55,7 +57,11 @@ export class DataBentoHTTP {
    * @param params - Query parameters
    * @returns Response text (CSV or JSON depending on endpoint)
    */
-  async get(endpoint: string, params?: Record<string, any>): Promise<string> {
+  async get(
+    endpoint: string,
+    params?: Record<string, any>,
+    requestOptions?: RequestOptions
+  ): Promise<string> {
     const url = new URL(endpoint, this.config.baseUrl);
 
     // Add query parameters
@@ -67,7 +73,7 @@ export class DataBentoHTTP {
       });
     }
 
-    return this.makeRequest(url.toString(), { method: "GET" });
+    return this.makeRequest(url.toString(), { method: "GET" }, requestOptions);
   }
 
   /**
@@ -184,7 +190,7 @@ export class DataBentoHTTP {
             Authorization: this.getAuthHeader(),
             "User-Agent": "DataBento-MCP-Server/1.0",
           },
-          signal: AbortSignal.timeout(this.config.timeout),
+          signal: AbortSignal.timeout(requestOptions?.timeout ?? this.config.timeout),
         });
 
         if (!response.ok) {

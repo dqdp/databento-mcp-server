@@ -658,6 +658,24 @@ describe('DataBentoHTTP', () => {
       const options = mockFetch.mock.calls[0][1];
       expect(options.signal).toBeDefined();
     });
+
+    it('uses a per-request timeout override for the abort deadline when provided', async () => {
+      const client = new DataBentoHTTP(VALID_API_KEY);
+      mockFetch.mockResolvedValue(createMockResponse('success'));
+      const spy = vi.spyOn(AbortSignal, 'timeout');
+      await client.get('/v0/test', undefined, { timeout: 90000 });
+      expect(spy).toHaveBeenCalledWith(90000);
+      spy.mockRestore();
+    });
+
+    it('falls back to the config timeout when no per-request timeout is set', async () => {
+      const client = new DataBentoHTTP(VALID_API_KEY);
+      mockFetch.mockResolvedValue(createMockResponse('success'));
+      const spy = vi.spyOn(AbortSignal, 'timeout');
+      await client.get('/v0/test');
+      expect(spy).toHaveBeenCalledWith(15000);
+      spy.mockRestore();
+    });
   });
 
   describe('Response Parsing', () => {

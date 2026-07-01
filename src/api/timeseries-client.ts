@@ -80,8 +80,12 @@ export class TimeseriesClient {
       params.limit = request.limit;
     }
 
-    // Make API request
-    const response = await this.http.get("/v0/timeseries.get_range", params);
+    // Make API request. Only pass request options when a per-request timeout override is set
+    // (large parent pulls) so the default path stays a plain 2-arg call.
+    const response =
+      request.timeout != null
+        ? await this.http.get("/v0/timeseries.get_range", params, { timeout: request.timeout })
+        : await this.http.get("/v0/timeseries.get_range", params);
 
     if (!response || response.length === 0) {
       throw new Error(

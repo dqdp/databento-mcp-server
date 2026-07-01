@@ -997,6 +997,22 @@ chain JSON for the model to render as an interactive Chart.js artifact. `expiry`
 is a date `YYYY-MM-DD` or a mode: `nearest` (default, DTE≥1), `quarterly`
 (nearest Mar/Jun/Sep/Dec), or `most-liquid` (highest open interest).
 
+Pass the **futures** root — the options-chain parent is resolved automatically,
+because on GLBX most products list options under a different symbol than the
+future (verified live). Equity-index roots (`ES`, `NQ`) resolve directly; the
+mapped commodity/FX roots are:
+
+| Future → Options | | | |
+|---|---|---|---|
+| CL → LO (WTI crude) | NG → ON (Henry Hub) | RB → OB (RBOB) | HO → OH (heating oil) |
+| GC → OG (gold) | SI → SO (silver) | HG → HXE (copper) | PL → PO (platinum) |
+| ZC → OZC (corn) | ZS → OZS (soybeans) | ZW → OZW (wheat) | ZL → OZL (soy oil) |
+| ZN → OZN (10y) | ZB → OZB (30y) | 6E → EUU (EUR) | 6J → JPU (JPY) |
+
+An unlisted root is tried as `<root>.OPT` directly. Large chains (e.g. crude,
+~450 strikes/expiration) are handled by narrowing the quote pull to a band of
+strikes around the forward before requesting BBO.
+
 **Input:**
 ```json
 {

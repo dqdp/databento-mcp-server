@@ -378,9 +378,9 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   {
     name: "get_futures_options_smile",
     description:
-      "Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3), e.g. root 'ES'. Pulls the chain definitions + latest BBO + open interest, computes IV/greeks (Black-76 — Databento carries no greeks), and returns a text summary plus a compact chain JSON. `expiry` is a date 'YYYY-MM-DD' or a mode: 'nearest' (default, DTE>=1), 'quarterly' (nearest Mar/Jun/Sep/Dec), or 'most-liquid' (highest open interest). Render the returned JSON as an interactive volatility-smile dashboard artifact.",
+      "Build a volatility-smile snapshot for options on a CME future (GLBX.MDP3), e.g. root 'ES' or 'CL'. Pass the FUTURES root — it maps to the options-chain parent automatically (crude CL->LO, gold GC->OG, nat-gas NG->ON, copper HG->HXE, EUR 6E->EUU, …; equity-index ES/NQ used directly). Pulls the chain definitions + latest BBO + open interest, computes IV/greeks (Black-76 — Databento carries no greeks), and returns a text summary plus a compact chain JSON. `expiry` is a date 'YYYY-MM-DD' or a mode: 'nearest' (default, DTE>=1), 'quarterly' (nearest Mar/Jun/Sep/Dec), or 'most-liquid' (highest open interest). Render the returned JSON as an interactive volatility-smile dashboard artifact.",
     schema: toolArgs({
-      root: nonEmptyString("Futures root, e.g. 'ES' (E-mini S&P 500). CME / GLBX.MDP3 only."),
+      root: nonEmptyString("Futures root, e.g. 'ES' (E-mini S&P) or 'CL' (WTI crude). The options-chain root is resolved automatically (CL->LO, GC->OG, NG->ON, …). CME / GLBX.MDP3 only."),
       expiry: z
         .string()
         .describe("Target expiration: a date 'YYYY-MM-DD', or a mode 'nearest' | 'quarterly' | 'most-liquid'.")

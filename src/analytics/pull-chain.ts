@@ -25,8 +25,13 @@ export interface TimeseriesSource {
     stype_out?: string;
     encoding?: string;
     limit?: number;
+    timeout?: number;
   }): Promise<{ data: string }>;
 }
+
+// Full-chain parent definition/statistics sets for a big root (crude LO ~3.7k+ defs) take
+// longer than the client's 15s default — give the STATIC pulls a generous ceiling.
+const STATIC_PULL_TIMEOUT_MS = 90_000;
 
 /**
  * Pull the whole option-chain `definition` set for a root (e.g. "ES") via parent symbology.
@@ -55,6 +60,7 @@ export async function loadDefinitions(
     start: opts.asOf,
     end: opts.end,
     encoding: 'csv',
+    timeout: STATIC_PULL_TIMEOUT_MS,
   });
   return normalizeDefinitions(resp.data);
 }
@@ -70,6 +76,34 @@ export function clampNowToAvailable(nowIso: string, availableEndIso?: string): s
   const now = Date.parse(nowIso);
   if (Number.isNaN(avail) || Number.isNaN(now)) return nowIso;
   return avail < now ? new Date(avail).toISOString() : nowIso;
+}
+
+/**
+ * CME futures root -> options-chain PARENT root on GLBX.MDP3. Live-verified 2026-07 (every
+ * entry has resolved definition rows tying the options back to the future). The options parent
+ * usually DIFFERS from the futures symbol and is NOT algorithmic (crude CL->LO, gold GC->OG,
+ * copper HG->HXE, EUR FX 6E->EUU, Henry Hub NG->ON — NOT LN), so it's a lookup, not a rule.
+ * Equity-index products (ES, NQ) resolve directly and are intentionally absent — an unlisted
+ * root falls through to `<root>.OPT` unchanged.
+ */
+const OPTIONS_ROOT: Record<string, string> = {
+  // NYMEX / COMEX energy & metals
+  CL: 'LO', NG: 'ON', RB: 'OB', HO: 'OH', GC: 'OG', SI: 'SO', HG: 'HXE', PL: 'PO',
+  // CBOT grains + rates (O-prefix)
+  ZC: 'OZC', ZS: 'OZS', ZW: 'OZW', ZL: 'OZL', ZN: 'OZN', ZB: 'OZB',
+  // CME FX
+  '6E': 'EUU', '6J': 'JPU',
+};
+
+/**
+ * Resolve a user-supplied root to the options-chain parent root. Accepts either the FUTURES
+ * root (e.g. "CL", mapped to "LO") or an options root already (idempotent — "LO" -> "LO");
+ * unlisted roots (ES, NQ, or anything not in the table) pass through unchanged so `<root>.OPT`
+ * is tried directly. Case/space-insensitive.
+ */
+export function resolveOptionsRoot(root: string): string {
+  const r = root.trim().toUpperCase();
+  return OPTIONS_ROOT[r] ?? r;
 }
 
 /** Distinct OPTION expirations (C/P only — futures excluded), sorted ascending. */
@@ -181,6 +215,7 @@ export async function loadOpenInterest(
     start: opts.asOf,
     end: opts.end,
     encoding: 'csv',
+    timeout: STATIC_PULL_TIMEOUT_MS,
   });
   const oi = new Map<number, number>();
   for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);
@@ -195,42 +230,73 @@ export interface QuoteSnapshot {
   expirationDefs: DefinitionRec[];
 }
 
+/** A quote's mid (the forward when it's the underlying future), or null if fully UNDEF. */
+function midOf(quotes: QuoteRec[], instrumentId: number): number | null {
+  const q = quotes.find((x) => x.instrument_id === instrumentId);
+  if (!q) return null;
+  if (q.bid != null && q.ask != null) return (q.bid + q.ask) / 2;
+  return q.bid != null ? q.bid : q.ask;
+}
+
+/** Keep only the `pullWindow` strikes each side of the strike nearest the forward. */
+function narrowByStrike(defs: DefinitionRec[], F: number, pullWindow?: number): DefinitionRec[] {
+  if (pullWindow == null) return defs;
+  const strikes = [...new Set(defs.map((d) => d.strike).filter((s): s is number => s != null))].sort((a, b) => a - b);
+  if (strikes.length === 0) return defs;
+  const atm = strikes.reduce((b, k) => (Math.abs(k - F) < Math.abs(b - F) ? k : b), strikes[0]);
+  const ai = strikes.indexOf(atm);
+  const keep = new Set(strikes.slice(Math.max(0, ai - pullWindow), ai + pullWindow + 1));
+  return defs.filter((d) => d.strike != null && keep.has(d.strike));
+}
+
 /**
- * DYNAMIC per-refresh pull: narrow bbo-1m for one expiration's options + the underlying future
- * (from `underlying_id`). The future's definition isn't in ROOT.OPT, so synthesize a class-F
- * definition (id = underlying_id) — that's all the reducer needs to set the forward.
+ * DYNAMIC per-refresh pull, in TWO steps so it scales to big chains (crude LO carries ~450
+ * strikes per expiration):
+ *  1. bbo-1m for the underlying future ALONE (one symbol) → the forward.
+ *  2. narrow the option strikes to ±`pullWindow` around that forward, then bbo-1m only those.
+ * A single pull of every strike's instrument_id blows the request URI (HTTP 414); the reducer
+ * only windows to the display window anyway, and 25-delta lives well inside this band. The
+ * future isn't in ROOT.OPT, so its class-F definition is synthesized (id = underlying_id).
  */
 export async function pullQuotesSnapshot(
   src: TimeseriesSource,
   defs: DefinitionRec[],
   expiration: string,
-  opts: { now: string; dataset?: string },
+  opts: { now: string; dataset?: string; pullWindow?: number },
 ): Promise<QuoteSnapshot> {
-  const expirationDefs = defs.filter(
+  const dataset = opts.dataset ?? DATASET;
+  const startIso = new Date(Date.parse(opts.now) - BBO_WINDOW_MS).toISOString();
+  const bbo = (symbols: string) =>
+    src.getRange({ dataset, symbols, stype_in: 'instrument_id', stype_out: 'instrument_id', schema: 'bbo-1m', start: startIso, end: opts.now, encoding: 'csv' });
+
+  const allExpDefs = defs.filter(
     (d) => (d.instrument_class === 'C' || d.instrument_class === 'P') && d.expiration === expiration,
   );
-  if (expirationDefs.length === 0) throw new Error(`no options for expiration ${expiration}`);
-  const futureId = Number(expirationDefs[0].underlying);
-  const symbols = [...expirationDefs.map((d) => d.instrument_id), futureId].join(',');
-  const resp = await src.getRange({
-    dataset: opts.dataset ?? DATASET,
-    symbols,
-    stype_in: 'instrument_id',
-    stype_out: 'instrument_id',
-    schema: 'bbo-1m',
-    start: new Date(Date.parse(opts.now) - BBO_WINDOW_MS).toISOString(),
-    end: opts.now,
-    encoding: 'csv',
-  });
+  if (allExpDefs.length === 0) throw new Error(`no options for expiration ${expiration}`);
   const futureDef: DefinitionRec = {
     type: 'definition',
-    instrument_id: futureId,
+    instrument_id: Number(allExpDefs[0].underlying),
     instrument_class: 'F',
     strike: null,
     expiration,
     underlying: '',
   };
-  return { quotes: normalizeQuotes(resp.data), futureDef, expirationDefs };
+
+  // 1) forward from the underlying future alone
+  const futureQuotes = normalizeQuotes((await bbo(String(futureDef.instrument_id))).data);
+  const F = midOf(futureQuotes, futureDef.instrument_id);
+  if (F == null) {
+    throw new Error(
+      `no forward: underlying future ${futureDef.instrument_id} has no BBO in the last ` +
+        `${Math.round(BBO_WINDOW_MS / 60000)} min for ${expiration} — market may be closed`,
+    );
+  }
+
+  // 2) narrow to ±pullWindow strikes around the forward, then bbo only those
+  const expirationDefs = narrowByStrike(allExpDefs, F, opts.pullWindow);
+  const optionQuotes = normalizeQuotes((await bbo(expirationDefs.map((d) => d.instrument_id).join(','))).data);
+
+  return { quotes: [...futureQuotes, ...optionQuotes], futureDef, expirationDefs };
 }
 
 export interface BuildSmileOpts {
@@ -252,6 +318,7 @@ export interface BuildSmileOpts {
  * Black-76). T = DTE / 365.
  */
 export async function buildSmile(src: TimeseriesSource, root: string, opts: BuildSmileOpts): Promise<Chain> {
+  root = resolveOptionsRoot(root); // "CL" -> "LO" etc.; idempotent for options/equity roots
   const asOf = opts.asOf ?? opts.today;
   // Clamp the static pulls' `end` to `now` (already clamped to the dataset's available_end by
   // the caller) so a date-only start doesn't expand into the future and 422.
@@ -265,7 +332,14 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
     expiration = chooseExpiration(defs, { expiry: opts.expiry, today: opts.today, mode: opts.mode });
   }
 
-  const snap = await pullQuotesSnapshot(src, defs, expiration, { now: opts.now, dataset: opts.dataset });
+  // Pull a band wider than the display window so 25-delta skew has strikes to find, but narrow
+  // enough that a big chain's option-id list never blows the request URI. NOTE: at extreme
+  // (crisis) implied vol the true 25-delta strike can still fall outside this band, in which
+  // case skew25 is computed from the nearest available strike (biased toward ATM); normal
+  // commodity/index vol keeps 25-delta well inside +/-(window+40) strikes.
+  const outWindow = opts.window ?? 20;
+  const pullWindow = Math.max(outWindow, 20) + 40;
+  const snap = await pullQuotesSnapshot(src, defs, expiration, { now: opts.now, dataset: opts.dataset, pullWindow });
   if (snap.quotes.length === 0) {
     // No BBO in the recent window: almost always the market is closed (overnight/weekend) or
     // the window is too narrow. Surface that explicitly rather than letting the reducer throw
@@ -274,8 +348,13 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
       `no BBO for ${root} ${expiration} in the last ${Math.round(BBO_WINDOW_MS / 60000)} min — market may be closed or the window too narrow`,
     );
   }
-  const recs: ChainRec[] = [snap.futureDef, ...snap.expirationDefs, ...snap.quotes];
-  for (const d of snap.expirationDefs) {
+  // Feed the reducer the WHOLE expiration's defs + OI (not just the narrowed, quoted band) so
+  // the OI aggregates (max pain / PCR / OI totals) stay whole-chain; only quotes are narrowed.
+  const allExpDefs = defs.filter(
+    (d) => (d.instrument_class === 'C' || d.instrument_class === 'P') && d.expiration === expiration,
+  );
+  const recs: ChainRec[] = [snap.futureDef, ...allExpDefs, ...snap.quotes];
+  for (const d of allExpDefs) {
     const v = oi.get(d.instrument_id);
     if (v != null) recs.push({ type: 'statistics', instrument_id: d.instrument_id, stat_type: 'open_interest', value: v });
   }

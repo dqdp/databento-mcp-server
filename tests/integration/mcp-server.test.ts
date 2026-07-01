@@ -1110,7 +1110,7 @@ describe("get_futures_options_smile tool", () => {
       const bySchema = (s: string) => getRange.mock.calls.filter((c: any[]) => c[0].schema === s).length;
       expect(bySchema("definition")).toBe(1); // cached — not re-pulled on the second call
       expect(bySchema("statistics")).toBe(1);
-      expect(bySchema("bbo-1m")).toBe(2); // the dynamic quote pull still runs each call
+      expect(bySchema("bbo-1m")).toBe(4); // two-step (future + options) per call, two calls
       // The cached second call still returns a valid smile (not an error masked by the counts).
       expect(second.isError).toBeFalsy();
       expect(JSON.parse(second.content[1].text).expiration).toBe(EXP);

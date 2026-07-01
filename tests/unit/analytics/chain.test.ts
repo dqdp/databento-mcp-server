@@ -142,4 +142,33 @@ describe('buildChain edge branches', () => {
     const c = buildChain('ES', freshState(), EXP, T0, { window: 1 });
     expect(c.strikes).toEqual([7440, 7460, 7480]); // ATM 7460 +/- 1
   });
+
+  it('OI aggregates + max pain span the WHOLE expiration, not just the quoted band', () => {
+    // The snapshot pull narrows QUOTES to a band around the forward, but OI is loaded whole —
+    // max pain / PCR / OI totals must still reflect strikes with NO quote (the wings).
+    const cMid = optMid(7460, SIG, true);
+    const pMid = optMid(7460, SIG, false);
+    const recs: ChainRec[] = [
+      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'quote', instrument_id: 1, bid: 7466, ask: 7468 }, // forward 7467
+      // one quoted ATM strike (the narrowed band)
+      { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 7460, expiration: EXP },
+      { type: 'quote', instrument_id: 10, bid: cMid - 0.5, ask: cMid + 0.5 },
+      { type: 'statistics', instrument_id: 10, stat_type: 'open_interest', value: 1000 },
+      { type: 'definition', instrument_id: 11, instrument_class: 'P', strike: 7460, expiration: EXP },
+      { type: 'quote', instrument_id: 11, bid: pMid - 0.5, ask: pMid + 0.5 },
+      { type: 'statistics', instrument_id: 11, stat_type: 'open_interest', value: 1000 },
+      // an UNQUOTED deep-OTM wing put with dominant OI (outside the quoted band)
+      { type: 'definition', instrument_id: 20, instrument_class: 'P', strike: 8000, expiration: EXP },
+      { type: 'statistics', instrument_id: 20, stat_type: 'open_interest', value: 1_000_000 },
+    ];
+    const s = newState();
+    for (const r of recs) applyTick(s, r);
+    const c = buildChain('ES', s, EXP, T0, { window: 20 });
+
+    expect(c.strikes).toEqual([7460]); // smile is over the quoted band only
+    expect(c.callOItotal).toBe(1000);
+    expect(c.putOItotal).toBe(1_001_000); // 1000 band + 1_000_000 wing
+    expect(c.maxPain).toBe(8000); // the wing strike — impossible under band-limited OI
+  });
 });
