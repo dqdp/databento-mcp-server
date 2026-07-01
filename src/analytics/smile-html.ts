@@ -23,7 +23,7 @@ export function renderSmileHtml(chain: Chain): string {
   const asof = escHtml(chain.asOf ?? 'n/a');
   const skew = chain.skew25 == null ? 'n/a' : `${(chain.skew25 * 100).toFixed(1)}pt`;
   const metrics: [string, string][] = [
-    ['Forward', `${chain.spot}`],
+    ['Forward', chain.spot.toFixed(2)],
     ['ATM IV', pct(chain.atmIV)],
     ['25Δ skew', skew],
     ['PCR (OI)', chain.pcrOI == null ? 'n/a' : chain.pcrOI.toFixed(2)],
