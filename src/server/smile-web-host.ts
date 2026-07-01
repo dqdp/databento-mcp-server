@@ -18,6 +18,11 @@ const DATASET = 'GLBX.MDP3';
 const DEFAULT_COALESCE_MS = 300;
 const DEFAULT_HOST = '127.0.0.1'; // loopback only: the page makes AUTHENTICATED Databento calls
 
+/** The smile page serves NO auth, so it may only bind a loopback address. */
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
 export interface SmileWebHostOptions {
   env?: Record<string, string | undefined>;
   /** Injectable for tests / alternate transports; defaults to a real Live socket consumer. */
@@ -53,6 +58,18 @@ export function startSmileWebIfConfigured(
   }
 
   const host = opts.host ?? env.SMILE_WEB_HOST ?? DEFAULT_HOST;
+  // Refuse a non-loopback bind rather than throw (graceful degrade — MCP keeps working). The page
+  // is UNAUTHENTICATED and every poll mints a metered Databento Live socket, so LAN exposure would
+  // let anyone churn the operator's key. This mirrors mcp/http.ts, which hard-fails non-loopback
+  // exposure unless an auth token + TRUST_PROXY are set; the smile surface has no such auth.
+  if (!isLoopbackHost(host)) {
+    console.error(
+      `[smile-web] refusing to host on non-loopback SMILE_WEB_HOST=${host}: the smile page is ` +
+        `unauthenticated and opens metered Databento Live sockets. Use 127.0.0.1/localhost/::1 (or a ` +
+        `reverse proxy that adds auth).`,
+    );
+    return null;
+  }
   const makeConsumer: ConsumerFactory =
     opts.makeConsumer ??
     ((onData) =>

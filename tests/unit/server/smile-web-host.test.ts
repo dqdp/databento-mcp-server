@@ -58,6 +58,24 @@ describe('startSmileWebIfConfigured', () => {
     expect(startSmileWebIfConfigured(clients, 'key', { env: { SMILE_WEB_PORT: '70000' } })).toBeNull();
   });
 
+  it('refuses a non-loopback SMILE_WEB_HOST (the unauthenticated surface must stay local)', () => {
+    // The page has no auth and mints metered Databento Live sockets; exposing it on the LAN would
+    // let anyone churn the operator's key. Only loopback binds are allowed.
+    for (const host of ['0.0.0.0', '192.168.1.10', '::']) {
+      expect(startSmileWebIfConfigured(clients, 'key', { env: { SMILE_WEB_PORT: '0', SMILE_WEB_HOST: host } })).toBeNull();
+    }
+  });
+
+  it('allows an explicit loopback SMILE_WEB_HOST', async () => {
+    clearSmileStaticCache();
+    server = startSmileWebIfConfigured(clients, 'key', {
+      env: { SMILE_WEB_PORT: '0', SMILE_WEB_HOST: 'localhost' },
+      makeConsumer: () => ({ start() {}, stop() {} }),
+    });
+    expect(server).not.toBeNull();
+    await new Promise<void>((r) => (server!.listening ? r() : server!.once('listening', () => r())));
+  });
+
   it('hosts the live smile page on the configured port (loopback), serving the seeded chain', async () => {
     clearSmileStaticCache();
     server = startSmileWebIfConfigured(clients, 'key', {
