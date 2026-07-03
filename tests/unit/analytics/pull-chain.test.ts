@@ -371,6 +371,20 @@ describe('resolveOptionsRoot (futures root -> options-chain parent root)', () =>
     expect(resolveOptionsRoot('ZN')).toBe('OZN'); // 10y note
     expect(resolveOptionsRoot('6E')).toBe('EUU'); // EUR FX
   });
+  it('carries the 2026-07-04 GLBX universe-audit set (asset != root, so passthrough cannot serve them)', () => {
+    expect(resolveOptionsRoot('PA')).toBe('PAO'); // palladium — was MISSING: PA.OPT is empty, PAO is the asset
+    expect(resolveOptionsRoot('BZ')).toBe('BZO'); // Brent — 19k option legs/day on XNYM
+    expect(resolveOptionsRoot('MGC')).toBe('OMG'); // micro gold
+    expect(resolveOptionsRoot('MCL')).toBe('MCO'); // micro WTI
+    expect(resolveOptionsRoot('MNG')).toBe('MNO'); // micro Henry Hub
+    expect(resolveOptionsRoot('ZM')).toBe('OZM'); // soybean meal (CBOT)
+    expect(resolveOptionsRoot('KE')).toBe('OKE'); // KC HRW wheat (CBOT)
+    expect(resolveOptionsRoot('TN')).toBe('OTN'); // ultra 10y (CBOT)
+    expect(resolveOptionsRoot('MES')).toBe('EX'); // micro S&P monthly options asset
+    expect(resolveOptionsRoot('MNQ')).toBe('MQE'); // micro Nasdaq
+    expect(resolveOptionsRoot('LE')).toBe('LE'); // livestock: asset == root, passthrough is correct
+    expect(resolveOptionsRoot('HE')).toBe('HE');
+  });
   it('is case/space-insensitive, idempotent, and passes unlisted/equity roots through', () => {
     expect(resolveOptionsRoot(' cl ')).toBe('LO');
     expect(resolveOptionsRoot('LO')).toBe('LO'); // already an options root

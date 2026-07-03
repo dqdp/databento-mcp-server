@@ -89,10 +89,17 @@ export function clampNowToAvailable(nowIso: string, availableEndIso?: string): s
 const OPTIONS_ROOT: Record<string, string> = {
   // NYMEX / COMEX energy & metals
   CL: 'LO', NG: 'ON', RB: 'OB', HO: 'OH', GC: 'OG', SI: 'SO', HG: 'HXE', PL: 'PO',
+  PA: 'PAO', // palladium — asset != root, so the <root>.OPT passthrough returned an EMPTY chain
   // CBOT grains + rates (O-prefix)
   ZC: 'OZC', ZS: 'OZS', ZW: 'OZW', ZL: 'OZL', ZN: 'OZN', ZB: 'OZB',
   // CME FX
   '6E': 'EUU', '6J': 'JPU',
+  // 2026-07-04 GLBX full-universe audit (market_data_skill docs/databento-audit-2026-07-04.md):
+  // only roots whose option ASSET differs from the futures root need entries — LE/HE/GF/DC/CB/
+  // BTC/ETH/SR3 pass through correctly (asset == root).
+  BZ: 'BZO', MGC: 'OMG', MCL: 'MCO', MNG: 'MNO',       // NYMEX/COMEX (incl. micros)
+  ZM: 'OZM', KE: 'OKE', TN: 'OTN',                     // CBOT (live venue-license caveat)
+  MES: 'EX', MNQ: 'MQE',                               // CME micro equity index (monthly asset)
 };
 
 /**
