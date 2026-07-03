@@ -233,4 +233,34 @@ describe('smile-web server', () => {
       await new Promise<void>((r) => live.close(() => r()));
     }
   });
+
+  it('idle sweeper stops the metered socket when nobody polls, and re-seeds on the next poll', async () => {
+    // The money-safety path: when the dashboard closes and polling stops, the metered Live socket must be
+    // torn down (not left streaming), then re-seeded on the next poll. Fake setInterval (the sweeper) but
+    // leave setTimeout real so undici's fetch + the coalescer still work.
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date('2026-06-30T14:00:00Z'));
+    let started = 0;
+    const stops: number[] = [];
+    const live = createSmileServer(clients, {
+      live: {
+        makeConsumer: () => { const seq = started++; return { start() {}, stop() { stops.push(seq); } }; },
+        coalesceMs: 20,
+        idleMs: 15_000, // clamped to the 15s floor; sweep period = min(15s, IDLE_MS) = 15s
+      },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      await (await fetch(`${b}/smile/ES.json`)).json(); // opens session #0 + its socket
+      expect(started).toBe(1);
+      expect(stops).toEqual([]);
+      await vi.advanceTimersByTimeAsync(31_000); // > IDLE_MS + one sweep, with nobody polling
+      expect(stops).toEqual([0]); // the idle metered socket was stopped
+      await (await fetch(`${b}/smile/ES.json`)).json(); // next poll re-seeds a fresh socket
+      expect(started).toBe(2);
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
 });

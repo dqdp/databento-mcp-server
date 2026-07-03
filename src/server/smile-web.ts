@@ -16,7 +16,7 @@ import { renderSmileHtml } from '../analytics/smile-html.js';
 
 export interface SmileServerOptions {
   /** Serve the .json from a persistent Live-socket buffer instead of a polled Historical pull. */
-  live?: { makeConsumer: ConsumerFactory; coalesceMs?: number };
+  live?: { makeConsumer: ConsumerFactory; coalesceMs?: number; idleMs?: number };
 }
 
 /** Cap the number of concurrent Live sessions (each holds an authenticated socket); LRU-evicted. */
@@ -44,6 +44,11 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
   // polls for the same key dedup onto one session — each session opens an authenticated Live
   // socket, and a lost race would orphan one forever (never stop()'d, even on server.close).
   const sessions = new Map<string, Promise<LiveSmileSession>>();
+  // Last poll time per key. A live session holds a METERED Databento socket, so when nobody polls it
+  // any more (the dashboard/browser closed), we must stop it — not leave it streaming in the
+  // background. A sweeper stops sessions idle beyond IDLE_MS; the next poll re-seeds a fresh one.
+  const lastPoll = new Map<string, number>();
+  const IDLE_MS = Math.max(15_000, options.live?.idleMs ?? 45_000);
 
   function sessionKey(root: string, expiry: string | undefined, window: number | undefined): string {
     // Normalize the expiry selector so equivalent requests (nearest / NEAREST / absent all mean
@@ -56,6 +61,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
 
   async function liveCurrent(root: string, expiry: string | undefined, window: number | undefined): Promise<Chain | null> {
     const key = sessionKey(root, expiry, window);
+    lastPoll.set(key, Date.now());   // mark demand; the idle sweeper stops sessions nobody polls
     let building = sessions.get(key);
     if (building) {
       sessions.delete(key); // LRU touch: mark most-recently-polled (Map preserves insertion order)
@@ -73,6 +79,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
         if (oldest === undefined || oldest === key) break;
         const victim = sessions.get(oldest)!;
         sessions.delete(oldest);
+        lastPoll.delete(oldest); // keep lastPoll from outliving its session (else it lingers until the next sweep)
         void victim.then((s) => s.stop()).catch(() => {});
       }
     }
@@ -83,7 +90,10 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
       // on a later successful flush, but a rejected subscription never produces one, so it would
       // wedge this key into a forever-503 with its socket held. Evict FIRST (delete before stop, so
       // a throwing stop can't leave the poisoned promise cached) so the next poll re-seeds.
-      if (sessions.get(key) === building) sessions.delete(key);
+      if (sessions.get(key) === building) {
+        sessions.delete(key);
+        lastPoll.delete(key); // evicting the session -> drop its lastPoll too, so it can't linger
+      }
       session.stop();
       throw new Error(err);
     }
@@ -135,10 +145,32 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     })();
   });
 
+  // Idle sweeper: stop the metered socket of any live session nobody has polled for IDLE_MS. This is
+  // what makes "close the dashboard -> the background data load stops" true (the client stops polling
+  // -> the session goes idle -> its socket is torn down). The next poll re-seeds a fresh session.
+  const sweeper = options.live
+    ? setInterval(() => {
+        const now = Date.now();
+        for (const [key, when] of lastPoll) {
+          if (now - when <= IDLE_MS) continue;
+          lastPoll.delete(key);
+          const victim = sessions.get(key);
+          if (victim) {
+            sessions.delete(key);
+            console.error(`[smile] idle-stop ${key} (no poll for ${Math.round((now - when) / 1000)}s) — closing Live socket`);
+            void victim.then((s) => s.stop()).catch(() => {});
+          }
+        }
+      }, Math.min(15_000, IDLE_MS))
+    : null;
+  if (sweeper && typeof sweeper.unref === 'function') sweeper.unref();
+
   // Tear down all Live sessions (and their sockets) when the server stops.
   server.on('close', () => {
+    if (sweeper) clearInterval(sweeper);
     for (const p of sessions.values()) void p.then((s) => s.stop()).catch(() => {});
     sessions.clear();
+    lastPoll.clear();
   });
   return server;
 }

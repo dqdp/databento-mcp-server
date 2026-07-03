@@ -29,9 +29,14 @@ if (!apiKey) {
 const args = process.argv.slice(2);
 const liveMode = args.includes('--live'); // true tick stream via the Live socket; else polled Historical
 const port = Number(args.find((a) => /^\d+$/.test(a)) ?? process.env.SMILE_PORT ?? 8768);
-// Bind to loopback only: this local dev server makes AUTHENTICATED Databento calls, so it must
-// not be reachable from the LAN. (Override with SMILE_HOST if you really need to.)
+// Bind to loopback only: this local dev server makes AUTHENTICATED Databento calls AND mints METERED
+// live sockets, so it must never be reachable from the LAN. A non-loopback SMILE_HOST is refused outright
+// (mirrors smile-web-host.ts) — front it with a reverse proxy if you truly need remote access.
 const host = process.env.SMILE_HOST ?? '127.0.0.1';
+if (!['127.0.0.1', '::1', 'localhost'].includes(host)) {
+  console.error(`refusing SMILE_HOST=${host}: the live smile server is loopback-only (authenticated + metered)`);
+  process.exit(1);
+}
 const { timeseriesClient, metadataClient } = createDefaultDatabentoMcpClients(apiKey);
 
 const options: SmileServerOptions = liveMode
@@ -46,6 +51,7 @@ const options: SmileServerOptions = liveMode
             onError: (e) => console.error('[live]', e.message),
           }),
         coalesceMs: 300,
+        idleMs: Number(process.env.SMILE_IDLE_MS) || undefined,  // stop a session's metered socket when idle
       },
     }
   : {};
