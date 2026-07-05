@@ -359,7 +359,7 @@ describe('static pulls pass the clamped `end`', () => {
     const getRange = vi.fn().mockResolvedValue({ data: statCsv });
     await loadOpenInterest({ getRange }, 'ES', { asOf: '2026-07-01', end: '2026-07-01T08:20:00.000Z' });
     // start = asOf MINUS the 4-day stats lookback (holidays publish defs with no stats)
-    expect(getRange.mock.calls[0][0]).toMatchObject({ start: '2026-06-27', end: '2026-07-01T08:20:00.000Z', schema: 'statistics' });
+    expect(getRange.mock.calls[0][0]).toMatchObject({ start: '2026-06-24', end: '2026-07-01T08:20:00.000Z', schema: 'statistics' });
   });
 });
 

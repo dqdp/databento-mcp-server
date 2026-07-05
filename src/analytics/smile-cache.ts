@@ -20,37 +20,51 @@ const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 64;
 const LOOKBACK_DAYS = 5;   // longest realistic exchange-holiday cluster
 const cache = new Map<string, SmileStatic>();
+const defsCache = new Map<string, DefinitionRec[]>();
 
-/** Load (or reuse) the static definitions + OI for a root as-of a day. */
+/** Definitions ONLY, day-cached with the closed-day walk. The 40-60s parent-definitions pull is
+ * the expensive shared half; the smile path adds whole-root stats on top, the term path pulls a
+ * scoped near-the-money stats window instead — both reuse this so the defs pull happens once/day. */
+export async function loadDefsCached(
+  src: TimeseriesSource,
+  root: string,
+  opts: { asOf: string; end?: string; dataset?: string },
+): Promise<DefinitionRec[]> {
+  root = resolveOptionsRoot(root);
+  const key = `${opts.dataset ?? DEFAULT_DATASET}|${root}|${opts.asOf}`;
+  const hit = defsCache.get(key);
+  if (hit) return hit;
+  // Closed-day lookback: a Saturday after a holiday has an EMPTY [asOf, end) definitions window;
+  // walk asOf back (<= 5 days) to the last day that actually published definitions.
+  let defs = await loadDefinitions(src, root, opts);
+  for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
+    const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
+    defs = await loadDefinitions(src, root, { ...opts, asOf: day });
+  }
+  if (defsCache.size >= MAX_ENTRIES) {
+    const oldest = defsCache.keys().next().value;
+    if (oldest !== undefined) defsCache.delete(oldest);
+  }
+  defsCache.set(key, defs);
+  return defs;
+}
+
+/** Load (or reuse) the static definitions + whole-root OI/settlement for a root as-of a day
+ * (the SMILE path — most-liquid ranking needs OI across every series). */
 export async function loadSmileStatic(
   src: TimeseriesSource,
   root: string,
   opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<SmileStatic> {
   root = resolveOptionsRoot(root); // key + pulls on the options-chain parent root ("CL" -> "LO")
-  // Keyed by (dataset, root, asOf) only — NOT `end`. `end` is just the query ceiling (it
-  // advances every call as the historical feed catches up); the definitions/OI for a day are
-  // static, so a later same-day call safely reuses the first pull's result.
   const key = `${opts.dataset ?? DEFAULT_DATASET}|${root}|${opts.asOf}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
-  // Closed-day lookback (live probe 2026-07-05): GLBX available_end can land INSIDE a
-  // closed day (Saturday 01:50Z), making the [asOf, end) definitions window EMPTY and killing
-  // the smile with "no option expirations". Definitions/OI are published per TRADING day —
-  // walk asOf back (<= 5 days: covers any holiday weekend) to the last day that has them,
-  // and pull OI for that SAME day. Cached under the REQUESTED day, so a same-day refresh
-  // never re-walks.
-  let effective = opts;
-  let defs = await loadDefinitions(src, root, effective);
-  for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
-    const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000)
-      .toISOString()
-      .slice(0, 10);
-    effective = { ...opts, asOf: day };
-    defs = await loadDefinitions(src, root, effective);
-  }
-  const { oi, settle } = await loadDailyStats(src, root, defs.length > 0 ? effective : opts);
+  const defs = await loadDefsCached(src, root, opts);
+  // whole-root OI/settlement; the 4-day stats lookback in loadDailyStats covers a defs/stats
+  // publication mismatch on holiday clusters.
+  const { oi, settle } = await loadDailyStats(src, root, opts);
   const value: SmileStatic = { defs, oi, settle };
 
   if (cache.size >= MAX_ENTRIES) {
@@ -64,4 +78,5 @@ export async function loadSmileStatic(
 /** Test hook: drop all cached static pulls. */
 export function clearSmileStaticCache(): void {
   cache.clear();
+  defsCache.clear();
 }

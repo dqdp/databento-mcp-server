@@ -237,7 +237,7 @@ export async function loadDailyStats(
     stype_in: 'parent',
     stype_out: 'instrument_id',
     schema: 'statistics',
-    start: new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - 4 * 86_400_000).toISOString().slice(0, 10),
+    start: new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - STATS_LOOKBACK_DAYS * 86_400_000).toISOString().slice(0, 10),
     end: opts.end,
     encoding: 'csv',
     timeout: STATIC_PULL_TIMEOUT_MS,
@@ -245,6 +245,51 @@ export async function loadDailyStats(
   const oi = new Map<number, number>();
   for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);
   return { oi, settle: normalizeSettlements(resp.data) };
+}
+
+const STATS_LOOKBACK_DAYS = 7; // >= the defs closed-day walk (5) so stats always reach the defs' day
+const STATS_ID_CHUNK = 200; // instrument_ids per statistics pull — big chunks + wide concurrency below
+                            // minimize the PULL COUNT (each pull carries a large fixed server-side
+                            // latency, badly so on degraded/holiday days), not just the byte volume
+const STATS_ID_CONCURRENCY = 8;
+
+/**
+ * Statistics (OI + settlement) for a SPECIFIC instrument-id set, chunked. The term path uses this
+ * to pull ONLY each series' near-the-money strike window instead of the WHOLE-root parent — the
+ * whole-root pull times out on big roots (GC: ~37k instruments, minutes then 503). Scoping to the
+ * displayed moneyness band bounds both the pull time and the payload.
+ */
+export async function loadStatsForIds(
+  src: TimeseriesSource,
+  ids: number[],
+  opts: { asOf: string; end?: string; dataset?: string },
+): Promise<{ oi: Map<number, number>; settle: Map<number, number> }> {
+  const oi = new Map<number, number>();
+  const settle = new Map<number, number>();
+  if (ids.length === 0) return { oi, settle };
+  const start = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - STATS_LOOKBACK_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const chunks: number[][] = [];
+  for (let i = 0; i < ids.length; i += STATS_ID_CHUNK) chunks.push(ids.slice(i, i + STATS_ID_CHUNK));
+  for (let i = 0; i < chunks.length; i += STATS_ID_CONCURRENCY) {   // overlap the fixed per-pull latency
+    await Promise.all(
+      chunks.slice(i, i + STATS_ID_CONCURRENCY).map(async (chunk) => {
+        const resp = await src.getRange({
+          dataset: opts.dataset ?? DATASET,
+          symbols: chunk.join(','),
+          stype_in: 'instrument_id',
+          stype_out: 'instrument_id',
+          schema: 'statistics',
+          start,
+          end: opts.end,
+          encoding: 'csv',
+          timeout: STATIC_PULL_TIMEOUT_MS,
+        });
+        for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);
+        for (const [id, px] of normalizeSettlements(resp.data)) settle.set(id, px);
+      }),
+    );
+  }
+  return { oi, settle };
 }
 
 const BBO_WINDOW_MS = 15 * 60 * 1000; // last ~15 min of 1-min BBO; last record per instrument = the snapshot

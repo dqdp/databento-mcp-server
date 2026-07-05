@@ -12,7 +12,7 @@ import { seedLiveFromHistorical } from '../analytics/live-seed.js';
 import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
-import { getTermData } from '../analytics/term-data.js';
+import { getTermData, isTermCached } from '../analytics/term-data.js';
 import { clampNowToAvailable } from '../analytics/pull-chain.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
 
@@ -125,8 +125,16 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
               availableEnd = undefined;
             }
             const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
+            const asOf = nowIso.slice(0, 10);
+            // ?probe=1 -> instant cache-status ONLY (pulls nothing) so the skill can warn
+            // "in cache, no wait" vs "cold — first pull of the day, minutes" BEFORE committing.
+            if (url.searchParams.get('probe')) {
+              send(res, 200, 'application/json',
+                JSON.stringify({ root: troot.toUpperCase(), asOf, cached: isTermCached(troot, { asOf, maxSeries, maxDays }) }));
+              return;
+            }
             const data = await getTermData(clients.timeseriesClient, troot, {
-              asOf: nowIso.slice(0, 10),
+              asOf,
               end: nowIso,
               maxSeries,
               maxDays,
