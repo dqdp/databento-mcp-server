@@ -5,9 +5,23 @@
  * each series' forward (never the whole-root parent, which times out on big roots), scoped by
  * instrument_id.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { getTermData, clearTermDataCache, isTermCached } from '../../../src/analytics/term-data.js';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  getTermData,
+  clearTermDataCache,
+  isTermCached,
+  setTermCacheDir,
+  prewarmTerm,
+  prewarmRootsFromEnv,
+} from '../../../src/analytics/term-data.js';
 import { clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
+
+const DISK = path.join(os.tmpdir(), `term-disk-${process.pid}`);
+setTermCacheDir(DISK);
+afterAll(async () => { await fs.rm(DISK, { recursive: true, force: true }); });
 
 const ns = (d: string) => (BigInt(Date.parse(`${d}T20:00:00Z`)) * 1_000_000n).toString();
 const NS = 1_000_000_000;
@@ -73,9 +87,10 @@ function source() {
 }
 
 describe('getTermData', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     clearTermDataCache();
     clearSmileStaticCache();
+    await fs.rm(DISK, { recursive: true, force: true }); // isolate each test from persisted files
   });
 
   it('reduces to per-series strikes with settlements in HUMAN units + real stems/underlyings', async () => {
@@ -199,5 +214,48 @@ describe('getTermData', () => {
     const { getRange } = source();
     const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05', maxSeries: 1 });
     expect(t.series.map((s) => s.stem)).toEqual(['OGQ6']);
+  });
+
+  it('PERSISTS the payload to disk: a fresh process (cleared memory) serves it WITHOUT re-pulling', async () => {
+    const { getRange } = source();
+    await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' }); // cold -> pulls + writes disk
+    const pulls = getRange.mock.calls.length;
+    expect(pulls).toBeGreaterThan(0);
+    clearTermDataCache(); // simulate a connector RESTART (in-memory cache gone, disk file remains)
+    const t2 = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    expect(getRange.mock.calls.length).toBe(pulls); // ZERO new pulls — served from disk
+    expect(t2.series.length).toBe(2);
+  });
+
+  it('isTermCached is TRUE across a restart when the disk file exists (the probe reads disk)', async () => {
+    const { getRange } = source();
+    await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    clearTermDataCache(); // memory gone
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true); // still cached ON DISK
+    expect(isTermCached('GC', { asOf: '2026-07-06' })).toBe(false); // a different day: no file
+  });
+
+  it('prewarmTerm warms each hot root sequentially (disk-first, best-effort)', async () => {
+    const meta = { getDatasetRange: vi.fn(async () => ({ end: '2026-07-05T14:00:00Z' })) };
+    const { getRange } = source();
+    await prewarmTerm({ getRange }, meta, ['GC']);
+    // the hot root is now cached on disk (a real getTermData ran)
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true);
+    // a second prewarm makes ZERO new pulls (disk-served)
+    const n = getRange.mock.calls.length;
+    await prewarmTerm({ getRange }, meta, ['GC']);
+    expect(getRange.mock.calls.length).toBe(n);
+  });
+
+  it('prewarmRootsFromEnv: default hot list vs env override vs empty (off)', () => {
+    const save = process.env.TERM_PREWARM_ROOTS;
+    delete process.env.TERM_PREWARM_ROOTS;
+    expect(prewarmRootsFromEnv()).toContain('GC');
+    process.env.TERM_PREWARM_ROOTS = 'cl, es';
+    expect(prewarmRootsFromEnv()).toEqual(['CL', 'ES']);
+    process.env.TERM_PREWARM_ROOTS = '';
+    expect(prewarmRootsFromEnv()).toEqual([]); // empty -> prewarm OFF
+    if (save === undefined) delete process.env.TERM_PREWARM_ROOTS;
+    else process.env.TERM_PREWARM_ROOTS = save;
   });
 });

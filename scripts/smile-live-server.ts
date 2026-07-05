@@ -55,6 +55,9 @@ const options: SmileServerOptions = liveMode
       },
     }
   : {};
+// Background-warm the hot list of term structures at startup + each trading day (disk-cached across
+// restarts). Off with TERM_PREWARM_ROOTS= (empty). See term-data.prewarmRootsFromEnv.
+options.prewarmTerm = true;
 
 createSmileServer({ timeseriesClient, metadataClient }, options).listen(port, host, () => {
   console.log(`smile ${liveMode ? 'LIVE-socket' : 'polled'} server → http://${host}:${port}/smile/CL   (try ?expiry=most-liquid)`);

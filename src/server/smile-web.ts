@@ -12,13 +12,15 @@ import { seedLiveFromHistorical } from '../analytics/live-seed.js';
 import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
-import { getTermData, isTermCached } from '../analytics/term-data.js';
-import { clampNowToAvailable } from '../analytics/pull-chain.js';
+import { getTermData, isTermCached, prewarmTerm, prewarmRootsFromEnv, resolveTermNow } from '../analytics/term-data.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
 
 export interface SmileServerOptions {
   /** Serve the .json from a persistent Live-socket buffer instead of a polled Historical pull. */
   live?: { makeConsumer: ConsumerFactory; coalesceMs?: number; idleMs?: number };
+  /** Background-warm the hot list of term structures at startup + each trading day (metered pulls
+   * for cold roots; disk-cached ones are instant). Off by default so tests never pull live. */
+  prewarmTerm?: boolean;
 }
 
 /** Cap the number of concurrent Live sessions (each holds an authenticated socket); LRU-evicted. */
@@ -114,18 +116,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
             const troot = decodeURIComponent(tm[1]);
             const maxSeries = Math.min(24, Math.max(1, Math.floor(Number(url.searchParams.get('maxSeries'))) || 10));
             const maxDays = Math.min(800, Math.max(30, Math.floor(Number(url.searchParams.get('maxDays'))) || 400));
-            let availableEnd: string | undefined;
-            try {
-              const range = (await clients.metadataClient.getDatasetRange({ dataset: 'GLBX.MDP3' })) as {
-                end?: string;
-                end_date?: string;
-              };
-              availableEnd = range?.end ?? range?.end_date;
-            } catch {
-              availableEnd = undefined;
-            }
-            const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
-            const asOf = nowIso.slice(0, 10);
+            const { asOf, end } = await resolveTermNow(clients.metadataClient);
             // ?probe=1 -> instant cache-status ONLY (pulls nothing) so the skill can warn
             // "in cache, no wait" vs "cold — first pull of the day, minutes" BEFORE committing.
             if (url.searchParams.get('probe')) {
@@ -133,12 +124,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
                 JSON.stringify({ root: troot.toUpperCase(), asOf, cached: isTermCached(troot, { asOf, maxSeries, maxDays }) }));
               return;
             }
-            const data = await getTermData(clients.timeseriesClient, troot, {
-              asOf,
-              end: nowIso,
-              maxSeries,
-              maxDays,
-            });
+            const data = await getTermData(clients.timeseriesClient, troot, { asOf, end, maxSeries, maxDays });
             send(res, 200, 'application/json', JSON.stringify(data));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
@@ -206,9 +192,24 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     : null;
   if (sweeper && typeof sweeper.unref === 'function') sweeper.unref();
 
+  // Background-warm the hot list of term structures: at startup and once every 6h (so a new
+  // trading day re-warms). Each pull is disk-first, so an already-persisted root is instant; only
+  // genuinely cold roots pull live, one at a time. Off unless the caller opts in.
+  let prewarmTimer: ReturnType<typeof setInterval> | null = null;
+  if (options.prewarmTerm) {
+    const roots = prewarmRootsFromEnv();
+    if (roots.length) {
+      const run = () => void prewarmTerm(clients.timeseriesClient, clients.metadataClient, roots).catch(() => {});
+      setTimeout(run, 2000); // let the server bind first
+      prewarmTimer = setInterval(run, 6 * 60 * 60 * 1000);
+      if (typeof prewarmTimer.unref === 'function') prewarmTimer.unref();
+    }
+  }
+
   // Tear down all Live sessions (and their sockets) when the server stops.
   server.on('close', () => {
     if (sweeper) clearInterval(sweeper);
+    if (prewarmTimer) clearInterval(prewarmTimer);
     for (const p of sessions.values()) void p.then((s) => s.stop()).catch(() => {});
     sessions.clear();
     lastPoll.clear();

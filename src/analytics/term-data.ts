@@ -17,8 +17,12 @@
  * shim: REAL stems (weekly-vs-quarterly honest), the definition's own `underlying` SYMBOL (never
  * reconstructed — the NG year-width bug class), settlements in HUMAN units, nulls for unknowns.
  */
+import { promises as fs } from 'node:fs';
+import { existsSync } from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 import { loadDefsCached } from './smile-cache.js';
-import { loadStatsForIds, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
+import { clampNowToAvailable, loadStatsForIds, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
 
 export interface TermStrike {
   k: number;
@@ -125,6 +129,63 @@ function termKey(dataset: string, optionsRoot: string, asOf: string, maxSeries: 
   return `${dataset}|${optionsRoot}|${asOf}|${maxSeries}|${maxDays}|${band}`;
 }
 
+// --- disk persistence: the reduced payload (21KB/root) survives connector restarts, so a
+// restart never re-pulls a day's term structure. Keyed by the SAME termKey (which includes the
+// trading day), so a new day is a natural miss; old files are swept on load. ---
+let cacheDir = process.env.TERM_CACHE_DIR || path.join(os.homedir(), '.cache', 'databento-mcp', 'term');
+const SWEEP_MAX_AGE_MS = 5 * 86_400_000; // drop persisted payloads older than 5 days
+
+/** Test hook: point the disk cache at an isolated dir. */
+export function setTermCacheDir(dir: string): void {
+  cacheDir = dir;
+}
+
+function diskPath(key: string): string {
+  return path.join(cacheDir, key.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
+}
+
+async function readTermFromDisk(key: string): Promise<TermData | null> {
+  try {
+    const raw = await fs.readFile(diskPath(key), 'utf8');
+    const data = JSON.parse(raw) as TermData;
+    if (data && Array.isArray(data.series)) return data;
+  } catch {
+    /* missing / corrupt -> treat as a miss */
+  }
+  return null;
+}
+
+async function writeTermToDisk(key: string, data: TermData): Promise<void> {
+  try {
+    await fs.mkdir(cacheDir, { recursive: true });
+    const p = diskPath(key);
+    const tmp = `${p}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(data));
+    await fs.rename(tmp, p); // atomic: a reader never sees a partial file
+  } catch (e) {
+    console.error(`[term] disk write failed for ${key}: ${(e as Error).message}`);
+  }
+}
+
+/** Delete persisted payloads older than SWEEP_MAX_AGE_MS (stale trading days). Best-effort. */
+export async function sweepTermDiskCache(): Promise<void> {
+  try {
+    const now = Date.now();
+    for (const f of await fs.readdir(cacheDir)) {
+      if (!f.endsWith('.json')) continue;
+      const fp = path.join(cacheDir, f);
+      try {
+        const st = await fs.stat(fp);
+        if (now - st.mtimeMs > SWEEP_MAX_AGE_MS) await fs.unlink(fp);
+      } catch {
+        /* ignore a file that vanished mid-sweep */
+      }
+    }
+  } catch {
+    /* no cache dir yet -> nothing to sweep */
+  }
+}
+
 /** Is a (root, day) payload already reduced & cached? Instant, pulls NOTHING — the /term?probe
  * path uses it so the skill can say "in cache, no wait" BEFORE committing to a slow cold pull. */
 export function isTermCached(
@@ -135,7 +196,8 @@ export function isTermCached(
   const maxSeries = Math.min(24, Math.max(1, opts.maxSeries ?? 10));
   const maxDays = Math.min(800, Math.max(30, opts.maxDays ?? 400));
   const band = opts.band ?? DEFAULT_BAND;
-  return ready.has(termKey(dataset, resolveOptionsRoot(root.toUpperCase()), opts.asOf, maxSeries, maxDays, band));
+  const key = termKey(dataset, resolveOptionsRoot(root.toUpperCase()), opts.asOf, maxSeries, maxDays, band);
+  return ready.has(key) || existsSync(diskPath(key)); // in-memory OR persisted (a disk read is ~ms)
 }
 
 export async function getTermData(
@@ -155,6 +217,12 @@ export async function getTermData(
   const started = Date.now();
   const work = (async () => {
     const lap = (m: string) => console.error(`[term] ${optionsRoot} ${m} @ ${Math.round((Date.now() - started) / 1000)}s`);
+    // disk FIRST: a persisted payload survives restarts, so we skip the whole slow pull.
+    const disk = await readTermFromDisk(key);
+    if (disk) {
+      console.error(`[term] ${key} served from disk cache`);
+      return disk;
+    }
     // defs ONLY (cached) — never the whole-root stats pull.
     const defs = await loadDefsCached(src, rootUpper, { asOf: opts.asOf, end: opts.end, dataset });
     lap(`defs (${defs.length} rows)`);
@@ -263,6 +331,7 @@ export async function getTermData(
       `[term] ${key} reduced in ${Math.round((Date.now() - started) / 1000)}s ` +
         `(${value.series.length} series, ${wantIds.length} strikes pulled)`,
     );
+    await writeTermToDisk(key, value); // persist so a restart never re-pulls this day
     return value;
   })();
   if (cache.size >= MAX_ENTRIES) {
@@ -281,4 +350,50 @@ export async function getTermData(
     },
   );
   return work;
+}
+
+// The liquid roots warmed in the background at startup / each trading day (user rule 2026-07-05:
+// a hot list, not all 36 — pre-warming is metered). Override with TERM_PREWARM_ROOTS=GC,ES,...
+export const DEFAULT_PREWARM_ROOTS = ['GC', 'ES', 'CL', 'NG', 'SI', '6E', 'NQ', 'HG'];
+
+export function prewarmRootsFromEnv(): string[] {
+  const raw = process.env.TERM_PREWARM_ROOTS;
+  if (raw === undefined) return DEFAULT_PREWARM_ROOTS;
+  return raw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean); // empty string -> [] (off)
+}
+
+/** The clamped trading day for a term pull (the historical feed lags wall-clock). Shared by the
+ * /term route and the background prewarm so both key on the same day. */
+export async function resolveTermNow(metadataClient: {
+  getDatasetRange(p: { dataset: string }): Promise<unknown>;
+}): Promise<{ asOf: string; end: string }> {
+  let availableEnd: string | undefined;
+  try {
+    const r = (await metadataClient.getDatasetRange({ dataset: 'GLBX.MDP3' })) as { end?: string; end_date?: string };
+    availableEnd = r?.end ?? r?.end_date;
+  } catch {
+    availableEnd = undefined;
+  }
+  const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
+  return { asOf: nowIso.slice(0, 10), end: nowIso };
+}
+
+/** Warm the hot list in the BACKGROUND, one root at a time (never concurrent metered pulls). Each
+ * getTermData is disk-first, so a root already persisted today is instant; only genuinely cold
+ * roots pull live. Best-effort: one root's failure never stops the rest. */
+export async function prewarmTerm(
+  src: TimeseriesSource,
+  metadataClient: { getDatasetRange(p: { dataset: string }): Promise<unknown> },
+  roots: string[],
+): Promise<void> {
+  await sweepTermDiskCache();
+  for (const root of roots) {
+    try {
+      const { asOf, end } = await resolveTermNow(metadataClient);
+      await getTermData(src, root, { asOf, end });
+      console.error(`[term] prewarmed ${root}`);
+    } catch (e) {
+      console.error(`[term] prewarm ${root} failed: ${(e as Error).message}`);
+    }
+  }
 }

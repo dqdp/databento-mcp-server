@@ -81,7 +81,7 @@ export function startSmileWebIfConfigured(
         onError: (e) => console.error('[smile-web live]', e.message),
       }));
 
-  const server = createSmileServer(clients, { live: { makeConsumer, coalesceMs: DEFAULT_COALESCE_MS } });
+  const server = createSmileServer(clients, { live: { makeConsumer, coalesceMs: DEFAULT_COALESCE_MS }, prewarmTerm: true });
   server.on('error', (e) => console.error('[smile-web] server error:', (e as Error).message));
   server.listen(port, host, () => {
     const bound = server.address();
