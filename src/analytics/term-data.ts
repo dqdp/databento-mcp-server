@@ -9,8 +9,9 @@
  * PAYLOAD BOUND (2026-07-05): we do NOT pull the whole-root statistics parent (GC = ~37k
  * instruments, minutes -> 503). Instead: cached definitions give every series' strike ladder; a
  * tiny per-underlying settlement pull gives each series' forward; then statistics are pulled ONLY
- * for the strikes within a MONEYNESS BAND (±`band`) of each series' forward. That band covers the
- * 80-120% IV surface and the ±25-strike switcher; the far tails (all-n/a anyway) are never pulled.
+ * for a PROGRESSIVE strike grid (selectWindowStrikes) — coarsened near the money (drops an over-fine
+ * exchange grid like gold's $5), widening into the wings, capped at MAX_STRIKES per series, spanning
+ * the full ±`band` width. Fewer strikes -> a faster scoped stats pull, without narrowing the width.
  *
  * The payload is the compact per-series shape the skill's gather_term consumes through a fetch
  * shim: REAL stems (weekly-vs-quarterly honest), the definition's own `underlying` SYMBOL (never
@@ -45,30 +46,69 @@ export interface TermData {
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 32;
-const DEFAULT_BAND = 0.25; // moneyness half-width for the surface-bucket strikes (see SURFACE_BUCKETS)
-const DENSE_HALF = 25; // the ±25 strikes each side of ATM shown in the switcher (dense near the money)
-// The skill's IV-surface moneyness columns (must match futures_options.TERM_BUCKETS). We include the
-// single nearest listed strike to each, so a FINE strike grid (gold trades $5 apart -> hundreds of
-// strikes inside ±25% moneyness) never balloons the pull: dense near ATM + one strike per far bucket.
+const DEFAULT_BAND = 0.25; // moneyness half-width the strikes span (±25% -> covers the 80-120% surface)
+// The skill's IV-surface moneyness columns (must match futures_options.TERM_BUCKETS): guaranteed a
+// nearest-listed strike each, so the surface stays whole even where the progressive walk skipped one.
 const SURFACE_BUCKETS = [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2];
+const STRIKE_FLOOR_PCT = 0.0024; // min gap NEAR the money ~0.25% of F (gold ~$10 -> drops the $5 grid)
+const STRIKE_GROWTH = 0.2; // wing gap grows to ~20% of the distance from ATM (progressive: dense->sparse)
+const MAX_STRIKES = 45; // hard cap per series (user rule 2026-07-05): fewer strikes -> faster stats pull,
+                        // full ±band width kept (the point was to coarsen the grid, NOT narrow it)
 
-/** Strikes to pull for one series: the ±DENSE_HALF nearest ATM (the switcher window) UNION the
- * nearest listed strike to each surface moneyness bucket. Sparse in the wings, dense at the money —
- * bounds the pull to ~60-90 strikes/series regardless of how fine the exchange's strike grid is. */
-function selectWindowStrikes(allStrikes: number[], F: number): number[] {
-  const sorted = [...allStrikes].sort((a, b) => a - b);
-  if (sorted.length === 0) return [];
+/** Strikes to pull for one series — a PROGRESSIVE grid anchored on the ATM: a min gap near the money
+ * (drops an over-fine exchange grid like gold's $5) that WIDENS toward the wings, so the full ±band
+ * moneyness width is covered by few points. The ATM is always kept; the surface buckets are
+ * guaranteed; a hard MAX_STRIKES cap thins the densest interior (never the ATM, the extremes, or a
+ * bucket strike) so a series never balloons the pull regardless of how fine the grid is. */
+function selectWindowStrikes(allStrikes: number[], F: number, band = DEFAULT_BAND): number[] {
+  const sorted = [...new Set(allStrikes)].sort((a, b) => a - b);
+  if (sorted.length === 0 || !(F > 0)) return sorted;
   let atm = 0;
   for (let i = 1; i < sorted.length; i++) if (Math.abs(sorted[i] - F) < Math.abs(sorted[atm] - F)) atm = i;
-  const kept = new Set<number>();
-  for (let i = Math.max(0, atm - DENSE_HALF); i <= Math.min(sorted.length - 1, atm + DENSE_HALF); i++) kept.add(sorted[i]);
+  const lo = F * (1 - band);
+  const hi = F * (1 + band);
+  const floorGap = STRIKE_FLOOR_PCT * F;
+  const kept = new Set<number>([sorted[atm]]);
+  let last = sorted[atm]; // walk UP: keep a strike once it clears max(floor, growth*distance-from-ATM)
+  for (let i = atm + 1; i < sorted.length && sorted[i] <= hi; i++) {
+    if (sorted[i] - last >= Math.max(floorGap, STRIKE_GROWTH * (sorted[i] - F))) {
+      kept.add(sorted[i]);
+      last = sorted[i];
+    }
+  }
+  last = sorted[atm]; // walk DOWN
+  for (let i = atm - 1; i >= 0 && sorted[i] >= lo; i--) {
+    if (last - sorted[i] >= Math.max(floorGap, STRIKE_GROWTH * (F - sorted[i]))) {
+      kept.add(sorted[i]);
+      last = sorted[i];
+    }
+  }
+  // guarantee each surface bucket has a strike within the skill's ±2.5% tolerance
+  const bucketK = new Set<number>();
   for (const m of SURFACE_BUCKETS) {
     const target = m * F;
-    let best = sorted[0];
-    for (const k of sorted) if (Math.abs(k - target) < Math.abs(best - target)) best = k;
-    kept.add(best); // the skill applies its own ±2.5% bucket tolerance; we just guarantee the candidate
+    let inside = false;
+    for (const k of kept) if (Math.abs(k - target) <= 0.025 * F) { inside = true; break; }
+    if (inside) continue;
+    let best: number | null = null;
+    for (const k of sorted) if (k >= lo && k <= hi && (best === null || Math.abs(k - target) < Math.abs(best - target))) best = k;
+    if (best !== null) { kept.add(best); bucketK.add(best); }
   }
-  return [...kept].sort((a, b) => a - b);
+  // hard cap: thin the DENSEST interior first (smallest neighbour gap), preserving the ATM, the two
+  // width-defining extremes, and every bucket strike — so the cap costs detail near the money, never width.
+  let arr = [...kept].sort((a, b) => a - b);
+  while (arr.length > MAX_STRIKES) {
+    let victim = -1;
+    let bestGap = Infinity;
+    for (let i = 1; i < arr.length - 1; i++) {
+      if (arr[i] === sorted[atm] || bucketK.has(arr[i])) continue;
+      const gap = Math.min(arr[i] - arr[i - 1], arr[i + 1] - arr[i]);
+      if (gap < bestGap) { bestGap = gap; victim = i; }
+    }
+    if (victim < 0) break; // everything left is protected
+    arr.splice(victim, 1);
+  }
+  return arr;
 }
 const cache = new Map<string, Promise<TermData>>(); // PROMISE-keyed: concurrent same-key misses
                                                     // coalesce into ONE slow pull set

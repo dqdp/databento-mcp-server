@@ -12,14 +12,14 @@ import { clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
 const ns = (d: string) => (BigInt(Date.parse(`${d}T20:00:00Z`)) * 1_000_000n).toString();
 const NS = 1_000_000_000;
 
-// REAL definition CSV. OGQ6 has a FINE $25 grid 2000..6000 (161 strikes, like gold): the sparse
-// window (dense ±25 around ATM + one strike per surface bucket) must keep FAR fewer than all 161,
-// drop the far tail (2000), yet still keep the 80%/120% bucket strikes so the surface stays whole.
+// REAL definition CSV. OGQ6 has a FINE $5 grid 3000..5300 (461 strikes, like gold): the progressive
+// selector must COARSEN it to a ~$10 grid near ATM widening into the wings, keep <=MAX_STRIKES, keep
+// the ATM + the surface buckets, and still reach the full ±band width.
 // call id = strike, put id = strike + 100000 (deterministic, so assertions can address a strike).
 const cId = (k: number) => k;
 const pId = (k: number) => k + 100000;
 const OGQ6_STRIKES: number[] = [];
-for (let k = 2000; k <= 6000; k += 25) OGQ6_STRIKES.push(k); // 161 strikes
+for (let k = 3000; k <= 5300; k += 5) OGQ6_STRIKES.push(k); // 461 strikes — a FINE $5 grid (like gold)
 const defCsv =
   `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price,underlying\n` +
   OGQ6_STRIKES.flatMap((k) => [
@@ -35,11 +35,11 @@ const defCsv =
 // forwards (77/78) + specific option settlements/OI; every OTHER requested option id gets a
 // generic settlement so the reduction has data to keep.
 const SPECIAL: Record<number, { settle?: number; oi?: number }> = {
-  77: { settle: 4126.0 }, // GCQ26 forward
-  78: { settle: 4155.0 }, // GCU26 forward
+  77: { settle: 4100.0 }, // GCQ26 forward -> ATM lands ON 4100 (so the $10 grid keeps 4100 & 4200)
+  78: { settle: 4150.0 }, // GCU26 forward
   [cId(4100)]: { settle: 52.4, oi: 150 },
   [pId(4100)]: { settle: 48.1 },
-  [cId(4200)]: { settle: 15.2, oi: 2147483647 }, // UNDEF_I32 OI -> absent
+  [cId(4130)]: { settle: 15.2, oi: 2147483647 }, // UNDEF_I32 OI -> absent (4130 is on the $10 grid)
   300001: { settle: 60.0 },
   300002: { settle: 58.5, oi: 44 },
 };
@@ -85,13 +85,13 @@ describe('getTermData', () => {
     expect(t.series.map((s) => s.stem)).toEqual(['OGQ6', 'OGU6']); // expired + >400d excluded, ascending
     const q6 = t.series[0];
     expect(q6.under).toBe('GCQ26');
-    expect(q6.fwdSettle).toBeCloseTo(4126.0, 9);
+    expect(q6.fwdSettle).toBeCloseTo(4100.0, 9);
     const k4100 = q6.strikes.find((s) => s.k === 4100)!;
     expect(k4100.cSettle).toBeCloseTo(52.4, 9);
     expect(k4100.pSettle).toBeCloseTo(48.1, 9);
     expect(k4100.cOi).toBe(150);
     expect(k4100.pOi).toBeNull(); // no OI record -> null (unknown), never 0
-    expect(q6.strikes.find((s) => s.k === 4200)!.cOi).toBeNull(); // UNDEF_I32 sentinel -> null
+    expect(q6.strikes.find((s) => s.k === 4130)!.cOi).toBeNull(); // UNDEF_I32 sentinel -> null
   });
 
   it('NEVER pulls the whole-root statistics parent — every stats pull is scoped by instrument_id', async () => {
@@ -104,20 +104,23 @@ describe('getTermData', () => {
     expect(calls.some((c) => c.schema === 'statistics' && c.symbols.split(',').includes('77'))).toBe(true);
   });
 
-  it('SPARSE window on a fine grid: dense ±25 around ATM + one strike per surface bucket; far tail dropped', async () => {
+  it('PROGRESSIVE grid + hard cap on a FINE $5 grid: <=45 strikes, $10 near ATM, full ±band width', async () => {
     const { getRange } = source();
     const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
-    const ks = t.series.find((s) => s.stem === 'OGQ6')!.strikes.map((s) => s.k);
-    expect(ks.length).toBeGreaterThan(40);
-    expect(ks.length).toBeLessThan(80); // FAR fewer than the 161 listed strikes
-    // ATM ~4126 -> the dense ±25 keeps the neighbourhood; 4100/4200 are in it
-    expect(ks).toContain(4100);
-    expect(ks).toContain(4200);
-    // the far tail (2000 = 48% of forward) is neither dense nor a bucket -> never pulled
-    expect(ks).not.toContain(2000);
-    // the 80% surface bucket (0.8*4126=3300.8 -> 3300) IS kept so the surface stays whole,
-    // even though it's ~33 strikes from ATM (outside the dense window)
-    expect(ks).toContain(3300);
+    const ks = t.series.find((s) => s.stem === 'OGQ6')!.strikes.map((s) => s.k).sort((a, b) => a - b);
+    expect(ks.length).toBeLessThanOrEqual(45); // the hard cap holds even though 461 strikes are listed
+    expect(ks.length).toBeGreaterThan(20); // but not so few that the smile is starved
+    expect(ks).toContain(4100); // ATM (forward 4100) always kept
+    // near the money the $5 grid is COARSENED to ~$10 (the floor): no adjacent kept pair is $5 apart
+    // within ±3% of the forward, and the ATM's neighbours are ~$10 away
+    const nearGaps = ks.filter((k) => Math.abs(k - 4100) <= 120).sort((a, b) => a - b);
+    for (let i = 1; i < nearGaps.length; i++) expect(nearGaps[i] - nearGaps[i - 1]).toBeGreaterThanOrEqual(10);
+    // WIDTH is not lost: strikes reach out toward ±20% (3280 = 80%, 4920 = 120% region)
+    expect(ks.some((k) => k <= 3300)).toBe(true);
+    expect(ks.some((k) => k >= 4900)).toBe(true);
+    // the wings are SPARSER than the centre (progressive): the biggest gap is in the wings
+    const gaps = ks.slice(1).map((k, i) => k - ks[i]);
+    expect(Math.max(...gaps)).toBeGreaterThan(20);
     expect(t.band).toBe(0.25);
   });
 
