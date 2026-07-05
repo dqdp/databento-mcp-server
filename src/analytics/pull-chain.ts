@@ -31,7 +31,8 @@ export interface TimeseriesSource {
 
 // Full-chain parent definition/statistics sets for a big root (crude LO ~3.7k+ defs) take
 // longer than the client's 15s default — give the STATIC pulls a generous ceiling.
-const STATIC_PULL_TIMEOUT_MS = 480_000; // whole-root parent pulls (defs/stats) legitimately run MINUTES on big roots (GC live probe 2026-07-05) — the day-cache makes it once per day
+const STATIC_PULL_TIMEOUT_MS = 480_000; // day-cached term/defs pulls legitimately run MINUTES on big roots (GC live probe 2026-07-05) — once per day
+export const INTERACTIVE_PULL_TIMEOUT_MS = 120_000; // user-facing smile snapshot: fail fast on a degraded day, don't inherit the 8-min term ceiling
 
 /**
  * Pull the whole option-chain `definition` set for a root (e.g. "ES") via parent symbology.
@@ -41,7 +42,7 @@ const STATIC_PULL_TIMEOUT_MS = 480_000; // whole-root parent pulls (defs/stats) 
 export async function loadDefinitions(
   src: TimeseriesSource,
   root: string,
-  opts: { asOf: string; end?: string; dataset?: string },
+  opts: { asOf: string; end?: string; dataset?: string; timeoutMs?: number },
 ): Promise<DefinitionRec[]> {
   // Intentionally NO `limit`: this reference set must be COMPLETE (a truncated definition set
   // silently drops strikes/expirations). We reduce it internally to a compact chain — it never
@@ -60,7 +61,7 @@ export async function loadDefinitions(
     start: opts.asOf,
     end: opts.end,
     encoding: 'csv',
-    timeout: STATIC_PULL_TIMEOUT_MS,
+    timeout: opts.timeoutMs ?? STATIC_PULL_TIMEOUT_MS,
   });
   return normalizeDefinitions(resp.data);
 }
@@ -225,9 +226,9 @@ export async function loadOpenInterest(
 export async function loadDailyStats(
   src: TimeseriesSource,
   root: string,
-  opts: { asOf: string; end?: string; dataset?: string },
+  opts: { asOf: string; end?: string; dataset?: string; timeoutMs?: number },
 ): Promise<{ oi: Map<number, number>; settle: Map<number, number> }> {
-  // Look BACK 4 days from asOf (the skill's `look` convention): a holiday can PUBLISH definitions
+  // Look back STATS_LOOKBACK_DAYS (7, >= the 5-day defs closed-day walk): a holiday can PUBLISH definitions
   // while publishing NO statistics (live case 2026-07-03: defs present, zero settles/OI), so a
   // window pinned to the defs' day comes back empty. Last record per instrument wins, so extra
   // earlier days are harmless.
@@ -240,7 +241,7 @@ export async function loadDailyStats(
     start: new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - STATS_LOOKBACK_DAYS * 86_400_000).toISOString().slice(0, 10),
     end: opts.end,
     encoding: 'csv',
-    timeout: STATIC_PULL_TIMEOUT_MS,
+    timeout: opts.timeoutMs ?? STATIC_PULL_TIMEOUT_MS,
   });
   const oi = new Map<number, number>();
   for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);

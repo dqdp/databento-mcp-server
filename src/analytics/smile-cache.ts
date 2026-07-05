@@ -7,7 +7,13 @@
  * don't accumulate.
  */
 import type { DefinitionRec } from './chain.js';
-import { loadDailyStats, loadDefinitions, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
+import {
+  INTERACTIVE_PULL_TIMEOUT_MS,
+  loadDailyStats,
+  loadDefinitions,
+  resolveOptionsRoot,
+  type TimeseriesSource,
+} from './pull-chain.js';
 
 export interface SmileStatic {
   defs: DefinitionRec[];
@@ -20,7 +26,7 @@ const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 64;
 const LOOKBACK_DAYS = 5;   // longest realistic exchange-holiday cluster
 const cache = new Map<string, SmileStatic>();
-const defsCache = new Map<string, DefinitionRec[]>();
+const defsCache = new Map<string, Promise<DefinitionRec[]>>();
 
 /** Definitions ONLY, day-cached with the closed-day walk. The 40-60s parent-definitions pull is
  * the expensive shared half; the smile path adds whole-root stats on top, the term path pulls a
@@ -28,25 +34,32 @@ const defsCache = new Map<string, DefinitionRec[]>();
 export async function loadDefsCached(
   src: TimeseriesSource,
   root: string,
-  opts: { asOf: string; end?: string; dataset?: string },
+  opts: { asOf: string; end?: string; dataset?: string; timeoutMs?: number },
 ): Promise<DefinitionRec[]> {
   root = resolveOptionsRoot(root);
   const key = `${opts.dataset ?? DEFAULT_DATASET}|${root}|${opts.asOf}`;
   const hit = defsCache.get(key);
   if (hit) return hit;
-  // Closed-day lookback: a Saturday after a holiday has an EMPTY [asOf, end) definitions window;
-  // walk asOf back (<= 5 days) to the last day that actually published definitions.
-  let defs = await loadDefinitions(src, root, opts);
-  for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
-    const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
-    defs = await loadDefinitions(src, root, { ...opts, asOf: day });
-  }
+  // PROMISE-keyed (mirrors term-data's cache): two concurrent same-day callers — the realistic
+  // case being a /smile poll and a /term cold pull for the same root — coalesce onto ONE 40-60s
+  // parent-definitions pull instead of each running its own.
+  const work = (async () => {
+    // Closed-day lookback: a Saturday after a holiday has an EMPTY [asOf, end) definitions window;
+    // walk asOf back (<= 5 days) to the last day that actually published definitions.
+    let defs = await loadDefinitions(src, root, opts);
+    for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
+      const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
+      defs = await loadDefinitions(src, root, { ...opts, asOf: day });
+    }
+    return defs;
+  })();
   if (defsCache.size >= MAX_ENTRIES) {
     const oldest = defsCache.keys().next().value;
     if (oldest !== undefined) defsCache.delete(oldest);
   }
-  defsCache.set(key, defs);
-  return defs;
+  defsCache.set(key, work);
+  work.catch(() => { if (defsCache.get(key) === work) defsCache.delete(key); }); // don't cache a failed pull
+  return work;
 }
 
 /** Load (or reuse) the static definitions + whole-root OI/settlement for a root as-of a day
@@ -61,10 +74,10 @@ export async function loadSmileStatic(
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const defs = await loadDefsCached(src, root, opts);
-  // whole-root OI/settlement; the 4-day stats lookback in loadDailyStats covers a defs/stats
-  // publication mismatch on holiday clusters.
-  const { oi, settle } = await loadDailyStats(src, root, opts);
+  // interactive path: cap the pulls at INTERACTIVE_TIMEOUT so a degraded Databento day fails a
+  // user-facing smile fast, rather than the 8-min term ceiling.
+  const defs = await loadDefsCached(src, root, { ...opts, timeoutMs: INTERACTIVE_PULL_TIMEOUT_MS });
+  const { oi, settle } = await loadDailyStats(src, root, { ...opts, timeoutMs: INTERACTIVE_PULL_TIMEOUT_MS });
   const value: SmileStatic = { defs, oi, settle };
 
   if (cache.size >= MAX_ENTRIES) {

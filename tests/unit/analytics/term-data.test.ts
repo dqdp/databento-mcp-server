@@ -210,6 +210,45 @@ describe('getTermData', () => {
     expect(t.series.map((s) => s.stem)).toEqual(['OGQ6']); // OGU6 forward-less -> dropped
   });
 
+  it('BAND is passed to selectWindowStrikes: a wider band reaches wider strikes (not the default 0.25)', async () => {
+    const wide = await getTermData({ getRange: source().getRange }, 'GC', { asOf: '2026-07-05', band: 0.5 });
+    clearTermDataCache();
+    await fs.rm(DISK, { recursive: true, force: true });
+    const narrow = await getTermData({ getRange: source().getRange }, 'GC', { asOf: '2026-07-05', band: 0.25 });
+    const wk = wide.series.find((s) => s.stem === 'OGQ6')!.strikes.map((s) => s.k);
+    const nk = narrow.series.find((s) => s.stem === 'OGQ6')!.strikes.map((s) => s.k);
+    expect(wide.band).toBe(0.5);
+    expect(Math.max(...wk)).toBeGreaterThan(Math.max(...nk)); // band 0.5 walked out past band 0.25's ceiling
+  });
+
+  it('all-forwards-missing -> REJECTS and persists NOTHING (b7f0096 class, disk edition)', async () => {
+    const { getRange } = source();
+    const orig = getRange.getMockImplementation()!;
+    getRange.mockImplementation(async (req: { schema: string; symbols: string; stype_in?: string }) => {
+      const r = await orig(req);
+      // strip BOTH underlyings' forwards (77, 78) -> every series drops
+      if (req.schema === 'statistics') {
+        r.data = (r.data as string).split('\n').filter((ln) => !ln.startsWith('77,') && !ln.startsWith('78,')).join('\n');
+      }
+      return r;
+    });
+    await expect(getTermData({ getRange }, 'GC', { asOf: '2026-07-05' })).rejects.toThrow(/no priceable/);
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(false); // nothing cached in memory OR on disk
+    const files = await fs.readdir(DISK).catch(() => []);
+    expect(files.filter((f) => f.endsWith('.json'))).toEqual([]);
+  });
+
+  it('disk read rejects a STALE schema / empty-series file (self-heals junk) -> re-pulls fresh', async () => {
+    await fs.mkdir(DISK, { recursive: true });
+    // a junk file at the exact GC key: old schema + empty series
+    const junk = path.join(DISK, 'GLBX.MDP3_OG_2026-07-05_10_400_0.25.json');
+    await fs.writeFile(junk, JSON.stringify({ schemaVersion: 0, root: 'GC', series: [] }));
+    const { getRange } = source();
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    expect(t.series.length).toBe(2); // the junk was ignored and a real reduction ran
+    expect(getRange.mock.calls.length).toBeGreaterThan(0);
+  });
+
   it('honors maxSeries', async () => {
     const { getRange } = source();
     const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05', maxSeries: 1 });

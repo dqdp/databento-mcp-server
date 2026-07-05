@@ -196,11 +196,13 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
   // trading day re-warms). Each pull is disk-first, so an already-persisted root is instant; only
   // genuinely cold roots pull live, one at a time. Off unless the caller opts in.
   let prewarmTimer: ReturnType<typeof setInterval> | null = null;
+  let prewarmKick: ReturnType<typeof setTimeout> | null = null;
   if (options.prewarmTerm) {
     const roots = prewarmRootsFromEnv();
     if (roots.length) {
       const run = () => void prewarmTerm(clients.timeseriesClient, clients.metadataClient, roots).catch(() => {});
-      setTimeout(run, 2000); // let the server bind first
+      prewarmKick = setTimeout(run, 2000); // let the server bind first — MUST be cleared on close
+      if (typeof prewarmKick.unref === 'function') prewarmKick.unref();
       prewarmTimer = setInterval(run, 6 * 60 * 60 * 1000);
       if (typeof prewarmTimer.unref === 'function') prewarmTimer.unref();
     }
@@ -209,6 +211,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
   // Tear down all Live sessions (and their sockets) when the server stops.
   server.on('close', () => {
     if (sweeper) clearInterval(sweeper);
+    if (prewarmKick) clearTimeout(prewarmKick); // a server closed before the 2s kick must NOT prewarm
     if (prewarmTimer) clearInterval(prewarmTimer);
     for (const p of sessions.values()) void p.then((s) => s.stop()).catch(() => {});
     sessions.clear();

@@ -39,6 +39,7 @@ export interface TermSeries {
   strikes: TermStrike[];
 }
 export interface TermData {
+  schemaVersion: number; // bump when the payload shape changes; disk reads reject a mismatch
   root: string;
   optionsRoot: string;
   dataset: string;
@@ -47,6 +48,8 @@ export interface TermData {
   band: number; // the moneyness half-width the strikes were pulled within
   series: TermSeries[];
 }
+
+const SCHEMA_VERSION = 1;
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 32;
@@ -148,7 +151,11 @@ async function readTermFromDisk(key: string): Promise<TermData | null> {
   try {
     const raw = await fs.readFile(diskPath(key), 'utf8');
     const data = JSON.parse(raw) as TermData;
-    if (data && Array.isArray(data.series)) return data;
+    // reject an old schema, an empty-series file (self-heals junk baked before the empty-series
+    // guard), or a shape that isn't ours — fall through to a fresh live pull.
+    if (data && data.schemaVersion === SCHEMA_VERSION && Array.isArray(data.series) && data.series.length > 0) {
+      return data;
+    }
   } catch {
     /* missing / corrupt -> treat as a miss */
   }
@@ -172,11 +179,13 @@ export async function sweepTermDiskCache(): Promise<void> {
   try {
     const now = Date.now();
     for (const f of await fs.readdir(cacheDir)) {
-      if (!f.endsWith('.json')) continue;
+      if (!f.endsWith('.json') && !f.endsWith('.tmp')) continue;
       const fp = path.join(cacheDir, f);
       try {
         const st = await fs.stat(fp);
-        if (now - st.mtimeMs > SWEEP_MAX_AGE_MS) await fs.unlink(fp);
+        // .tmp orphans (a crash between writeFile and rename) are always stale — drop them; .json
+        // payloads only past the age horizon.
+        if (f.endsWith('.tmp') || now - st.mtimeMs > SWEEP_MAX_AGE_MS) await fs.unlink(fp);
       } catch {
         /* ignore a file that vanished mid-sweep */
       }
@@ -286,7 +295,7 @@ export async function getTermData(
     const plan = eligible.map((b) => {
       const F = b.underId != null ? fwdById.get(b.underId) ?? null : null;
       if (F == null || F <= 0) return { b, F: null as number | null, keptK: [] as number[] };
-      return { b, F, keptK: selectWindowStrikes([...b.byK.keys()], F) };
+      return { b, F, keptK: selectWindowStrikes([...b.byK.keys()], F, band) };
     });
     const wantIds: number[] = [];
     for (const p of plan) {
@@ -302,6 +311,7 @@ export async function getTermData(
     lap(`stats done`);
 
     const value: TermData = {
+      schemaVersion: SCHEMA_VERSION,
       root: rootUpper,
       optionsRoot,
       dataset,
@@ -331,22 +341,32 @@ export async function getTermData(
       `[term] ${key} reduced in ${Math.round((Date.now() - started) / 1000)}s ` +
         `(${value.series.length} series, ${wantIds.length} strikes pulled)`,
     );
+    if (value.series.length === 0) {
+      // every series dropped (stats outage / holiday with no settlements): a REJECTION, not a
+      // success — the .then error path evicts the cache and nothing is persisted (b7f0096 class).
+      throw new Error(`no priceable ${optionsRoot} series (all forwards missing) — not caching an empty term structure`);
+    }
     await writeTermToDisk(key, value); // persist so a restart never re-pulls this day
     return value;
   })();
   if (cache.size >= MAX_ENTRIES) {
-    const oldest = cache.keys().next().value;
-    if (oldest !== undefined) {
-      cache.delete(oldest);
-      ready.delete(oldest);
+    // evict the oldest RESOLVED entry — never an in-flight promise (that would break coalescing:
+    // a same-key caller would start a DUPLICATE metered pull, and the evicted pull's handlers
+    // would still mutate the map).
+    const victim = [...cache.keys()].find((k) => ready.has(k)) ?? cache.keys().next().value;
+    if (victim !== undefined) {
+      cache.delete(victim);
+      ready.delete(victim);
     }
   }
   cache.set(key, work);
   work.then(
-    () => ready.add(key), // mark READY only when the (slow) pull actually resolved
+    () => { if (cache.get(key) === work) ready.add(key); }, // only if we're still the cached promise
     () => {
-      cache.delete(key); // a failed pull must not poison the day, and is never "ready"
-      ready.delete(key);
+      if (cache.get(key) === work) { // a later same-key call may have replaced us — don't clobber it
+        cache.delete(key);
+        ready.delete(key);
+      }
     },
   );
   return work;

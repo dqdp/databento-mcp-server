@@ -5,7 +5,7 @@
  * every call. Keyed by day so a new session day reloads.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { loadSmileStatic, clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
+import { loadSmileStatic, loadDefsCached, clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
 
 const ns = (d: string) => (BigInt(Date.parse(`${d}T00:00:00Z`)) * 1_000_000n).toString();
 const defCsv =
@@ -67,6 +67,26 @@ describe('loadSmileStatic', () => {
   });
 
   beforeEach(() => clearSmileStaticCache());
+
+  it('loadDefsCached COALESCES two concurrent same-day callers into ONE definitions pull', async () => {
+    const getRange = source();
+    // a /smile poll and a /term cold pull arriving together for the same root
+    const [a, b] = await Promise.all([
+      loadDefsCached({ getRange }, 'ES', { asOf: '2026-06-30' }),
+      loadDefsCached({ getRange }, 'ES', { asOf: '2026-06-30' }),
+    ]);
+    expect(getRange.mock.calls.filter((c) => c[0].schema === 'definition').length).toBe(1); // not 2
+    expect(a).toBe(b);
+  });
+
+  it('loadDefsCached does NOT cache a failed pull (next call retries)', async () => {
+    const getRange = vi.fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue({ data: defCsv });
+    await expect(loadDefsCached({ getRange }, 'ES', { asOf: '2026-06-30' })).rejects.toThrow('boom');
+    const defs = await loadDefsCached({ getRange }, 'ES', { asOf: '2026-06-30' });
+    expect(defs.length).toBeGreaterThan(0);
+  });
 
   it('pulls definitions + OI on the first call and returns them', async () => {
     const getRange = source();
