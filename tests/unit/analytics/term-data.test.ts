@@ -132,6 +132,18 @@ describe('getTermData', () => {
     expect(t.series.length).toBe(2);
   });
 
+  it('RETRIES a failed underlying-settle pull once (a transient throttle must not bake null into the day-cache)', async () => {
+    const base = source();
+    let gcq = 0;
+    const getRange = vi.fn(async (req: { schema: string; symbols: string; stype_in?: string }) => {
+      if (req.schema === 'statistics' && req.symbols === 'GCQ26' && ++gcq === 1) throw new Error('429');
+      return base.getRange(req);
+    });
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    expect(gcq).toBe(2); // failed once, retried once
+    expect(t.series[0].fwdSettle).toBeCloseTo(4126.0, 9);
+  });
+
   it('honors maxSeries', async () => {
     const { getRange } = source();
     const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05', maxSeries: 1 });

@@ -51,11 +51,14 @@ export function clearTermDataCache(): void {
   cache.clear();
 }
 
-/** Settlement for one raw symbol (the underlying future) — tiny, concurrent-safe. */
+/** Settlement for one raw symbol (the underlying future) — tiny; ONE retry after a short
+ * backoff (a transient 429 on a degraded day must not bake a null forward into the day-cache;
+ * a series dropped for a missing forward would stay dropped all day). */
 async function loadSymbolSettle(
   src: TimeseriesSource,
   symbol: string,
   opts: { asOf: string; end?: string; dataset?: string },
+  attempt = 1,
 ): Promise<number | null> {
   try {
     const resp = await src.getRange({
@@ -75,7 +78,12 @@ async function loadSymbolSettle(
     let out: number | null = null;
     for (const v of m.values()) out = v;
     return out;
-  } catch {
+  } catch (e) {
+    if (attempt < 2) {
+      await new Promise((r) => setTimeout(r, 2000));
+      return loadSymbolSettle(src, symbol, opts, attempt + 1);
+    }
+    console.error(`[term] settle pull failed twice for ${symbol}: ${(e as Error).message}`);
     return null; // the consumer drops a forward-less series LOUDLY on its side; never a guess here
   }
 }
@@ -147,11 +155,14 @@ export async function getTermData(
 
   const unders = [...new Set(eligible.map((b) => b.under).filter((u): u is string => Boolean(u)))];
   const settles = new Map<string, number | null>();
-  await Promise.all(
-    unders.map(async (u) => {
-      settles.set(u, await loadSymbolSettle(src, u, { asOf: opts.asOf, end: opts.end, dataset }));
-    }),
-  );
+  // <=3 concurrent symbol pulls: full fan-out trips the throttle on degraded days
+  for (let i = 0; i < unders.length; i += 3) {
+    await Promise.all(
+      unders.slice(i, i + 3).map(async (u) => {
+        settles.set(u, await loadSymbolSettle(src, u, { asOf: opts.asOf, end: opts.end, dataset }));
+      }),
+    );
+  }
 
   const value: TermData = {
     root: rootUpper,
