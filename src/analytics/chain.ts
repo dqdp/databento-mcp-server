@@ -20,6 +20,8 @@ export interface DefinitionRec {
   strike: number | null;
   expiration: string;
   underlying?: string;
+  raw_symbol?: string;
+  underlying_symbol?: string;
 }
 export interface QuoteRec {
   type: 'quote';

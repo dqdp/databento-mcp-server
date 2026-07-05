@@ -14,6 +14,7 @@ const UNDEF_PX = '9223372036854775807'; // INT64_MAX — compare as a string (ex
 const UNDEF_I32 = '2147483647'; // INT32_MAX — undefined size/quantity sentinel
 const UNDEF_TS = '18446744073709551615'; // UINT64_MAX — undefined nanosecond-timestamp sentinel
 const STAT_TYPE_OPEN_INTEREST = '9';
+const STAT_TYPE_SETTLEMENT = '3';
 
 /** Header-driven CSV parse. Databento CSV has no embedded commas/quotes in these fields. */
 function rows(csv: string): Record<string, string>[] {
@@ -61,6 +62,8 @@ export function normalizeDefinitions(csv: string): DefinitionRec[] {
       strike: cls === 'F' ? null : scaledPrice(r['strike_price']),
       expiration: nsToDate(r['expiration']),
       underlying: r['underlying_id'],
+      raw_symbol: r['raw_symbol'] || undefined,
+      underlying_symbol: r['underlying'] || undefined, // the SYMBOL column (never reconstruct — NG width bug)
     });
   }
   return out;
@@ -87,6 +90,18 @@ export function normalizeStatistics(csv: string): StatisticsRec[] {
     const q = r['quantity'];
     if (!q || q === UNDEF_I32) continue;
     out.push({ type: 'statistics', instrument_id: Number(r['instrument_id']), stat_type: 'open_interest', value: Number(q) });
+  }
+  return out;
+}
+
+/** `statistics` -> settlement price per instrument (stat_type 3), HUMAN units (/1e9). */
+export function normalizeSettlements(csv: string): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const r of rows(csv)) {
+    if (r['stat_type'] !== STAT_TYPE_SETTLEMENT) continue;
+    const px = scaledPrice(r['price']);
+    if (px == null || px <= 0) continue;
+    out.set(Number(r['instrument_id']), px); // last record for a day wins (matches the skill's _px pick)
   }
   return out;
 }

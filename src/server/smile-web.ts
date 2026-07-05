@@ -12,6 +12,8 @@ import { seedLiveFromHistorical } from '../analytics/live-seed.js';
 import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
+import { getTermData } from '../analytics/term-data.js';
+import { clampNowToAvailable } from '../analytics/pull-chain.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
 
 export interface SmileServerOptions {
@@ -104,6 +106,37 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
+        const tm = url.pathname.match(/^\/term\/([^/]+?)\.json$/);
+        if (tm && (req.method === 'GET' || req.method === 'HEAD')) {
+          // Cross-expiration payload for the skill's --term: day-cached (first pull of the day is
+          // the slow Databento side; every later poll is instant). Keyless + loopback like /smile.
+          try {
+            const troot = decodeURIComponent(tm[1]);
+            const maxSeries = Math.min(24, Math.max(1, Math.floor(Number(url.searchParams.get('maxSeries'))) || 10));
+            const maxDays = Math.min(800, Math.max(30, Math.floor(Number(url.searchParams.get('maxDays'))) || 400));
+            let availableEnd: string | undefined;
+            try {
+              const range = (await clients.metadataClient.getDatasetRange({ dataset: 'GLBX.MDP3' })) as {
+                end?: string;
+                end_date?: string;
+              };
+              availableEnd = range?.end ?? range?.end_date;
+            } catch {
+              availableEnd = undefined;
+            }
+            const nowIso = clampNowToAvailable(new Date().toISOString(), availableEnd);
+            const data = await getTermData(clients.timeseriesClient, troot, {
+              asOf: nowIso.slice(0, 10),
+              end: nowIso,
+              maxSeries,
+              maxDays,
+            });
+            send(res, 200, 'application/json', JSON.stringify(data));
+          } catch (e) {
+            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
+          }
+          return;
+        }
         const m = url.pathname.match(/^\/smile\/([^/]+?)(\.json)?$/);
         if (!m || (req.method !== 'GET' && req.method !== 'HEAD')) {
           send(res, 404, 'application/json', JSON.stringify({ error: 'not_found' }));

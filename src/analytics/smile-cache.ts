@@ -7,11 +7,13 @@
  * don't accumulate.
  */
 import type { DefinitionRec } from './chain.js';
-import { loadDefinitions, loadOpenInterest, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
+import { loadDailyStats, loadDefinitions, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
 
 export interface SmileStatic {
   defs: DefinitionRec[];
   oi: Map<number, number>;
+  /** settlement price per instrument (stat 3, human units) — same pull as OI, kept for --term */
+  settle: Map<number, number>;
 }
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
@@ -48,8 +50,8 @@ export async function loadSmileStatic(
     effective = { ...opts, asOf: day };
     defs = await loadDefinitions(src, root, effective);
   }
-  const oi = await loadOpenInterest(src, root, defs.length > 0 ? effective : opts);
-  const value: SmileStatic = { defs, oi };
+  const { oi, settle } = await loadDailyStats(src, root, defs.length > 0 ? effective : opts);
+  const value: SmileStatic = { defs, oi, settle };
 
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value;

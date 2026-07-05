@@ -9,7 +9,7 @@
  */
 import type { Chain, ChainRec, DefinitionRec, QuoteRec } from './chain.js';
 import { applyTick, buildChain, newState } from './chain.js';
-import { normalizeDefinitions, normalizeQuotes, normalizeStatistics } from './databento-normalize.js';
+import { normalizeDefinitions, normalizeQuotes, normalizeSettlements, normalizeStatistics } from './databento-normalize.js';
 
 const DATASET = 'GLBX.MDP3';
 
@@ -213,6 +213,20 @@ export async function loadOpenInterest(
   root: string,
   opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<Map<number, number>> {
+  return (await loadDailyStats(src, root, opts)).oi;
+}
+
+/**
+ * ONE whole-root statistics parent pull -> BOTH daily maps: open interest (stat 9) and
+ * settlement prices (stat 3, human units). The response always carried both; settlements were
+ * simply discarded before the term-structure work needed them. Callers that only want OI keep
+ * the loadOpenInterest name.
+ */
+export async function loadDailyStats(
+  src: TimeseriesSource,
+  root: string,
+  opts: { asOf: string; end?: string; dataset?: string },
+): Promise<{ oi: Map<number, number>; settle: Map<number, number> }> {
   const resp = await src.getRange({
     dataset: opts.dataset ?? DATASET,
     symbols: `${root}.OPT`,
@@ -226,7 +240,7 @@ export async function loadOpenInterest(
   });
   const oi = new Map<number, number>();
   for (const rec of normalizeStatistics(resp.data)) oi.set(rec.instrument_id, rec.value);
-  return oi;
+  return { oi, settle: normalizeSettlements(resp.data) };
 }
 
 const BBO_WINDOW_MS = 15 * 60 * 1000; // last ~15 min of 1-min BBO; last record per instrument = the snapshot
