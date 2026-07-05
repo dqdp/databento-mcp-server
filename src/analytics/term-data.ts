@@ -43,8 +43,9 @@ export interface TermData {
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 32;
-const STATIC_PULL_TIMEOUT_MS = 180_000;
-const cache = new Map<string, TermData>();
+const STATIC_PULL_TIMEOUT_MS = 180_000; // per-symbol settle pulls are tiny; 3 min is generous
+const cache = new Map<string, Promise<TermData>>(); // PROMISE-keyed: concurrent same-key misses
+                                                    // coalesce into ONE slow pull set
 
 export function clearTermDataCache(): void {
   cache.clear();
@@ -63,7 +64,8 @@ async function loadSymbolSettle(
       stype_in: 'raw_symbol',
       stype_out: 'instrument_id',
       schema: 'statistics',
-      start: opts.asOf,
+      // same 4-day lookback as loadDailyStats: a settlement is "last known <= asOf"
+      start: new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - 4 * 86_400_000).toISOString().slice(0, 10),
       end: opts.end,
       encoding: 'csv',
       timeout: STATIC_PULL_TIMEOUT_MS,
@@ -91,6 +93,8 @@ export async function getTermData(
   const key = `${dataset}|${optionsRoot}|${opts.asOf}|${maxSeries}|${maxDays}`;
   const hit = cache.get(key);
   if (hit) return hit;
+  const started = Date.now();
+  const work = (async () => {
 
   // defs + OI + SETTLEMENTS ride the existing day-cache (one defs parent + one stats parent,
   // shared with the smile path — a smile warm-up earlier in the day makes this half free).
@@ -164,10 +168,15 @@ export async function getTermData(
     })),
   };
 
+    console.error(`[term] ${key} reduced in ${Math.round((Date.now() - started) / 1000)}s ` +
+      `(${value.series.length} series)`);
+    return value;
+  })();
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(key, value);
-  return value;
+  cache.set(key, work);
+  work.catch(() => cache.delete(key)); // a failed pull must not poison the day
+  return work;
 }

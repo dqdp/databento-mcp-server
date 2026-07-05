@@ -4,6 +4,18 @@
  */
 
 import * as zlib from "node:zlib";
+import { Agent } from "undici";
+
+// Databento generates big parent-level responses SERVER-SIDE for minutes (live probe 2026-07-05:
+// whole-root statistics ~6 min on GC) — undici's DEFAULT headers/body timeouts (300s) abort such
+// requests with "terminated" regardless of our per-request AbortSignal. One shared dispatcher
+// raises those engine timeouts; the per-request signal stays the actual deadline.
+const LONG_PULL_DISPATCHER = new Agent({
+  connectTimeout: 30_000,
+  headersTimeout: 600_000,
+  bodyTimeout: 600_000,
+});
+
 
 /**
  * Configuration for DataBento API requests
@@ -191,7 +203,9 @@ export class DataBentoHTTP {
             "User-Agent": "DataBento-MCP-Server/1.0",
           },
           signal: AbortSignal.timeout(requestOptions?.timeout ?? this.config.timeout),
-        });
+          // undici extension (Node's fetch IS undici): lift the 300s engine defaults for long pulls
+          dispatcher: LONG_PULL_DISPATCHER,
+        } as RequestInit & { dispatcher?: Agent });
 
         if (!response.ok) {
           const errorText = await response.text();

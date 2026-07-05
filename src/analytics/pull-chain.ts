@@ -31,7 +31,7 @@ export interface TimeseriesSource {
 
 // Full-chain parent definition/statistics sets for a big root (crude LO ~3.7k+ defs) take
 // longer than the client's 15s default — give the STATIC pulls a generous ceiling.
-const STATIC_PULL_TIMEOUT_MS = 90_000;
+const STATIC_PULL_TIMEOUT_MS = 480_000; // whole-root parent pulls (defs/stats) legitimately run MINUTES on big roots (GC live probe 2026-07-05) — the day-cache makes it once per day
 
 /**
  * Pull the whole option-chain `definition` set for a root (e.g. "ES") via parent symbology.
@@ -227,13 +227,17 @@ export async function loadDailyStats(
   root: string,
   opts: { asOf: string; end?: string; dataset?: string },
 ): Promise<{ oi: Map<number, number>; settle: Map<number, number> }> {
+  // Look BACK 4 days from asOf (the skill's `look` convention): a holiday can PUBLISH definitions
+  // while publishing NO statistics (live case 2026-07-03: defs present, zero settles/OI), so a
+  // window pinned to the defs' day comes back empty. Last record per instrument wins, so extra
+  // earlier days are harmless.
   const resp = await src.getRange({
     dataset: opts.dataset ?? DATASET,
     symbols: `${root}.OPT`,
     stype_in: 'parent',
     stype_out: 'instrument_id',
     schema: 'statistics',
-    start: opts.asOf,
+    start: new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - 4 * 86_400_000).toISOString().slice(0, 10),
     end: opts.end,
     encoding: 'csv',
     timeout: STATIC_PULL_TIMEOUT_MS,

@@ -41,7 +41,8 @@ describe('loadSmileStatic', () => {
     const defStarts = getRange.mock.calls.filter((c) => c[0].schema === 'definition').map((c) => c[0].start);
     expect(defStarts).toEqual(['2026-07-05', '2026-07-04', '2026-07-03', '2026-07-02']);   // stop at first hit
     const statStarts = getRange.mock.calls.filter((c) => c[0].schema === 'statistics').map((c) => c[0].start);
-    expect(statStarts).toEqual(['2026-07-02']);   // OI pulled for the SAME fallback trading day
+    expect(statStarts).toEqual(['2026-06-28']);   // fallback day MINUS the 4-day stats lookback (a
+    // holiday can publish defs with NO stats — the window must reach the last day that has them)
   });
 
   it('caches the lookback result under the REQUESTED day (no re-walk on refresh)', async () => {

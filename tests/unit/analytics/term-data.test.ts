@@ -111,6 +111,27 @@ describe('getTermData', () => {
     expect(t.series.find((s) => s.stem === 'OGU6')!.fwdSettle).toBeNull();
   });
 
+  it('COALESCES concurrent same-key calls into one pull set (no duplicate slow pulls)', async () => {
+    const { getRange } = source();
+    const [a, b] = await Promise.all([
+      getTermData({ getRange }, 'GC', { asOf: '2026-07-05' }),
+      getTermData({ getRange }, 'GC', { asOf: '2026-07-05' }),
+    ]);
+    expect(a.series.length).toBe(2);
+    expect(b).toBe(a); // the second caller awaited the SAME in-flight promise
+    const defCalls = getRange.mock.calls.filter((c) => c[0].schema === 'definition');
+    expect(defCalls.length).toBe(1);
+  });
+
+  it('does NOT cache a failed pull (next call retries)', async () => {
+    const getRange = vi.fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockImplementation(source().getRange);
+    await expect(getTermData({ getRange }, 'GC', { asOf: '2026-07-05' })).rejects.toThrow('boom');
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    expect(t.series.length).toBe(2);
+  });
+
   it('honors maxSeries', async () => {
     const { getRange } = source();
     const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05', maxSeries: 1 });
