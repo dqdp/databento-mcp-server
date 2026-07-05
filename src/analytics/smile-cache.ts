@@ -16,6 +16,7 @@ export interface SmileStatic {
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 64;
+const LOOKBACK_DAYS = 5;   // longest realistic exchange-holiday cluster
 const cache = new Map<string, SmileStatic>();
 
 /** Load (or reuse) the static definitions + OI for a root as-of a day. */
@@ -32,8 +33,22 @@ export async function loadSmileStatic(
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const defs = await loadDefinitions(src, root, opts);
-  const oi = await loadOpenInterest(src, root, opts);
+  // Closed-day lookback (live probe 2026-07-05): GLBX available_end can land INSIDE a
+  // closed day (Saturday 01:50Z), making the [asOf, end) definitions window EMPTY and killing
+  // the smile with "no option expirations". Definitions/OI are published per TRADING day —
+  // walk asOf back (<= 5 days: covers any holiday weekend) to the last day that has them,
+  // and pull OI for that SAME day. Cached under the REQUESTED day, so a same-day refresh
+  // never re-walks.
+  let effective = opts;
+  let defs = await loadDefinitions(src, root, effective);
+  for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
+    const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    effective = { ...opts, asOf: day };
+    defs = await loadDefinitions(src, root, effective);
+  }
+  const oi = await loadOpenInterest(src, root, defs.length > 0 ? effective : opts);
   const value: SmileStatic = { defs, oi };
 
   if (cache.size >= MAX_ENTRIES) {

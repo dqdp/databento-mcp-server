@@ -23,6 +23,48 @@ function source() {
 }
 
 describe('loadSmileStatic', () => {
+  it('walks asOf back over closed days until definitions appear (holiday weekend lookback)', async () => {
+    // GLBX available_end can land INSIDE a closed day (live probe 2026-07-05: available_end
+    // 01:50Z Saturday -> definitions window [Sat, Sat 01:50) is EMPTY and the smile died with
+    // "no option expirations"). The static loader must look back day-by-day (<=5) to the last
+    // trading day instead.
+    const getRange = vi.fn(async (req: { schema: string; start?: string }) => {
+      if (req.schema === 'definition') {
+        return { data: (req.start ?? '').startsWith('2026-07-02') ? defCsv : 'instrument_id,raw_symbol\n' };
+      }
+      if (req.schema === 'statistics') return { data: statCsv };
+      throw new Error(`unexpected schema ${req.schema}`);
+    });
+    const { defs, oi } = await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05', end: '2026-07-05T01:50:00Z' });
+    expect(defs.length).toBeGreaterThan(0);
+    expect(oi.get(201)).toBe(1500);
+    const defStarts = getRange.mock.calls.filter((c) => c[0].schema === 'definition').map((c) => c[0].start);
+    expect(defStarts).toEqual(['2026-07-05', '2026-07-04', '2026-07-03', '2026-07-02']);   // stop at first hit
+    const statStarts = getRange.mock.calls.filter((c) => c[0].schema === 'statistics').map((c) => c[0].start);
+    expect(statStarts).toEqual(['2026-07-02']);   // OI pulled for the SAME fallback trading day
+  });
+
+  it('caches the lookback result under the REQUESTED day (no re-walk on refresh)', async () => {
+    const getRange = vi.fn(async (req: { schema: string; start?: string }) => {
+      if (req.schema === 'definition') {
+        return { data: (req.start ?? '').startsWith('2026-07-02') ? defCsv : 'instrument_id,raw_symbol\n' };
+      }
+      return { data: statCsv };
+    });
+    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05' });
+    const calls = getRange.mock.calls.length;
+    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05' });
+    expect(getRange.mock.calls.length).toBe(calls);   // second refresh = pure cache hit
+  });
+
+  it('gives up honestly after 5 closed days (empty defs, upstream error unchanged)', async () => {
+    const getRange = vi.fn(async (req: { schema: string }) =>
+      req.schema === 'definition' ? { data: 'instrument_id,raw_symbol\n' } : { data: statCsv });
+    const { defs } = await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05' });
+    expect(defs.length).toBe(0);
+    expect(getRange.mock.calls.filter((c) => c[0].schema === 'definition').length).toBe(6); // asOf + 5 lookbacks
+  });
+
   beforeEach(() => clearSmileStaticCache());
 
   it('pulls definitions + OI on the first call and returns them', async () => {
