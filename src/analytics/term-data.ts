@@ -45,12 +45,40 @@ export interface TermData {
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 32;
-const DEFAULT_BAND = 0.25; // ±25% moneyness — covers the 80-120% surface + the ±25-strike switcher
+const DEFAULT_BAND = 0.25; // moneyness half-width for the surface-bucket strikes (see SURFACE_BUCKETS)
+const DENSE_HALF = 25; // the ±25 strikes each side of ATM shown in the switcher (dense near the money)
+// The skill's IV-surface moneyness columns (must match futures_options.TERM_BUCKETS). We include the
+// single nearest listed strike to each, so a FINE strike grid (gold trades $5 apart -> hundreds of
+// strikes inside ±25% moneyness) never balloons the pull: dense near ATM + one strike per far bucket.
+const SURFACE_BUCKETS = [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2];
+
+/** Strikes to pull for one series: the ±DENSE_HALF nearest ATM (the switcher window) UNION the
+ * nearest listed strike to each surface moneyness bucket. Sparse in the wings, dense at the money —
+ * bounds the pull to ~60-90 strikes/series regardless of how fine the exchange's strike grid is. */
+function selectWindowStrikes(allStrikes: number[], F: number): number[] {
+  const sorted = [...allStrikes].sort((a, b) => a - b);
+  if (sorted.length === 0) return [];
+  let atm = 0;
+  for (let i = 1; i < sorted.length; i++) if (Math.abs(sorted[i] - F) < Math.abs(sorted[atm] - F)) atm = i;
+  const kept = new Set<number>();
+  for (let i = Math.max(0, atm - DENSE_HALF); i <= Math.min(sorted.length - 1, atm + DENSE_HALF); i++) kept.add(sorted[i]);
+  for (const m of SURFACE_BUCKETS) {
+    const target = m * F;
+    let best = sorted[0];
+    for (const k of sorted) if (Math.abs(k - target) < Math.abs(best - target)) best = k;
+    kept.add(best); // the skill applies its own ±2.5% bucket tolerance; we just guarantee the candidate
+  }
+  return [...kept].sort((a, b) => a - b);
+}
 const cache = new Map<string, Promise<TermData>>(); // PROMISE-keyed: concurrent same-key misses
                                                     // coalesce into ONE slow pull set
+const ready = new Set<string>(); // keys whose promise has RESOLVED — the probe reports THESE, not
+                                 // the mere presence of an in-flight promise (that would say "no
+                                 // wait" while a multi-minute cold pull is still running)
 
 export function clearTermDataCache(): void {
   cache.clear();
+  ready.clear();
 }
 
 function termKey(dataset: string, optionsRoot: string, asOf: string, maxSeries: number, maxDays: number, band: number): string {
@@ -67,7 +95,7 @@ export function isTermCached(
   const maxSeries = Math.min(24, Math.max(1, opts.maxSeries ?? 10));
   const maxDays = Math.min(800, Math.max(30, opts.maxDays ?? 400));
   const band = opts.band ?? DEFAULT_BAND;
-  return cache.has(termKey(dataset, resolveOptionsRoot(root.toUpperCase()), opts.asOf, maxSeries, maxDays, band));
+  return ready.has(termKey(dataset, resolveOptionsRoot(root.toUpperCase()), opts.asOf, maxSeries, maxDays, band));
 }
 
 export async function getTermData(
@@ -86,8 +114,10 @@ export async function getTermData(
   if (hit) return hit;
   const started = Date.now();
   const work = (async () => {
+    const lap = (m: string) => console.error(`[term] ${optionsRoot} ${m} @ ${Math.round((Date.now() - started) / 1000)}s`);
     // defs ONLY (cached) — never the whole-root stats pull.
     const defs = await loadDefsCached(src, rootUpper, { asOf: opts.asOf, end: opts.end, dataset });
+    lap(`defs (${defs.length} rows)`);
 
     // group C/P defs by REAL stem (raw_symbol before the space) + expiration.
     type Bucket = {
@@ -140,15 +170,15 @@ export async function getTermData(
     // id instead of N per-symbol pulls — the per-pull latency, not the byte volume, is the cost.
     const underIds = [...new Set(eligible.map((b) => b.underId).filter((u): u is number => u != null))];
     const fwdById = (await loadStatsForIds(src, underIds, { asOf: opts.asOf, end: opts.end, dataset })).settle;
+    lap(`forwards (${underIds.length} underlyings, ${eligible.length} series)`);
 
-    // window each series to the moneyness band around ITS forward; collect only those ids.
+    // window each series: dense ±DENSE_HALF strikes around its forward + one strike per surface
+    // bucket (sparse wings). Bounds the pull on fine strike grids (gold $5) — the whole ±25% band
+    // there is hundreds of strikes we never display.
     const plan = eligible.map((b) => {
       const F = b.underId != null ? fwdById.get(b.underId) ?? null : null;
       if (F == null || F <= 0) return { b, F: null as number | null, keptK: [] as number[] };
-      const lo = F * (1 - band);
-      const hi = F * (1 + band);
-      const keptK = [...b.byK.keys()].filter((k) => k >= lo && k <= hi).sort((x, y) => x - y);
-      return { b, F, keptK };
+      return { b, F, keptK: selectWindowStrikes([...b.byK.keys()], F) };
     });
     const wantIds: number[] = [];
     for (const p of plan) {
@@ -159,7 +189,9 @@ export async function getTermData(
       }
     }
 
+    lap(`windowed ${wantIds.length} strike-ids — pulling stats`);
     const { oi, settle } = await loadStatsForIds(src, wantIds, { asOf: opts.asOf, end: opts.end, dataset });
+    lap(`stats done`);
 
     const value: TermData = {
       root: rootUpper,
@@ -195,9 +227,18 @@ export async function getTermData(
   })();
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      ready.delete(oldest);
+    }
   }
   cache.set(key, work);
-  work.catch(() => cache.delete(key)); // a failed pull must not poison the day
+  work.then(
+    () => ready.add(key), // mark READY only when the (slow) pull actually resolved
+    () => {
+      cache.delete(key); // a failed pull must not poison the day, and is never "ready"
+      ready.delete(key);
+    },
+  );
   return work;
 }

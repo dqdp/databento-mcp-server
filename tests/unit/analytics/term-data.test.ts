@@ -12,39 +12,49 @@ import { clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
 const ns = (d: string) => (BigInt(Date.parse(`${d}T20:00:00Z`)) * 1_000_000n).toString();
 const NS = 1_000_000_000;
 
-// REAL definition CSV: raw_symbol + the `underlying` SYMBOL column. OGQ6 spans 3000..4200 so a
-// ±25% band around a 4126 forward keeps 4100..4200 and DROPS 3000 (far tail — never pulled).
+// REAL definition CSV. OGQ6 has a FINE $25 grid 2000..6000 (161 strikes, like gold): the sparse
+// window (dense ±25 around ATM + one strike per surface bucket) must keep FAR fewer than all 161,
+// drop the far tail (2000), yet still keep the 80%/120% bucket strikes so the surface stays whole.
+// call id = strike, put id = strike + 100000 (deterministic, so assertions can address a strike).
+const cId = (k: number) => k;
+const pId = (k: number) => k + 100000;
+const OGQ6_STRIKES: number[] = [];
+for (let k = 2000; k <= 6000; k += 25) OGQ6_STRIKES.push(k); // 161 strikes
 const defCsv =
   `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price,underlying\n` +
-  `10,OGQ6 C3000,C,${ns('2026-07-28')},77,${3000 * NS},GCQ26\n` +
-  `11,OGQ6 P3000,P,${ns('2026-07-28')},77,${3000 * NS},GCQ26\n` +
-  `12,OGQ6 C4100,C,${ns('2026-07-28')},77,${4100 * NS},GCQ26\n` +
-  `13,OGQ6 P4100,P,${ns('2026-07-28')},77,${4100 * NS},GCQ26\n` +
-  `14,OGQ6 C4200,C,${ns('2026-07-28')},77,${4200 * NS},GCQ26\n` +
-  `20,OGU6 C4150,C,${ns('2026-08-26')},78,${4150 * NS},GCU26\n` +
-  `21,OGU6 P4150,P,${ns('2026-08-26')},78,${4150 * NS},GCU26\n` +
-  `30,OGZ8 C4400,C,${ns('2028-11-27')},99,${4400 * NS},GCZ28\n` + // beyond maxDays -> excluded
-  `40,OGK6 C4000,C,${ns('2026-04-27')},60,${4000 * NS},GCK26\n` + // expired -> excluded
-  `50,SPREAD,T,${ns('2026-07-28')},0,0,\n`; // non-C/P -> dropped by normalize
+  OGQ6_STRIKES.flatMap((k) => [
+    `${cId(k)},OGQ6 C${k},C,${ns('2026-07-28')},77,${k * NS},GCQ26`,
+    `${pId(k)},OGQ6 P${k},P,${ns('2026-07-28')},77,${k * NS},GCQ26`,
+  ]).join('\n') +
+  `\n300001,OGU6 C4150,C,${ns('2026-08-26')},78,${4150 * NS},GCU26\n` +
+  `300002,OGU6 P4150,P,${ns('2026-08-26')},78,${4150 * NS},GCU26\n` +
+  `400001,OGZ8 C4400,C,${ns('2028-11-27')},99,${4400 * NS},GCZ28\n` + // beyond maxDays -> excluded
+  `400002,OGK6 C4000,C,${ns('2026-04-27')},60,${4000 * NS},GCK26\n` + // expired -> excluded
+  `400003,SPREAD,T,${ns('2026-07-28')},0,0,\n`; // non-C/P -> dropped by normalize
 
-// scoped statistics response keyed by the instrument_ids asked for. 77/78 are the underlying
-// FUTURE ids (from each def's underlying_id) — forwards are pulled by id in the SAME mechanism.
-const STAT: Record<number, { settle?: number; oi?: number }> = {
+// forwards (77/78) + specific option settlements/OI; every OTHER requested option id gets a
+// generic settlement so the reduction has data to keep.
+const SPECIAL: Record<number, { settle?: number; oi?: number }> = {
   77: { settle: 4126.0 }, // GCQ26 forward
   78: { settle: 4155.0 }, // GCU26 forward
-  12: { settle: 52.4, oi: 150 },
-  13: { settle: 48.1 },
-  14: { settle: 15.2, oi: 2147483647 }, // UNDEF_I32 OI -> absent
-  20: { settle: 60.0 },
-  21: { settle: 58.5, oi: 44 },
+  [cId(4100)]: { settle: 52.4, oi: 150 },
+  [pId(4100)]: { settle: 48.1 },
+  [cId(4200)]: { settle: 15.2, oi: 2147483647 }, // UNDEF_I32 OI -> absent
+  300001: { settle: 60.0 },
+  300002: { settle: 58.5, oi: 44 },
 };
 function statCsvFor(ids: number[]): string {
   let out = `instrument_id,ts_ref,price,quantity,stat_type\n`;
   for (const id of ids) {
-    const s = STAT[id];
-    if (!s) continue;
-    if (s.settle != null) out += `${id},0,${s.settle * NS},0,3\n`;
-    if (s.oi != null) out += `${id},0,0,${s.oi},9\n`;
+    const s = SPECIAL[id];
+    if (s) {
+      if (s.settle != null) out += `${id},0,${s.settle * NS},0,3\n`;
+      if (s.oi != null) out += `${id},0,0,${s.oi},9\n`;
+    } else if (id === 77 || id === 78) {
+      continue; // an underlying with no special -> no forward (drops its series)
+    } else {
+      out += `${id},0,${10 * NS},0,3\n`; // generic option settlement
+    }
   }
   return out;
 }
@@ -94,18 +104,21 @@ describe('getTermData', () => {
     expect(calls.some((c) => c.schema === 'statistics' && c.symbols.split(',').includes('77'))).toBe(true);
   });
 
-  it('WINDOWS strikes to the ±band moneyness of each forward (far tails are never pulled)', async () => {
-    const { getRange, calls } = source();
-    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05', band: 0.25 });
-    // 3000 is < 0.75*4126 (=3094.5) -> dropped; 4100/4200 kept
+  it('SPARSE window on a fine grid: dense ±25 around ATM + one strike per surface bucket; far tail dropped', async () => {
+    const { getRange } = source();
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
     const ks = t.series.find((s) => s.stem === 'OGQ6')!.strikes.map((s) => s.k);
-    expect(ks).toEqual([4100, 4200]);
-    expect(ks).not.toContain(3000);
-    // and the dropped strike's ids (10/11) were never in any instrument_id pull
-    const idCalls = calls.filter((c) => c.stype_in === 'instrument_id').flatMap((c) => c.symbols.split(','));
-    expect(idCalls).not.toContain('10');
-    expect(idCalls).not.toContain('11');
-    expect(idCalls).toContain('12');
+    expect(ks.length).toBeGreaterThan(40);
+    expect(ks.length).toBeLessThan(80); // FAR fewer than the 161 listed strikes
+    // ATM ~4126 -> the dense ±25 keeps the neighbourhood; 4100/4200 are in it
+    expect(ks).toContain(4100);
+    expect(ks).toContain(4200);
+    // the far tail (2000 = 48% of forward) is neither dense nor a bucket -> never pulled
+    expect(ks).not.toContain(2000);
+    // the 80% surface bucket (0.8*4126=3300.8 -> 3300) IS kept so the surface stays whole,
+    // even though it's ~33 strikes from ATM (outside the dense window)
+    expect(ks).toContain(3300);
+    expect(t.band).toBe(0.25);
   });
 
   it('caches per (dataset, root, day, caps, band): a second call makes ZERO new pulls', async () => {
@@ -123,6 +136,27 @@ describe('getTermData', () => {
     await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
     expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true);
     expect(isTermCached('GC', { asOf: '2026-07-06' })).toBe(false); // a new day is a miss
+  });
+
+  it('isTermCached stays FALSE while the pull is still IN-FLIGHT (never "no wait" mid-cold-pull)', async () => {
+    // gate the FIRST definition pull so the promise is cached-but-unresolved when we probe
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const good = source();
+    let first = true;
+    const getRange = vi.fn(async (req: { schema: string; symbols: string; stype_in?: string }) => {
+      if (first && req.schema === 'definition') {
+        first = false;
+        await gate;
+      }
+      return good.getRange(req);
+    });
+    const p = getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    await Promise.resolve(); // let the work() microtask start and cache the (unresolved) promise
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(false); // in-flight -> probe says NOT ready
+    release();
+    await p;
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true); // resolved -> ready
   });
 
   it('COALESCES concurrent same-key calls into one pull set', async () => {
