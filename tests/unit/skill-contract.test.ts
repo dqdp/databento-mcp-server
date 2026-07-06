@@ -1,10 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const projectRoot = path.resolve(__dirname, "../..");
-const tsxCli = path.join(projectRoot, "node_modules/tsx/dist/cli.mjs");
+// Resolve tsx's CLI via Node module resolution (walks up to the nearest node_modules) rather than
+// assuming it sits under this checkout's own node_modules: in a git worktree the deps resolve from
+// the parent working tree, so projectRoot/node_modules is empty. tsx's package `exports` don't
+// expose ./dist/cli.mjs, so resolve the always-exported package.json and join the bin path.
+const tsxCli = path.join(path.dirname(createRequire(__filename).resolve("tsx/package.json")), "dist/cli.mjs");
 
 function readJson<T>(relativePath: string): T {
   return JSON.parse(readFileSync(path.join(projectRoot, relativePath), "utf8")) as T;

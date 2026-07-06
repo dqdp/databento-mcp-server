@@ -1,11 +1,16 @@
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
 
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
-const TSX_CLI = path.join(PROJECT_ROOT, "node_modules/tsx/dist/cli.mjs");
+// Resolve tsx's CLI via Node module resolution (walks up to the nearest node_modules) rather than
+// assuming it sits under this checkout's own node_modules: in a git worktree the deps resolve from
+// the parent working tree, so PROJECT_ROOT/node_modules is empty. tsx's package `exports` don't
+// expose ./dist/cli.mjs, so resolve the always-exported package.json and join the bin path.
+const TSX_CLI = path.join(path.dirname(createRequire(__filename).resolve("tsx/package.json")), "dist/cli.mjs");
 const MCP_ENTRYPOINT = path.join(PROJECT_ROOT, "mcp/index.ts");
 
 type TextContent = {
