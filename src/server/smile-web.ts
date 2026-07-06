@@ -12,7 +12,7 @@ import { seedLiveFromHistorical } from '../analytics/live-seed.js';
 import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
-import { getTermData, isTermCached, prewarmTerm, prewarmRootsFromEnv, resolveTermNow } from '../analytics/term-data.js';
+import { getCachedTermData, getTermData, isTermCached, prewarmTerm, prewarmRootsFromEnv, resolveTermNow, type TermData } from '../analytics/term-data.js';
 import { loadDefsCatalog, summarizeSeries } from '../analytics/defs-catalog.js';
 import { loadSmileStatic } from '../analytics/smile-cache.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
@@ -42,6 +42,23 @@ function placeholder(root: string): Chain {
 function send(res: http.ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
   res.end(body);
+}
+
+/** Per-series total OI from the day-cached term payload, keyed by `${stem}|${expiration}` to match
+ * summarizeSeries' grouping. The term OI is already scoped to ±band strike windows and cached, so
+ * reusing it lets /series?liquidity=1 rank instantly on the roots users actually look at — instead
+ * of a fresh whole-root loadDailyStats that exceeds the interactive timeout on wide roots. Wing
+ * strikes the progressive grid skipped carry negligible OI, so the per-series TOTAL (and thus the
+ * most-liquid ranking) is unaffected. Only the WINDOWED series are here (nearest maxSeries within
+ * maxDays); summarizeSeries leaves any listing series absent from this map OI-unknown, not 0. */
+function termSeriesOi(term: TermData): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const s of term.series) {
+    let total = 0;
+    for (const k of s.strikes) total += (k.cOi ?? 0) + (k.pOi ?? 0);
+    m.set(`${s.stem}|${s.expiration}`, total);
+  }
+  return m;
 }
 
 export function createSmileServer(clients: SmileClients, options: SmileServerOptions = {}): http.Server {
@@ -113,22 +130,35 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
         const sm = url.pathname.match(/^\/series\/([^/]+?)\.json$/);
         if (sm && (req.method === 'GET' || req.method === 'HEAD')) {
           // The "first question" listing: what series exist, nearest, count — served INSTANTLY from
-          // the long-lived defs catalog (no daily snapshot re-pull). ?liquidity=1 also ranks by the
-          // day-cached OI (mostLiquid) at the cost of the whole-root OI pull (day-cached after first).
+          // the long-lived defs catalog (no daily snapshot re-pull). ?liquidity=1 also ranks by OI
+          // (mostLiquid): PREFER the day-cached term payload's per-series OI (already windowed +
+          // cached), which makes ranking instant for the roots users look at; only when no term
+          // cache exists fall back to the whole-root loadDailyStats (which times out on wide roots).
           try {
             const sroot = decodeURIComponent(sm[1]);
             const { asOf, end } = await resolveTermNow(clients.metadataClient);
             const defs = await loadDefsCatalog(clients.timeseriesClient, sroot, { asOf, end });
             let oi: Map<number, number> | undefined;
+            let seriesOi: Map<string, number> | undefined;
             if (url.searchParams.get('liquidity')) {
               try {
-                oi = (await loadSmileStatic(clients.timeseriesClient, sroot, { asOf, end })).oi;
+                // Prefer the day-cached term OI (already windowed + cached) WITHOUT risking a live
+                // pull: getCachedTermData returns null on any miss (cold / in-flight / invalid disk
+                // file), so we cleanly fall back to the whole-root loadDailyStats instead of blocking
+                // the interactive request on a metered term pull.
+                const term = await getCachedTermData(sroot, { asOf });
+                if (term) {
+                  seriesOi = termSeriesOi(term);
+                } else {
+                  oi = (await loadSmileStatic(clients.timeseriesClient, sroot, { asOf, end })).oi;
+                }
               } catch {
-                oi = undefined; // best-effort: fall back to nearest-only if the OI pull fails
+                oi = undefined; // best-effort: fall back to nearest-only if the OI source fails
+                seriesOi = undefined;
               }
             }
             send(res, 200, 'application/json',
-              JSON.stringify(summarizeSeries(sroot, resolveOptionsRoot(sroot.toUpperCase()), defs, asOf, oi)));
+              JSON.stringify(summarizeSeries(sroot, resolveOptionsRoot(sroot.toUpperCase()), defs, asOf, oi, seriesOi)));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
           }

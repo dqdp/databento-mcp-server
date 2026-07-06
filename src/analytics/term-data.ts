@@ -214,6 +214,35 @@ export function isTermCached(
   return ready.has(key) || existsSync(diskPath(key)); // in-memory OR persisted (a disk read is ~ms)
 }
 
+/** The day-cached term payload for a (root, day) IF it is already reduced — resolved in memory
+ * (ready) or a VALID persisted file — else null. Unlike getTermData this NEVER triggers a live pull:
+ * on any miss (cold, in-flight, or a corrupt / stale-schema / empty-series disk file that
+ * readTermFromDisk rejects) it returns null. The interactive /series?liquidity path uses it so that
+ * preferring the cached term OI can't accidentally block on a metered pull — it just falls back to
+ * the whole-root path. (isTermCached only checks file PRESENCE, so a present-but-invalid file would
+ * make getTermData do a live pull; this validates the read, closing that gap.) */
+export async function getCachedTermData(
+  root: string,
+  opts: { asOf: string; dataset?: string; maxSeries?: number; maxDays?: number; band?: number },
+): Promise<TermData | null> {
+  const dataset = opts.dataset ?? DEFAULT_DATASET;
+  const maxSeries = Math.min(24, Math.max(1, opts.maxSeries ?? 10));
+  const maxDays = Math.min(800, Math.max(30, opts.maxDays ?? 400));
+  const band = opts.band ?? DEFAULT_BAND;
+  const key = termKey(dataset, resolveOptionsRoot(root.toUpperCase()), opts.asOf, maxSeries, maxDays, band);
+  if (ready.has(key)) {
+    const mem = cache.get(key);
+    if (mem) {
+      try {
+        return await mem; // resolved successfully (ready) — a pure memory hit
+      } catch {
+        /* a rejected-but-still-mapped promise: fall through to the disk read */
+      }
+    }
+  }
+  return readTermFromDisk(key); // schema + non-empty validated, or null; NEVER a live pull
+}
+
 export async function getTermData(
   src: TimeseriesSource,
   root: string,
