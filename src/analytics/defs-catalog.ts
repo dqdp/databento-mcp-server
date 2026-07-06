@@ -72,14 +72,21 @@ export interface SeriesListing {
 }
 
 /** Reduce the catalog defs to a per-series summary for the "first question" (what expirations
- * exist, how many strikes, which is nearest / most-liquid). `oi` (a day-cached OI map) is optional —
- * when present each series' total OI is filled and mostLiquid is chosen. */
+ * exist, how many strikes, which is nearest / most-liquid). OI is optional and may come from either
+ * of two sources: `oi` — a whole-root instrument→OI map (the loadSmileStatic path), summed per
+ * series here; or `seriesOi` — a per-series total OI keyed by `${stem}|${expiration}` (the
+ * day-cached term path, PREFERRED because it's already windowed + cached, so it never needs the
+ * whole-root pull that times out on wide roots). When either is supplied a covered series' total OI
+ * is filled and mostLiquid is chosen among covered series; `seriesOi` wins when both are given.
+ * `seriesOi` covers only the windowed subset, so a series absent from it is left OI-UNKNOWN (no oi
+ * field, excluded from the ranking) rather than shown as 0. */
 export function summarizeSeries(
   root: string,
   optRoot: string,
   defs: DefinitionRec[],
   today: string,
   oi?: Map<number, number>,
+  seriesOi?: Map<string, number>,
 ): SeriesListing {
   const t0 = Date.parse(`${today}T00:00:00Z`);
   type Acc = { stem: string; expiration: string; under: string | null; strikes: Set<number>; oi: number };
@@ -99,19 +106,30 @@ export function summarizeSeries(
   }
   const series: SeriesSummary[] = [...by.values()]
     .sort((x, y) => x.expiration.localeCompare(y.expiration))
-    .map((a) => ({
-      stem: a.stem,
-      expiration: a.expiration,
-      dte: Math.round((Date.parse(`${a.expiration}T00:00:00Z`) - t0) / 86_400_000),
-      quarterly: [3, 6, 9, 12].includes(Number(a.expiration.slice(5, 7))),
-      strikes: a.strikes.size,
-      under: a.under,
-      ...(oi ? { oi: a.oi } : {}),
-    }));
+    .map((a) => {
+      // OI per series. `seriesOi` (day-cached term totals) covers only the windowed subset of
+      // series (nearest maxSeries within maxDays, forwards present), so a series ABSENT from it is
+      // OI-UNKNOWN — it gets NO oi field, NOT a fabricated 0: a 0 would both show a wrong column and
+      // let an uncovered series be (mis)ranked. The whole-root `oi` map covers every series, so
+      // there `a.oi` is always the real total.
+      const total = seriesOi ? seriesOi.get(`${a.stem}|${a.expiration}`) : oi ? a.oi : undefined;
+      return {
+        stem: a.stem,
+        expiration: a.expiration,
+        dte: Math.round((Date.parse(`${a.expiration}T00:00:00Z`) - t0) / 86_400_000),
+        quarterly: [3, 6, 9, 12].includes(Number(a.expiration.slice(5, 7))),
+        strikes: a.strikes.size,
+        under: a.under,
+        ...(total !== undefined ? { oi: total } : {}),
+      };
+    });
   const future = series.filter((s) => s.dte >= 0);
   const nearest = future.length ? future[0].stem : null;
-  const mostLiquid = oi && future.length
-    ? future.reduce((best, s) => ((s.oi ?? 0) > (best.oi ?? 0) ? s : best)).stem
+  // Rank ONLY series whose OI is known; a series the term window didn't cover is unknown, not 0, so
+  // it can neither be starred nor block a covered series from being starred.
+  const ranked = future.filter((s) => s.oi !== undefined);
+  const mostLiquid = ranked.length
+    ? ranked.reduce((best, s) => ((s.oi ?? 0) > (best.oi ?? 0) ? s : best)).stem
     : null;
   return { root: root.toUpperCase(), optionsRoot: optRoot, asOf: today, count: series.length, nearest, mostLiquid, series };
 }
