@@ -6,6 +6,12 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { loadSmileStatic, loadDefsCached, clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
+import { setDefsCacheDir } from '../../../src/analytics/defs-catalog.js';
+import * as _os from 'node:os';
+import * as _path from 'node:path';
+import { promises as _fs } from 'node:fs';
+const SMILE_DEFS = _path.join(_os.tmpdir(), `smile-defs-${process.pid}`);
+setDefsCacheDir(SMILE_DEFS);
 
 const ns = (d: string) => (BigInt(Date.parse(`${d}T00:00:00Z`)) * 1_000_000n).toString();
 const defCsv =
@@ -58,15 +64,14 @@ describe('loadSmileStatic', () => {
     expect(getRange.mock.calls.length).toBe(calls);   // second refresh = pure cache hit
   });
 
-  it('gives up honestly after 5 closed days (empty defs, upstream error unchanged)', async () => {
+  it('gives up honestly after 5 closed days -> throws (asOf + 5 lookbacks, then no definitions)', async () => {
     const getRange = vi.fn(async (req: { schema: string }) =>
       req.schema === 'definition' ? { data: 'instrument_id,raw_symbol\n' } : { data: statCsv });
-    const { defs } = await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05' });
-    expect(defs.length).toBe(0);
+    await expect(loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-05' })).rejects.toThrow(/no definitions/);
     expect(getRange.mock.calls.filter((c) => c[0].schema === 'definition').length).toBe(6); // asOf + 5 lookbacks
   });
 
-  beforeEach(() => clearSmileStaticCache());
+  beforeEach(async () => { clearSmileStaticCache(); await _fs.rm(SMILE_DEFS, { recursive: true, force: true }); });
 
   it('loadDefsCached COALESCES two concurrent same-day callers into ONE definitions pull', async () => {
     const getRange = source();
@@ -76,7 +81,7 @@ describe('loadSmileStatic', () => {
       loadDefsCached({ getRange }, 'ES', { asOf: '2026-06-30' }),
     ]);
     expect(getRange.mock.calls.filter((c) => c[0].schema === 'definition').length).toBe(1); // not 2
-    expect(a).toBe(b);
+    expect(a).toEqual(b); // same data (prune returns a fresh array each call; the 1-pull count above proves coalescing)
   });
 
   it('loadDefsCached does NOT cache a failed pull (next call retries)', async () => {
@@ -104,11 +109,13 @@ describe('loadSmileStatic', () => {
     expect(second.oi.get(201)).toBe(1500);
   });
 
-  it('reloads for a different day (definitions/OI are daily-static)', async () => {
+  it('a new day re-pulls OI/settle but NOT the definitions (defs are the long-lived catalog)', async () => {
     const getRange = source();
-    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-06-30' });
-    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-01' });
-    expect(getRange).toHaveBeenCalledTimes(4); // 2 + 2, distinct days
+    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-06-30' }); // defs(1) + stats(1)
+    await loadSmileStatic({ getRange }, 'ES', { asOf: '2026-07-01' }); // stats(1) — defs served from the catalog
+    expect(getRange).toHaveBeenCalledTimes(3); // was 4 before the catalog: the daily defs re-pull is gone
+    const defCalls = getRange.mock.calls.filter((c) => c[0].schema === 'definition').length;
+    expect(defCalls).toBe(1); // ONE definitions pull across both days
   });
 
   it('keys by root, so different roots do not collide', async () => {

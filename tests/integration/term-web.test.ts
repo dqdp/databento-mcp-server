@@ -12,9 +12,11 @@ import { promises as fs } from 'node:fs';
 import { createSmileServer } from '../../src/server/smile-web.js';
 import { clearTermDataCache, setTermCacheDir } from '../../src/analytics/term-data.js';
 import { clearSmileStaticCache } from '../../src/analytics/smile-cache.js';
+import { setDefsCacheDir } from '../../src/analytics/defs-catalog.js';
 
 const DISK = path.join(os.tmpdir(), `term-web-${process.pid}`);
 setTermCacheDir(DISK);
+setDefsCacheDir(DISK + '-defs');
 afterAll(async () => { await fs.rm(DISK, { recursive: true, force: true }); });
 
 const ns = (d: string) => (BigInt(Date.parse(`${d}T20:00:00Z`)) * 1_000_000n).toString();

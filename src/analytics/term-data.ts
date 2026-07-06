@@ -135,16 +135,20 @@ function termKey(dataset: string, optionsRoot: string, asOf: string, maxSeries: 
 // --- disk persistence: the reduced payload (21KB/root) survives connector restarts, so a
 // restart never re-pulls a day's term structure. Keyed by the SAME termKey (which includes the
 // trading day), so a new day is a natural miss; old files are swept on load. ---
-let cacheDir = process.env.TERM_CACHE_DIR || path.join(os.homedir(), '.cache', 'databento-mcp', 'term');
+// lazy env read (see defs-catalog): a module-load read let the real ~/.cache get test-polluted.
+let cacheDirOverride: string | null = null;
+function cacheDir(): string {
+  return cacheDirOverride ?? process.env.TERM_CACHE_DIR ?? path.join(os.homedir(), '.cache', 'databento-mcp', 'term');
+}
 const SWEEP_MAX_AGE_MS = 5 * 86_400_000; // drop persisted payloads older than 5 days
 
 /** Test hook: point the disk cache at an isolated dir. */
 export function setTermCacheDir(dir: string): void {
-  cacheDir = dir;
+  cacheDirOverride = dir;
 }
 
 function diskPath(key: string): string {
-  return path.join(cacheDir, key.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
+  return path.join(cacheDir(), key.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
 }
 
 async function readTermFromDisk(key: string): Promise<TermData | null> {
@@ -164,7 +168,7 @@ async function readTermFromDisk(key: string): Promise<TermData | null> {
 
 async function writeTermToDisk(key: string, data: TermData): Promise<void> {
   try {
-    await fs.mkdir(cacheDir, { recursive: true });
+    await fs.mkdir(cacheDir(), { recursive: true });
     const p = diskPath(key);
     const tmp = `${p}.${process.pid}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(data));
@@ -178,9 +182,9 @@ async function writeTermToDisk(key: string, data: TermData): Promise<void> {
 export async function sweepTermDiskCache(): Promise<void> {
   try {
     const now = Date.now();
-    for (const f of await fs.readdir(cacheDir)) {
+    for (const f of await fs.readdir(cacheDir())) {
       if (!f.endsWith('.json') && !f.endsWith('.tmp')) continue;
-      const fp = path.join(cacheDir, f);
+      const fp = path.join(cacheDir(), f);
       try {
         const st = await fs.stat(fp);
         // .tmp orphans (a crash between writeFile and rename) are always stale — drop them; .json

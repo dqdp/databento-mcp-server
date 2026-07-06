@@ -7,13 +7,8 @@
  * don't accumulate.
  */
 import type { DefinitionRec } from './chain.js';
-import {
-  INTERACTIVE_PULL_TIMEOUT_MS,
-  loadDailyStats,
-  loadDefinitions,
-  resolveOptionsRoot,
-  type TimeseriesSource,
-} from './pull-chain.js';
+import { INTERACTIVE_PULL_TIMEOUT_MS, loadDailyStats, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
+import { clearDefsCatalog, loadDefsCatalog } from './defs-catalog.js';
 
 export interface SmileStatic {
   defs: DefinitionRec[];
@@ -24,42 +19,18 @@ export interface SmileStatic {
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 64;
-const LOOKBACK_DAYS = 5;   // longest realistic exchange-holiday cluster
 const cache = new Map<string, SmileStatic>();
-const defsCache = new Map<string, Promise<DefinitionRec[]>>();
 
-/** Definitions ONLY, day-cached with the closed-day walk. The 40-60s parent-definitions pull is
- * the expensive shared half; the smile path adds whole-root stats on top, the term path pulls a
- * scoped near-the-money stats window instead — both reuse this so the defs pull happens once/day. */
-export async function loadDefsCached(
+/** Definitions ONLY for a root. Delegates to the LONG-LIVED, root-keyed defs-catalog (persisted +
+ * incrementally refreshed) — definitions are stable reference data, so a new trading day no longer
+ * re-pulls the whole ~37k snapshot; it's served instantly from the catalog. The closed-day walk and
+ * promise-coalescing live in the catalog. Kept as a thin alias so existing callers don't change. */
+export function loadDefsCached(
   src: TimeseriesSource,
   root: string,
   opts: { asOf: string; end?: string; dataset?: string; timeoutMs?: number },
 ): Promise<DefinitionRec[]> {
-  root = resolveOptionsRoot(root);
-  const key = `${opts.dataset ?? DEFAULT_DATASET}|${root}|${opts.asOf}`;
-  const hit = defsCache.get(key);
-  if (hit) return hit;
-  // PROMISE-keyed (mirrors term-data's cache): two concurrent same-day callers — the realistic
-  // case being a /smile poll and a /term cold pull for the same root — coalesce onto ONE 40-60s
-  // parent-definitions pull instead of each running its own.
-  const work = (async () => {
-    // Closed-day lookback: a Saturday after a holiday has an EMPTY [asOf, end) definitions window;
-    // walk asOf back (<= 5 days) to the last day that actually published definitions.
-    let defs = await loadDefinitions(src, root, opts);
-    for (let back = 1; defs.length === 0 && back <= LOOKBACK_DAYS; back++) {
-      const day = new Date(Date.parse(`${opts.asOf}T00:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
-      defs = await loadDefinitions(src, root, { ...opts, asOf: day });
-    }
-    return defs;
-  })();
-  if (defsCache.size >= MAX_ENTRIES) {
-    const oldest = defsCache.keys().next().value;
-    if (oldest !== undefined) defsCache.delete(oldest);
-  }
-  defsCache.set(key, work);
-  work.catch(() => { if (defsCache.get(key) === work) defsCache.delete(key); }); // don't cache a failed pull
-  return work;
+  return loadDefsCatalog(src, root, opts);
 }
 
 /** Load (or reuse) the static definitions + whole-root OI/settlement for a root as-of a day
@@ -91,5 +62,5 @@ export async function loadSmileStatic(
 /** Test hook: drop all cached static pulls. */
 export function clearSmileStaticCache(): void {
   cache.clear();
-  defsCache.clear();
+  clearDefsCatalog();
 }

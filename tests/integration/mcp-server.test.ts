@@ -6,6 +6,9 @@ import {
   type DatabentoMcpClients,
 } from "../../mcp/index.js";
 import { clearSmileStaticCache } from "../../src/analytics/smile-cache.js";
+import { clearTermDataCache } from "../../src/analytics/term-data.js";
+import { clearDefsCatalog } from "../../src/analytics/defs-catalog.js";
+import { promises as _fsT } from "node:fs";
 
 function textPayload(result: any) {
   expect(result.content).toHaveLength(1);
@@ -118,9 +121,15 @@ async function connectTestClient(clients = createMockClients()) {
 }
 
 describe("MCP server integration", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-06-16T12:00:00.000Z"));
+    clearSmileStaticCache();
+    clearDefsCatalog();
+    clearTermDataCache();
+    // the server persists to the env-dir caches (setup.ts isolates them per pid) — clear both
+    if (process.env.DEFS_CACHE_DIR) await _fsT.rm(process.env.DEFS_CACHE_DIR, { recursive: true, force: true });
+    if (process.env.TERM_CACHE_DIR) await _fsT.rm(process.env.TERM_CACHE_DIR, { recursive: true, force: true });
   });
 
   afterEach(() => {
@@ -1100,6 +1109,8 @@ describe("get_futures_options_smile tool", () => {
   });
 
   it("caches the static definitions + OI across same-day calls (parent pulled once)", async () => {
+    clearDefsCatalog(); // the catalog persists across tests by design — reset for this cold-count assertion
+    if (process.env.DEFS_CACHE_DIR) await _fsT.rm(process.env.DEFS_CACHE_DIR, { recursive: true, force: true });
     const clients = createMockClients();
     const getRange = makeGetRange();
     (clients.timeseriesClient as any).getRange = getRange;
