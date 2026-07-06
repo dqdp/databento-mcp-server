@@ -13,6 +13,8 @@ import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
 import { fetchSmileSnapshot, type SmileClients } from '../analytics/smile-snapshot.js';
 import { getTermData, isTermCached, prewarmTerm, prewarmRootsFromEnv, resolveTermNow } from '../analytics/term-data.js';
+import { loadDefsCatalog, summarizeSeries } from '../analytics/defs-catalog.js';
+import { loadSmileStatic } from '../analytics/smile-cache.js';
 import { renderSmileHtml } from '../analytics/smile-html.js';
 
 export interface SmileServerOptions {
@@ -108,6 +110,30 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
+        const sm = url.pathname.match(/^\/series\/([^/]+?)\.json$/);
+        if (sm && (req.method === 'GET' || req.method === 'HEAD')) {
+          // The "first question" listing: what series exist, nearest, count — served INSTANTLY from
+          // the long-lived defs catalog (no daily snapshot re-pull). ?liquidity=1 also ranks by the
+          // day-cached OI (mostLiquid) at the cost of the whole-root OI pull (day-cached after first).
+          try {
+            const sroot = decodeURIComponent(sm[1]);
+            const { asOf, end } = await resolveTermNow(clients.metadataClient);
+            const defs = await loadDefsCatalog(clients.timeseriesClient, sroot, { asOf, end });
+            let oi: Map<number, number> | undefined;
+            if (url.searchParams.get('liquidity')) {
+              try {
+                oi = (await loadSmileStatic(clients.timeseriesClient, sroot, { asOf, end })).oi;
+              } catch {
+                oi = undefined; // best-effort: fall back to nearest-only if the OI pull fails
+              }
+            }
+            send(res, 200, 'application/json',
+              JSON.stringify(summarizeSeries(sroot, resolveOptionsRoot(sroot.toUpperCase()), defs, asOf, oi)));
+          } catch (e) {
+            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
+          }
+          return;
+        }
         const tm = url.pathname.match(/^\/term\/([^/]+?)\.json$/);
         if (tm && (req.method === 'GET' || req.method === 'HEAD')) {
           // Cross-expiration payload for the skill's --term: day-cached (first pull of the day is

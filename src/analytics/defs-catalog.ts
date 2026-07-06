@@ -52,6 +52,70 @@ function diskPath(dataset: string, optRoot: string): string {
   return path.join(cacheDir(), `${dataset}_${optRoot}.json`.replace(/[^A-Za-z0-9._-]/g, '_'));
 }
 
+export interface SeriesSummary {
+  stem: string;
+  expiration: string; // YYYY-MM-DD
+  dte: number;
+  quarterly: boolean; // a Mar/Jun/Sep/Dec expiration
+  strikes: number; // distinct strike count
+  under: string | null;
+  oi?: number; // total OI across the series (only when an OI map is supplied)
+}
+export interface SeriesListing {
+  root: string;
+  optionsRoot: string;
+  asOf: string;
+  count: number;
+  nearest: string | null; // stem of the nearest FUTURE expiration
+  mostLiquid: string | null; // stem of the highest-OI series (null unless OI was supplied)
+  series: SeriesSummary[]; // ascending by expiration
+}
+
+/** Reduce the catalog defs to a per-series summary for the "first question" (what expirations
+ * exist, how many strikes, which is nearest / most-liquid). `oi` (a day-cached OI map) is optional —
+ * when present each series' total OI is filled and mostLiquid is chosen. */
+export function summarizeSeries(
+  root: string,
+  optRoot: string,
+  defs: DefinitionRec[],
+  today: string,
+  oi?: Map<number, number>,
+): SeriesListing {
+  const t0 = Date.parse(`${today}T00:00:00Z`);
+  type Acc = { stem: string; expiration: string; under: string | null; strikes: Set<number>; oi: number };
+  const by = new Map<string, Acc>();
+  for (const d of defs) {
+    if (d.instrument_class !== 'C' && d.instrument_class !== 'P') continue;
+    if (!d.raw_symbol || !d.raw_symbol.includes(' ') || d.strike == null || !d.expiration) continue;
+    const stem = d.raw_symbol.split(' ', 1)[0];
+    const key = `${stem}|${d.expiration}`;
+    let a = by.get(key);
+    if (!a) {
+      a = { stem, expiration: d.expiration, under: d.underlying_symbol ?? null, strikes: new Set(), oi: 0 };
+      by.set(key, a);
+    }
+    a.strikes.add(d.strike);
+    if (oi) a.oi += oi.get(d.instrument_id) ?? 0;
+  }
+  const series: SeriesSummary[] = [...by.values()]
+    .sort((x, y) => x.expiration.localeCompare(y.expiration))
+    .map((a) => ({
+      stem: a.stem,
+      expiration: a.expiration,
+      dte: Math.round((Date.parse(`${a.expiration}T00:00:00Z`) - t0) / 86_400_000),
+      quarterly: [3, 6, 9, 12].includes(Number(a.expiration.slice(5, 7))),
+      strikes: a.strikes.size,
+      under: a.under,
+      ...(oi ? { oi: a.oi } : {}),
+    }));
+  const future = series.filter((s) => s.dte >= 0);
+  const nearest = future.length ? future[0].stem : null;
+  const mostLiquid = oi && future.length
+    ? future.reduce((best, s) => ((s.oi ?? 0) > (best.oi ?? 0) ? s : best)).stem
+    : null;
+  return { root: root.toUpperCase(), optionsRoot: optRoot, asOf: today, count: series.length, nearest, mostLiquid, series };
+}
+
 /** Drop expired series (their expiration is before `asOf`); futures (no strike) are kept. */
 function prune(defs: DefinitionRec[], asOf: string): DefinitionRec[] {
   const t0 = Date.parse(`${asOf}T00:00:00Z`);

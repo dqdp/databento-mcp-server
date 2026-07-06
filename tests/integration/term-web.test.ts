@@ -82,6 +82,16 @@ describe('GET /term/:root.json', () => {
     expect((await r.json()).error).toBeTruthy();
   });
 
+  it('GET /series/:root.json lists the series from the catalog (nearest, count)', async () => {
+    const r = await fetch(`${base}/series/GC.json`);
+    expect(r.status).toBe(200);
+    const s = await r.json();
+    expect(s.optionsRoot).toBe('OG');
+    expect(s.nearest).toBe('OGQ6');
+    expect(s.count).toBe(1);
+    expect(s.mostLiquid).toBeNull(); // no ?liquidity -> instant, OI not pulled
+  });
+
   it('a non-GET method -> 404', async () => {
     const r = await fetch(`${base}/term/GC.json`, { method: 'POST' });
     expect(r.status).toBe(404);

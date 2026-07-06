@@ -15,6 +15,7 @@ import {
   clearDefsCatalog,
   setDefsCacheDir,
   refreshDefsCatalog,
+  summarizeSeries,
 } from '../../../src/analytics/defs-catalog.js';
 
 const DISK = path.join(os.tmpdir(), `defs-cat-${process.pid}`);
@@ -90,6 +91,22 @@ describe('loadDefsCatalog', () => {
     expect(merged.map((d) => d.instrument_id).sort((a, b) => a - b)).toEqual([100, 101, 102, 103]);
     const deltaCall = calls.find((c) => c.start === delta[0]);
     expect(deltaCall).toBeTruthy(); // a scoped delta pull happened, not another full one
+  });
+
+  it('summarizeSeries: nearest / most-liquid / count for the "first question"', async () => {
+    const { getRange } = source();
+    const defs = await loadDefsCatalog({ getRange }, 'GC', { asOf: '2026-07-06', end: '2026-07-06T14:00:00Z' });
+    const oi = new Map<number, number>([[100, 10], [101, 900], [102, 5]]); // 4100 put-side heavy
+    const sum = summarizeSeries('GC', 'OG', defs, '2026-07-06', oi);
+    expect(sum.optionsRoot).toBe('OG');
+    expect(sum.count).toBe(1); // one live series (OGQ6; the expired OGK6 was pruned)
+    expect(sum.nearest).toBe('OGQ6');
+    expect(sum.mostLiquid).toBe('OGQ6');
+    expect(sum.series[0].strikes).toBe(2); // 4000 + 4100 distinct strikes
+    expect(sum.series[0].oi).toBe(915);
+    expect(sum.series[0].quarterly).toBe(true); // Sep expiration
+    // no OI map -> mostLiquid is null (honest: needs the daily OI)
+    expect(summarizeSeries('GC', 'OG', defs, '2026-07-06').mostLiquid).toBeNull();
   });
 
   it('a missing/empty snapshot does NOT persist a junk catalog (rejects, next call retries)', async () => {

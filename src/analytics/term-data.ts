@@ -22,6 +22,7 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { loadDefsCached } from './smile-cache.js';
+import { refreshDefsCatalog } from './defs-catalog.js';
 import { clampNowToAvailable, loadStatsForIds, resolveOptionsRoot, type TimeseriesSource } from './pull-chain.js';
 
 export interface TermStrike {
@@ -414,6 +415,9 @@ export async function prewarmTerm(
   for (const root of roots) {
     try {
       const { asOf, end } = await resolveTermNow(metadataClient);
+      // keep the long-lived defs catalog fresh with a cheap INTRADAY delta merge (window clamped to
+      // today's SOD so it never re-downloads the full snapshot) before the term pull uses it.
+      await refreshDefsCatalog(src, root, { asOf, end, deltaStart: `${asOf}T00:00:00Z` }).catch(() => {});
       await getTermData(src, root, { asOf, end });
       console.error(`[term] prewarmed ${root}`);
     } catch (e) {

@@ -277,16 +277,16 @@ describe('getTermData', () => {
     expect(isTermCached('GC', { asOf: '2026-07-06' })).toBe(false); // a different day: no file
   });
 
-  it('prewarmTerm warms each hot root sequentially (disk-first, best-effort)', async () => {
+  it('prewarmTerm warms each hot root sequentially; a re-run serves the TERM from disk (only the cheap catalog delta re-pulls)', async () => {
     const meta = { getDatasetRange: vi.fn(async () => ({ end: '2026-07-05T14:00:00Z' })) };
-    const { getRange } = source();
+    const { getRange, calls } = source();
     await prewarmTerm({ getRange }, meta, ['GC']);
-    // the hot root is now cached on disk (a real getTermData ran)
-    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true);
-    // a second prewarm makes ZERO new pulls (disk-served)
-    const n = getRange.mock.calls.length;
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true); // term is disk-cached
+    const statsBefore = calls.filter((c) => c.schema === 'statistics').length;
     await prewarmTerm({ getRange }, meta, ['GC']);
-    expect(getRange.mock.calls.length).toBe(n);
+    // the TERM structure is served from disk — no new STATISTICS pull (the expensive part). Only the
+    // catalog's cheap intraday-delta definition pull re-runs to keep the catalog fresh.
+    expect(calls.filter((c) => c.schema === 'statistics').length).toBe(statsBefore);
   });
 
   it('prewarmRootsFromEnv: default hot list vs env override vs empty (off)', () => {
