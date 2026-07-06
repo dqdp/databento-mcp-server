@@ -4,17 +4,26 @@
  */
 
 import * as zlib from "node:zlib";
-import { Agent } from "undici";
+import type { Agent as UndiciAgent } from "undici";
 
 // Databento generates big parent-level responses SERVER-SIDE for minutes (live probe 2026-07-05:
 // whole-root statistics ~6 min on GC) — undici's DEFAULT headers/body timeouts (300s) abort such
 // requests with "terminated" regardless of our per-request AbortSignal. One shared dispatcher
 // raises those engine timeouts; the per-request signal stays the actual deadline.
-const LONG_PULL_DISPATCHER = new Agent({
-  connectTimeout: 30_000,
-  headersTimeout: 600_000,
-  bodyTimeout: 600_000,
-});
+//
+// undici is an OPTIONAL runtime dependency: the standalone skill install runs this SAME compiled
+// file with no node_modules alongside it (see scripts/install-skills.sh), so a hard import would
+// crash every skill script with "Cannot find module 'undici'". Resolve it lazily and fall back to
+// fetch's default dispatcher when it's absent — Node's global fetch IS undici, so only the raised
+// engine timeouts are lost, and the skill's interactive pulls stay well under the 300s default.
+const LONG_PULL_DISPATCHER: UndiciAgent | undefined = (() => {
+  try {
+    const { Agent } = require("undici") as typeof import("undici");
+    return new Agent({ connectTimeout: 30_000, headersTimeout: 600_000, bodyTimeout: 600_000 });
+  } catch {
+    return undefined; // undici not installed (standalone skill) -> default 300s engine timeouts
+  }
+})();
 
 
 /**
@@ -203,9 +212,10 @@ export class DataBentoHTTP {
             "User-Agent": "DataBento-MCP-Server/1.0",
           },
           signal: AbortSignal.timeout(requestOptions?.timeout ?? this.config.timeout),
-          // undici extension (Node's fetch IS undici): lift the 300s engine defaults for long pulls
-          dispatcher: LONG_PULL_DISPATCHER,
-        } as RequestInit & { dispatcher?: Agent });
+          // undici extension (Node's fetch IS undici): lift the 300s engine defaults for long pulls,
+          // but only when undici resolved — the standalone skill runs without it (default dispatcher).
+          ...(LONG_PULL_DISPATCHER ? { dispatcher: LONG_PULL_DISPATCHER } : {}),
+        } as RequestInit & { dispatcher?: UndiciAgent });
 
         if (!response.ok) {
           const errorText = await response.text();
