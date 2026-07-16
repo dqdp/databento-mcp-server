@@ -7,11 +7,18 @@
  * once per (dataset, root, trading day) and every later call is a pure cache hit.
  *
  * PAYLOAD BOUND (2026-07-05): we do NOT pull the whole-root statistics parent (GC = ~37k
- * instruments, minutes -> 503). Instead: cached definitions give every series' strike ladder; a
- * tiny per-underlying settlement pull gives each series' forward; then statistics are pulled ONLY
- * for a PROGRESSIVE strike grid (selectWindowStrikes) — coarsened near the money (drops an over-fine
- * exchange grid like gold's $5), widening into the wings, capped at MAX_STRIKES per series, spanning
- * the full ±`band` width. Fewer strikes -> a faster scoped stats pull, without narrowing the width.
+ * instruments, minutes -> 503). Statistics stay scoped by instrument_id.
+ *
+ * LIVENESS-AWARE SELECTION (2026-07-16, the thin-root fix): stats are pulled for the WHOLE ±band
+ * id set (DEAD instruments return no rows — free; ALIVE ones return their full lookback rows, so
+ * fat-root pull bytes grow by design — gold ≈ 9× — while the request count stays bounded by the
+ * 500-id chunks: ~17 requests / 3 concurrency waves once per day), and THEN the progressive grid (selectWindowStrikes)
+ * runs over the ALIVE strikes only. A liveness-blind geometric grid kept dead fine-grid neighbours
+ * near the ATM and stepped over the live round levels — the live HO smile showed 4 of ~20 tradeable
+ * strikes (466 instruments carried settle+OI on the complete day while the blind 33-strike grid
+ * intersected 4). On an all-alive fine grid (gold's $5) the walk coarsens exactly as before:
+ * dense near the money, widening wings, MAX_STRIKES cap, full ±band width. Dead strikes are never
+ * emitted (a dead payload row poisons the skill's surface buckets).
  *
  * The payload is the compact per-series shape the skill's gather_term consumes through a fetch
  * shim: REAL stems (weekly-vs-quarterly honest), the definition's own `underlying` SYMBOL (never
@@ -50,7 +57,10 @@ export interface TermData {
   series: TermSeries[];
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2; // 2 (2026-07-16): liveness-aware selection — dead strikes are NEVER emitted.
+                           // The bump makes same-day files persisted by the blind-grid code self-heal
+                           // via the disk read-reject (review P2: they would otherwise outlive the deploy
+                           // and serve the 4-strike HO smile for the rest of the trading day).
 
 const DEFAULT_DATASET = 'GLBX.MDP3';
 const MAX_ENTRIES = 32;
@@ -323,26 +333,39 @@ export async function getTermData(
     const fwdById = (await loadStatsForIds(src, underIds, { asOf: opts.asOf, end: opts.end, dataset })).settle;
     lap(`forwards (${underIds.length} underlyings, ${eligible.length} series)`);
 
-    // window each series: dense ±DENSE_HALF strikes around its forward + one strike per surface
-    // bucket (sparse wings). Bounds the pull on fine strike grids (gold $5) — the whole ±25% band
-    // there is hundreds of strikes we never display.
+    // PHASE A — pull stats for EVERY in-band strike id (liveness is unknowable before the pull;
+    // dead ids return no rows, so the wide scope costs requests, not bytes).
     const plan = eligible.map((b) => {
       const F = b.underId != null ? fwdById.get(b.underId) ?? null : null;
-      if (F == null || F <= 0) return { b, F: null as number | null, keptK: [] as number[] };
-      return { b, F, keptK: selectWindowStrikes([...b.byK.keys()], F, band) };
+      if (F == null || F <= 0) return { b, F: null as number | null, bandK: [] as number[], keptK: [] as number[] };
+      const lo = F * (1 - band);
+      const hi = F * (1 + band);
+      const bandK = [...b.byK.keys()].filter((k) => k >= lo && k <= hi).sort((a, z) => a - z);
+      return { b, F, bandK, keptK: [] as number[] };
     });
     const wantIds: number[] = [];
     for (const p of plan) {
-      for (const k of p.keptK) {
+      for (const k of p.bandK) {
         const row = p.b.byK.get(k)!;
         if (row.cId != null) wantIds.push(row.cId);
         if (row.pId != null) wantIds.push(row.pId);
       }
     }
-
-    lap(`windowed ${wantIds.length} strike-ids — pulling stats`);
+    lap(`banded ${wantIds.length} strike-IDS (both legs, alive or dead) — pulling stats`);
     const { oi, settle } = await loadStatsForIds(src, wantIds, { asOf: opts.asOf, end: opts.end, dataset });
     lap(`stats done`);
+
+    // PHASE B — the progressive grid walks the ALIVE strikes only (any leg with a settle or OI):
+    // thin roots keep every live round level; an all-alive fine grid coarsens exactly as before.
+    for (const p of plan) {
+      if (p.F == null) continue;
+      const alive = p.bandK.filter((k) => {
+        const row = p.b.byK.get(k)!;
+        return (row.cId != null && (settle.has(row.cId) || oi.has(row.cId)))
+            || (row.pId != null && (settle.has(row.pId) || oi.has(row.pId)));
+      });
+      p.keptK = selectWindowStrikes(alive, p.F, band);
+    }
 
     const value: TermData = {
       schemaVersion: SCHEMA_VERSION,
@@ -371,9 +394,10 @@ export async function getTermData(
           }),
         })),
     };
+    const keptTotal = value.series.reduce((n, s2) => n + s2.strikes.length, 0);
     console.error(
       `[term] ${key} reduced in ${Math.round((Date.now() - started) / 1000)}s ` +
-        `(${value.series.length} series, ${wantIds.length} strikes pulled)`,
+        `(${value.series.length} series, ${wantIds.length} ids pulled, ${keptTotal} alive strikes kept)`,
     );
     if (value.series.length === 0) {
       // every series dropped (stats outage / holiday with no settlements): a REJECTION, not a

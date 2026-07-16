@@ -249,7 +249,11 @@ export async function loadDailyStats(
 }
 
 const STATS_LOOKBACK_DAYS = 7; // >= the defs closed-day walk (5) so stats always reach the defs' day
-const STATS_ID_CHUNK = 200; // instrument_ids per statistics pull — big chunks + wide concurrency below
+const STATS_ID_CHUNK = 500; // instrument_ids per statistics pull (200->500 2026-07-16: the liveness-aware
+                            // term selection pulls the whole ±band — ~6.5KB of URL worst-case at 500
+                            // ids incl. %2C-encoded commas, under the ~8KB 414 line with ~1.3KB margin;
+                            // proven live by the skill's futhist backfill).
+                            // Big chunks + wide concurrency below
                             // minimize the PULL COUNT (each pull carries a large fixed server-side
                             // latency, badly so on degraded/holiday days), not just the byte volume
 const STATS_ID_CONCURRENCY = 8;

@@ -258,6 +258,69 @@ describe('getTermData', () => {
     expect(t.series.map((s) => s.stem)).toEqual(['OGQ6']);
   });
 
+  it('THIN ROOT (the HO class, live 2026-07-16): liveness-aware selection — the payload carries the ALIVE ' +
+     'strikes (round levels scattered across the band), never a dead fine-grid neighbour', async () => {
+    // Reality on a thin root: the exchange lists a fine grid (hundreds of strikes) but the market
+    // settles/holds OI on a HANDFUL of round levels spread over the band. A liveness-blind geometric
+    // grid keeps dead near-ATM neighbours and steps over the live rounds — the live HO smile showed
+    // 4 of ~20 tradeable strikes. Selection must therefore run over the ALIVE set: stats are pulled
+    // for the WHOLE band (dead ids return no rows — same bytes, a few more requests), then the
+    // progressive walk keeps alive strikes only.
+    const ALIVE_SETTLE = [3800, 4000, 4050, 4100, 4200, 4350, 4600, 5000]; // rounds; 4100 = ATM
+    const OI_ONLY = 4250; // no settlement, but real OI -> ALIVE (any datum counts)
+    const aliveCsv = (ids: number[]): string => {
+      let out = `instrument_id,ts_ref,price,quantity,stat_type\n`;
+      for (const id of ids) {
+        if (id === 77) { out += `77,0,${4100 * NS},0,3\n`; continue; }   // GCQ26 forward
+        if (id === 78) continue;                                          // OGU6's forward missing -> dropped
+        const k = id > 100000 ? id - 100000 : id;
+        if (ALIVE_SETTLE.includes(k)) out += `${id},0,${12 * NS},0,3\n`;
+        else if (k === OI_ONLY && id > 100000) out += `${id},0,0,55,9\n`; // the put leg carries OI only
+      }
+      return out;
+    };
+    const getRange = vi.fn(async (req: { schema: string; symbols: string; stype_in?: string }) => {
+      if (req.schema === 'definition') return { data: defCsv };
+      if (req.schema === 'statistics' && req.stype_in === 'instrument_id') {
+        return { data: aliveCsv(req.symbols.split(',').map(Number)) };
+      }
+      throw new Error(`unexpected ${req.schema}/${req.stype_in}`);
+    });
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    const og = t.series.find((s) => s.stem === 'OGQ6')!;
+    const ks = og.strikes.map((s) => s.k);
+    // every alive strike inside the ±25% band (3075..5125) is IN — including the off-"grid" rounds
+    // a blind selector missed; the OI-only strike counts as alive
+    expect(ks).toEqual([...ALIVE_SETTLE, OI_ONLY].sort((a, b) => a - b));
+    // and NOT ONE dead fine-grid strike rides along (a dead row poisons the surface buckets)
+    for (const s of og.strikes) {
+      expect(s.cSettle != null || s.pSettle != null || s.cOi != null || s.pOi != null).toBe(true);
+    }
+  });
+
+  it('an ALL-DEAD series emits strikes: [] (never the old nearest-ATM dead row) and the payload still caches', async () => {
+    // OGU6's band is entirely dead (no stats for any of its ids); OGQ6 stays alive so the payload
+    // itself is valid. The old code emitted at least the dead ATM row — the exact poison removed.
+    const getRange = vi.fn(async (req: { schema: string; symbols: string; stype_in?: string }) => {
+      if (req.schema === 'definition') return { data: defCsv };
+      if (req.schema === 'statistics' && req.stype_in === 'instrument_id') {
+        const ids = req.symbols.split(',').map(Number);
+        let out = `instrument_id,ts_ref,price,quantity,stat_type\n`;
+        for (const id of ids) {
+          if (id === 77) out += `77,0,${4100 * NS},0,3\n`;      // GCQ26 forward
+          if (id === 78) out += `78,0,${4150 * NS},0,3\n`;      // GCU26 forward (series eligible…)
+          if (id === cId(4100)) out += `${id},0,${52 * NS},0,3\n`; // …but ONLY OGQ6 4100 is alive
+        }
+        return { data: out };
+      }
+      throw new Error(`unexpected ${req.schema}/${req.stype_in}`);
+    });
+    const t = await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' });
+    const ogu = t.series.find((s) => s.stem === 'OGU6')!;
+    expect(ogu.strikes).toEqual([]);                            // all-dead -> empty, not a dead ATM row
+    expect(isTermCached('GC', { asOf: '2026-07-05' })).toBe(true); // still a cacheable payload
+  });
+
   it('PERSISTS the payload to disk: a fresh process (cleared memory) serves it WITHOUT re-pulling', async () => {
     const { getRange } = source();
     await getTermData({ getRange }, 'GC', { asOf: '2026-07-05' }); // cold -> pulls + writes disk
