@@ -138,6 +138,26 @@ export interface BuildChainOpts {
   allExpirations?: string[];
 }
 
+/**
+ * An option book is IV-usable only when it's a genuine two-sided market of bounded width,
+ * relative to the forward. Live-probed failure class (HO, 2026-07-17 ~10:07Z): outside the
+ * liquid session every strike's book was bid $0.0001 (the cabinet minimum) x ask ~$3 (a
+ * market-maker safety quote ~80% of the forward away); the mid of that shell (~$1.58 on a
+ * ~$0.35 option) solved to a uniform ~314% "smile". Such a book carries no price information —
+ * the strike must read as UNQUOTED, at the source, not clamped downstream. One-sided books are
+ * a bound, not a value; crossed books are an auction/indicative state. Real spreads sit orders
+ * of magnitude under the cap (liquid ATM ~0.5% of F; the shells were ~80%), and genuine tiny
+ * deep-OTM books (e.g. 0.0001x0.0003) pass because the cap scales with F, not with the mid.
+ * The FUTURE is deliberately outside this gate (its one-sided mid still anchors the forward).
+ */
+const MAX_OPTION_SPREAD_FRAC_OF_F = 0.1;
+
+function usableOptionQuote(q: QuoteEntry, F: number): boolean {
+  if (q.bid == null || q.ask == null) return false;
+  if (q.ask < q.bid) return false;
+  return q.ask - q.bid <= MAX_OPTION_SPREAD_FRAC_OF_F * F;
+}
+
 function delta25(strikeKeys: Iterable<number>, dl: Map<number, number | null>, target: number, lo: number, hi: number): number | null {
   let best: number | null = null;
   let bestDist = Infinity;
@@ -167,13 +187,23 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
 
   const calls = new Map<number, { iid: number; mid: number }>();
   const puts = new Map<number, { iid: number; mid: number }>();
+  let sawOptionQuote = false;
   for (const [iid, d] of state.defs) {
     if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
     const q = state.quotes.get(iid);
-    if (q) (d.cls === 'C' ? calls : puts).set(d.strike, { iid, mid: q.mid });
+    if (!q) continue;
+    sawOptionQuote = true;
+    if (usableOptionQuote(q, F)) (d.cls === 'C' ? calls : puts).set(d.strike, { iid, mid: q.mid });
   }
   const strikes = [...new Set([...calls.keys(), ...puts.keys()])].sort((a, b) => a - b);
-  if (strikes.length === 0) throw new Error('buildChain: no option quotes yet');
+  if (strikes.length === 0) {
+    throw new Error(
+      sawOptionQuote
+        ? 'buildChain: no usable option quote (books are one-sided, crossed, or wider than ' +
+          `${MAX_OPTION_SPREAD_FRAC_OF_F * 100}% of the forward — placeholder markets, not price discovery)`
+        : 'buildChain: no option quotes yet',
+    );
+  }
 
   // warm-start seeds from the previous chain, per strike
   const seedC = new Map<number, number | null>();

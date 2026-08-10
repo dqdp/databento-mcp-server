@@ -172,3 +172,133 @@ describe('buildChain edge branches', () => {
     expect(c.maxPain).toBe(8000); // the wing strike — impossible under band-limited OI
   });
 });
+
+describe('option quote-quality gate (the HO 6am shell-book class)', () => {
+  // Live-probed 2026-07-17 ~10:07Z (GLBX.MDP3 bbo-1m, raw /1e9): HOU6 quoted a tight, sane book
+  // while EVERY OHU6 2026-08-26 option showed bid $0.0001 (the cabinet minimum) x ask ~$3 (a
+  // market-maker safety quote ~80% of the forward away). The mid of that shell (~$1.58 on a
+  // ~$0.35 option) solved to a uniform ~314% "smile" served verbatim by /smile/:root.json.
+  // A book that wide carries no price information: the strike must read as UNQUOTED.
+  const F_HO = 3.9651; // future bid 3.9640 x ask 3.9662 (tight — mid is the honest forward)
+  const T_HO = 40 / 365; // 2026-07-17 -> 2026-08-26
+
+  const hoState = (optionQuotes: ChainRec[]) => {
+    const s = newState();
+    const base: ChainRec[] = [
+      { type: 'definition', instrument_id: 486417, instrument_class: 'F', strike: null, expiration: '2026-08-26' },
+      { type: 'quote', instrument_id: 486417, bid: 3.964, ask: 3.9662 },
+      { type: 'definition', instrument_id: 42658626, instrument_class: 'C', strike: 3.97, expiration: '2026-08-26' },
+      { type: 'definition', instrument_id: 42831140, instrument_class: 'P', strike: 3.97, expiration: '2026-08-26' },
+      { type: 'definition', instrument_id: 42506345, instrument_class: 'C', strike: 4.17, expiration: '2026-08-26' },
+    ];
+    for (const r of [...base, ...optionQuotes]) applyTick(s, r);
+    return s;
+  };
+
+  it('a shell-wide book (cabinet bid x safety ask) is NOT solved to an IV', () => {
+    // the exact probed books: C39700 0.0001x3.1588, P39700 0.0001x3.1438, C41700 0.0001x3.0647
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: 0.0001, ask: 3.1588 },
+      { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: 3.1438 },
+      { type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 3.0647 },
+    ]);
+    // pre-fix this "built" a chain whose every IV was ~3.1 (314%); post-fix there is no usable
+    // quote at all and the build fails loud with a message DISTINCT from "no option quotes yet"
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+  });
+
+  it('a real tight book still solves; shell-quoted strikes read as unquoted beside it', () => {
+    const m = black76(F_HO, 3.97, T_HO, 0.66, { isCall: true }).price; // ~the settlement-path IV
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: m - 0.005, ask: m + 0.005 },
+      { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: 3.1438 }, // shell put, same strike
+      { type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 3.0647 }, // shell wing call
+    ]);
+    const c = buildChain('OH', s, '2026-08-26', T_HO);
+    expect(c.strikes).toEqual([3.97]); // the shell-quoted 4.17 wing is not a quoted strike
+    expect(c.callIV[0]!).toBeCloseTo(0.66, 2);
+    expect(c.putIV[0]).toBeNull(); // the shell put did not fabricate an IV
+    expect(c.atmIV!).toBeCloseTo(0.66, 2); // atmIV falls back to the one honest leg
+  });
+
+  it('a one-sided book is a bound, not a value — no IV from it', () => {
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: null, ask: 3.1588 }, // ask-only
+      { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: null }, // cabinet bid-only
+    ]);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+  });
+
+  it('a crossed book (auction/indicative state) is not usable', () => {
+    const s = hoState([{ type: 'quote', instrument_id: 42658626, bid: 0.4, ask: 0.3 }]);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+  });
+
+  it('a genuine wide-but-tiny deep-OTM book is KEPT (wings stay honest)', () => {
+    const m = black76(F_HO, 4.17, T_HO, 0.7, { isCall: true }).price; // small, real premium
+    const s = hoState([{ type: 'quote', instrument_id: 42506345, bid: m * 0.7, ask: m * 1.3 }]);
+    const c = buildChain('OH', s, '2026-08-26', T_HO);
+    expect(c.strikes).toEqual([4.17]);
+    expect(c.callIV[0]!).toBeCloseTo(0.7, 1); // 100%-of-mid spread but tiny vs F — usable
+  });
+
+  it('a truly-tiny cabinet book (0.0001 x 0.0003) passes — the cap scales with F, not the mid', () => {
+    const s = hoState([{ type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 0.0003 }]);
+    const c = buildChain('OH', s, '2026-08-26', T_HO);
+    expect(c.strikes).toEqual([4.17]);
+    expect(c.callIV[0]).not.toBeNull(); // 100%-of-mid spread, but honest price discovery at the wing
+  });
+
+  it("a GATED strike's OI still feeds the whole-expiration aggregates", () => {
+    // OI is settlement data, independent of the book's quality — gating a shell QUOTE must not
+    // erase the strike from totals / PCR / max pain (the reducer's whole-expiration invariant).
+    const m = black76(F_HO, 3.97, T_HO, 0.66, { isCall: true }).price;
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: m - 0.005, ask: m + 0.005 }, // real ATM call
+      { type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 3.0647 }, // shell wing call
+    ]);
+    applyTick(s, { type: 'statistics', instrument_id: 42658626, stat_type: 'open_interest', value: 10 });
+    applyTick(s, { type: 'statistics', instrument_id: 42506345, stat_type: 'open_interest', value: 5000 });
+    applyTick(s, { type: 'statistics', instrument_id: 42831140, stat_type: 'open_interest', value: 7000 }); // shell put, unquoted here
+    const c = buildChain('OH', s, '2026-08-26', T_HO);
+    expect(c.strikes).toEqual([3.97]); // the shell strike is unquoted for DISPLAY...
+    expect(c.callOItotal).toBe(5010); // ...but gated/unquoted OI still counts
+    expect(c.putOItotal).toBe(7000);
+    expect(c.pcrOI!).toBeCloseTo(7000 / 5010, 9); // impossible if gating ate the OI maps
+  });
+
+  it('the spread cap is relative to the forward: <=10% of F passes, wider is gated', () => {
+    const mk = (ask: number) => {
+      const s = newState();
+      const recs: ChainRec[] = [
+        { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
+        { type: 'quote', instrument_id: 1, bid: 99.5, ask: 100.5 }, // F = 100
+        { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 100, expiration: EXP },
+        { type: 'quote', instrument_id: 10, bid: 2, ask },
+      ];
+      for (const r of recs) applyTick(s, r);
+      return s;
+    };
+    expect(buildChain('ES', mk(12), EXP, T0).callIV[0]).not.toBeNull(); // spread 10 = 10% of F
+    expect(() => buildChain('ES', mk(12.5), EXP, T0)).toThrow(/usable option quote/); // 10.5%
+  });
+
+  it('zero quotes at all still reads "no option quotes yet" (distinct from all-gated)', () => {
+    const s = hoState([]);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/no option quotes yet/);
+  });
+
+  it('the FUTURE is deliberately outside the gate: a one-sided future still anchors the forward', () => {
+    const s = newState();
+    const recs: ChainRec[] = [
+      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'quote', instrument_id: 1, bid: 7467, ask: null }, // bid-only future
+      { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 7460, expiration: EXP },
+      { type: 'quote', instrument_id: 10, bid: optMid(7460, SIG, true) - 0.5, ask: optMid(7460, SIG, true) + 0.5 },
+    ];
+    for (const r of recs) applyTick(s, r);
+    const c = buildChain('ES', s, EXP, T0);
+    expect(c.spot).toBe(7467);
+    expect(c.callIV[0]!).toBeCloseTo(SIG, 2);
+  });
+});

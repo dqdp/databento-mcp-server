@@ -146,6 +146,40 @@ describe('smile-web server', () => {
     }
   });
 
+  it('live mode: an all-shell book serves the HONEST 503 reason and keeps the one session', async () => {
+    // The HO 6am class: options bid $0.0001 x ask ~80% of F. The gate rejects every strike, so
+    // there is no chain — but the 503 must carry buildChain's reason, not the generic "warming
+    // up" (which mis-reads a routine hours-long market state as a transient), and the session
+    // must stay cached (re-seeding per poll would burn a metered Historical pull + Live socket).
+    let shellBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    for (const oid of [201, 202, 203, 204]) shellBbo += `${oid},1,100000,6000000000000\n`; // 0.0001 x 6000
+    const shellClients = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : shellBbo,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    let consumers = 0;
+    const live = createSmileServer(shellClients, {
+      live: { makeConsumer: () => { consumers++; return { start() {}, stop() {} }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const r1 = await fetch(`${b}/smile/ES.json`);
+      expect(r1.status).toBe(503);
+      expect((await r1.json()).error).toMatch(/usable option quote/); // the honest reason rides
+      const r2 = await fetch(`${b}/smile/ES.json`);
+      expect(r2.status).toBe(503);
+      expect((await r2.json()).error).toMatch(/usable option quote/);
+      expect(consumers).toBe(1); // still ONE session — the all-gated state is not treated as poison
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
   it('live mode dedups concurrent first-polls for one key into a single session (no orphaned socket)', async () => {
     // P1: two overlapping cold polls must not each open (and orphan) an authenticated Live socket.
     let consumers = 0;

@@ -23,6 +23,9 @@ export interface LiveFeedOpts extends SeedOpts {
   onChain: (chain: Chain) => void;
   /** Surfaced for gateway ERROR records (bad symbol, auth/entitlement, rejected subscription). */
   onError?: (err: Error) => void;
+  /** Surfaced (NOT fatal) when a flush can't build a chain — e.g. every option book is gated as
+   * a placeholder shell. Distinct from onError: the session stays alive and heals on later ticks. */
+  onBuildError?: (err: Error) => void;
 }
 
 export class LiveSmileFeed {
@@ -31,20 +34,25 @@ export class LiveSmileFeed {
   private readonly coalescer: Coalescer;
   private readonly onChain: (chain: Chain) => void;
   private readonly onError?: (err: Error) => void;
+  private readonly onBuildError?: (err: Error) => void;
 
   constructor(opts: LiveFeedOpts) {
     this.lc = seedLiveChain(opts);
     this.onChain = opts.onChain;
     this.onError = opts.onError;
-    // Guard the flush: buildChain throws until a forward + option quote exist (Live has no
-    // snapshot-on-subscribe), and an uncaught throw inside the coalescer's setTimeout would
-    // kill the feed. Skip un-buildable flushes silently; the next tick retries.
+    this.onBuildError = opts.onBuildError;
+    // Guard the flush: buildChain throws while the buffer is un-buildable — no forward / no
+    // option quotes yet (Live has no snapshot-on-subscribe), or EVERY option book gated as a
+    // placeholder shell (routine for HOURS pre-RTH on thin roots — the HO 6am class). An
+    // uncaught throw inside the coalescer's setTimeout would kill the feed, so skip the flush
+    // and surface the reason via onBuildError; the next tick retries and heals in place.
     this.coalescer = new Coalescer(opts.coalesceMs ?? 250, () => {
       let chain: Chain;
       try {
         chain = buildLiveChain(this.lc);
-      } catch {
-        return; // buffer not buildable yet (no forward / no quotes) — transient
+      } catch (e) {
+        this.onBuildError?.(e as Error);
+        return;
       }
       this.onChain(chain);
     });

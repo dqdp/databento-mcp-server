@@ -20,6 +20,7 @@ export class LiveSmileSession {
   private readonly consumer: LiveConsumer;
   private latest: Chain | null = null;
   private lastError: string | null = null;
+  private lastBuildError: string | null = null;
 
   constructor(seed: SeedOpts, instrumentIds: number[], makeConsumer: ConsumerFactory, opts: { coalesceMs?: number } = {}) {
     this.feed = new LiveSmileFeed({
@@ -28,15 +29,24 @@ export class LiveSmileSession {
       onChain: (chain) => {
         this.latest = chain;
         this.lastError = null;
+        this.lastBuildError = null;
       },
       onError: (err) => {
         this.lastError = err.message;
       },
+      onBuildError: (err) => {
+        this.lastBuildError = err.message;
+      },
     });
     try {
       this.latest = this.feed.current(); // the seeded chain, before any live tick
-    } catch {
-      this.latest = null; // seed not buildable yet (no forward)
+    } catch (e) {
+      // Seed not buildable YET: no forward, or every option book gated as a placeholder shell
+      // (the HO 6am class — routine for hours pre-RTH). Keep the reason for buildError(); it
+      // must NOT go into lastError — smile-web treats error() as gateway poison (evict + stop),
+      // which would re-seed a metered session per poll all morning.
+      this.latest = null;
+      this.lastBuildError = (e as Error).message;
     }
     this.consumer = makeConsumer((chunk) => this.feed.onData(chunk));
     this.consumer.start(instrumentIds);
@@ -50,6 +60,12 @@ export class LiveSmileSession {
   /** The last gateway error surfaced by the consumer, if any. */
   error(): string | null {
     return this.lastError;
+  }
+
+  /** Why current() is (still) null — the last seed/flush build failure (e.g. all books gated as
+   * shells). Cleared on the first successful build. Distinct from error(): NOT session poison. */
+  buildError(): string | null {
+    return this.lastBuildError;
   }
 
   stop(): void {

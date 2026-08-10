@@ -60,4 +60,35 @@ describe('LiveSmileSession', () => {
     session.stop();
     expect(fake.stop).toHaveBeenCalled();
   });
+
+  // The HO 6am shell-book class: every option book is bid $0.0001 x a safety ask ~80% of the
+  // forward away, so buildChain gates ALL of them and throws. That state is ROUTINE (hours,
+  // every pre-RTH morning on thin roots) — the session must surface the honest reason WITHOUT
+  // touching error() (a non-null error() makes smile-web evict + re-seed per poll: a metered
+  // Historical pull + a fresh Live socket every interval, all morning).
+  const shellSeed: SeedOpts = {
+    ...seed,
+    quotes: [qr(FUT, F), { type: 'quote', instrument_id: 201, bid: 0.0001, ask: 6000, ts: null }, { type: 'quote', instrument_id: 203, bid: 0.0001, ask: 6000, ts: null }],
+  };
+
+  it('an all-gated seed exposes the build failure via buildError(); error() stays null', () => {
+    const fake = { start: vi.fn(), stop: vi.fn() };
+    const session = new LiveSmileSession(shellSeed, [201, 203, FUT], () => fake, { coalesceMs: 50 });
+    expect(session.current()).toBeNull();
+    expect(session.buildError()).toMatch(/usable option quote/);
+    expect(session.error()).toBeNull(); // NOT the gateway-error path — no evict/re-seed loop
+  });
+
+  it('a usable live tick heals the session in place and clears buildError()', () => {
+    let onData: (chunk: Buffer) => void = () => {};
+    const fake = { start: vi.fn(), stop: vi.fn() };
+    const session = new LiveSmileSession(shellSeed, [203], (cb) => { onData = cb; return fake; }, { coalesceMs: 50 });
+    expect(session.current()).toBeNull();
+
+    onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.25, { isCall: true }).price)]));
+    vi.advanceTimersByTime(60);
+    const c = session.current()!;
+    expect(c.callIV[c.strikes.indexOf(7500)]!).toBeCloseTo(0.25, 2);
+    expect(session.buildError()).toBeNull(); // healed — the stale reason must not linger
+  });
 });

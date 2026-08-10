@@ -82,7 +82,11 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     return `${resolveOptionsRoot(root.toUpperCase())}|${normExpiry}|${window ?? ''}`;
   }
 
-  async function liveCurrent(root: string, expiry: string | undefined, window: number | undefined): Promise<Chain | null> {
+  async function liveCurrent(
+    root: string,
+    expiry: string | undefined,
+    window: number | undefined,
+  ): Promise<{ chain: Chain | null; reason: string | null }> {
     const key = sessionKey(root, expiry, window);
     lastPoll.set(key, Date.now());   // mark demand; the idle sweeper stops sessions nobody polls
     let building = sessions.get(key);
@@ -120,7 +124,9 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
       session.stop();
       throw new Error(err);
     }
-    return session.current();
+    // buildError() is the ROUTINE null-chain reason (e.g. every book gated as a placeholder
+    // shell pre-RTH) — surfaced in the 503 body, never treated as session poison like error().
+    return { chain: session.current(), reason: session.buildError() };
   }
 
   const server = http.createServer((req, res) => {
@@ -203,11 +209,12 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
 
         if (isJson) {
           try {
-            const chain = options.live
-              ? await liveCurrent(root, expiry, window)
-              : await fetchSmileSnapshot(clients, root, { expiry, window });
+            let chain: Chain | null;
+            let reason: string | null = null;
+            if (options.live) ({ chain, reason } = await liveCurrent(root, expiry, window));
+            else chain = await fetchSmileSnapshot(clients, root, { expiry, window });
             if (chain) send(res, 200, 'application/json', JSON.stringify(chain));
-            else send(res, 503, 'application/json', JSON.stringify({ error: 'live buffer warming up' }));
+            else send(res, 503, 'application/json', JSON.stringify({ error: reason ?? 'live buffer warming up' }));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
           }
