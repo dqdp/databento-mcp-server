@@ -31,6 +31,13 @@ function l1(iid: number, mid: number): Buffer {
   b.writeBigInt64LE(BigInt(Math.round((mid + 0.5) * 1e9)), 56);
   return b;
 }
+/** An explicit bid x ask book — for quoting a shell the gate must refuse. */
+function l1s(iid: number, bid: number, ask: number): Buffer {
+  const b = Buffer.alloc(80); b[0] = 20; b[1] = 1; b.writeUInt32LE(iid, 4);
+  b.writeBigInt64LE(BigInt(Math.round(bid * 1e9)), 48);
+  b.writeBigInt64LE(BigInt(Math.round(ask * 1e9)), 56);
+  return b;
+}
 
 describe('LiveSmileSession', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -90,5 +97,30 @@ describe('LiveSmileSession', () => {
     const c = session.current()!;
     expect(c.callIV[c.strikes.indexOf(7500)]!).toBeCloseTo(0.25, 2);
     expect(session.buildError()).toBeNull(); // healed — the stale reason must not linger
+  });
+
+  it('a chain that can no longer be rebuilt is held, but marked STALE', () => {
+    let onData: (chunk: Buffer) => void = () => {};
+    const fake = { start: vi.fn(), stop: vi.fn() };
+    const session = new LiveSmileSession(shellSeed, [203], (cb) => { onData = cb; return fake; }, { coalesceMs: 50 });
+
+    // one real tick builds a chain
+    onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.25, { isCall: true }).price)]));
+    vi.advanceTimersByTime(60);
+    expect(session.current()).not.toBeNull();
+    expect(session.stale()).toBe(false);
+
+    // ...then the book degenerates into a shell: the flush is gated, so no NEW chain is built.
+    // Keeping the old one is right; presenting it as current is not.
+    onData(l1s(203, 0.0001, 3.1588));   // prelude is a stream header — sent once, above
+    vi.advanceTimersByTime(60);
+    expect(session.current()).not.toBeNull();      // still served — better than nothing
+    expect(session.stale()).toBe(true);            // ...but no longer passes for fresh
+    expect(session.buildError()).toMatch(/usable option quote/);
+
+    // a usable tick clears it again
+    onData(l1(203, black76(F, 7500, T, 0.3, { isCall: true }).price));
+    vi.advanceTimersByTime(60);
+    expect(session.stale()).toBe(false);
   });
 });

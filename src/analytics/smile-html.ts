@@ -64,11 +64,14 @@ export function renderSmileHtml(chain: Chain, opts: SmileHtmlOpts = {}): string 
   if (LIVE) {
     var badge = document.getElementById('livebadge');
     var ivSel = document.getElementById('iv');
-    var last = 0, err = null, timer = null, period = LIVE.interval, busy = false;
+    var last = 0, err = null, timer = null, period = LIVE.interval, busy = false, stale = null;
     function paint(){
       if (!badge) return;
       if (err){ badge.className='chip live stale'; badge.textContent='LIVE · '+err; return; }
       if (!last){ badge.className='chip live'; badge.textContent='LIVE · connecting…'; return; }
+      // A held chain that no longer rebuilds must never wear the "updated Ns ago" clock: that
+      // clock times OUR fetch, not the prices, so it would date stale books to this second.
+      if (stale){ badge.className='chip live stale'; badge.textContent='STALE · '+stale; return; }
       badge.className='chip live';
       badge.textContent='LIVE · updated '+Math.round((Date.now()-last)/1000)+'s ago · every '+period+'s';
     }
@@ -78,7 +81,8 @@ export function renderSmileHtml(chain: Chain, opts: SmileHtmlOpts = {}): string 
       fetch(LIVE.url, {cache:'no-store'}).then(function(r){
         if(!r.ok) return r.json().then(function(j){ throw new Error(j && j.error ? j.error : ('HTTP '+r.status)); });
         return r.json();
-      }).then(function(d){ applyChain(d.chain || d); last=Date.now(); err=null; paint(); })
+      }).then(function(d){ var c=d.chain||d; applyChain(c); last=Date.now(); err=null;
+                             stale = c.stale ? ((''+(c.staleReason||'not updating')).slice(0,60)) : null; paint(); })
         .catch(function(e){ err=(''+e.message).slice(0,80); paint(); })
         .finally(function(){ busy=false; });
     }

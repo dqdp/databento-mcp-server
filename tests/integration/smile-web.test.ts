@@ -146,6 +146,75 @@ describe('smile-web server', () => {
     }
   });
 
+  it('snapshot mode: an all-shell book DEGRADES to a quote-less chain, not a failed call', async () => {
+    // The gate has nothing to say about OI, PCR, max pain or the expirations list — those come
+    // from definitions + settlement statistics. Failing the whole call over unusable QUOTES
+    // threw them away too, for a market state that lasts hours.
+    let shellBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    for (const oid of [201, 202, 203, 204]) shellBbo += `${oid},1,100000,6000000000000\n`;
+    const shellClients = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : shellBbo,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    const s = createSmileServer(shellClients);
+    await new Promise<void>((r) => s.listen(0, r));
+    try {
+      const res = await fetch(`http://localhost:${(s.address() as AddressInfo).port}/smile/ES.json`);
+      expect(res.status).toBe(200);
+      const c = await res.json();
+      expect(c.strikes).toEqual([]);          // no strike carries a usable price
+      expect(c.atmIV).toBeNull();
+      expect(c.nGated).toBe(4);               // ...and the page can say WHY it is empty
+      expect(c.expirations).toContain(EXP);   // the quote-independent half survives
+      expect(c.callOItotal).toBeGreaterThan(0);
+      expect(c.maxPain).toBeGreaterThan(0);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('live mode: a chain that stops rebuilding is served MARKED stale, not as fresh', async () => {
+    // Once a chain exists, an all-gated flush no longer produces a 503 — current() still
+    // returns it. Serving it is right; serving it silently is not: the page's badge clocks
+    // the client's own fetch, so an hours-old smile would read as "updated 1s ago".
+    const preludeBytes = () => { const b = Buffer.alloc(8); b.write('DBN', 0, 'ascii'); b[3] = 2; b.writeUInt32LE(0, 4); return b; };
+    const book = (iid: number, bid: number, ask: number) => {
+      const b = Buffer.alloc(80); b[0] = 20; b[1] = 1; b.writeUInt32LE(iid, 4);
+      b.writeBigInt64LE(BigInt(Math.round(bid * 1e9)), 48);
+      b.writeBigInt64LE(BigInt(Math.round(ask * 1e9)), 56);
+      return b;
+    };
+    let feedOnData: (chunk: Buffer) => void = () => {};
+    const live = createSmileServer(clients, {
+      live: { makeConsumer: (cb) => { feedOnData = cb; return { start() {}, stop() {} }; }, coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      const fresh = await (await fetch(`${b}/smile/ES.json`)).json();
+      expect(fresh.spot).toBe(F);
+      expect(fresh.stale).toBeUndefined();   // a live chain carries no staleness marker
+
+      // every option book degenerates into a cabinet-bid shell
+      feedOnData(preludeBytes());
+      for (const oid of [201, 202, 203, 204]) feedOnData(book(oid, 0.0001, 6000));
+      await new Promise((r) => setTimeout(r, 60));
+
+      const res = await fetch(`${b}/smile/ES.json`);
+      expect(res.status).toBe(200);          // the last good chain is better than nothing
+      const held = await res.json();
+      expect(held.spot).toBe(F);
+      expect(held.stale).toBe(true);
+      expect(held.staleReason).toMatch(/usable option quote/);
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
   it('live mode: an all-shell book serves the HONEST 503 reason and keeps the one session', async () => {
     // The HO 6am class: options bid $0.0001 x ask ~80% of F. The gate rejects every strike, so
     // there is no chain — but the 503 must carry buildChain's reason, not the generic "warming

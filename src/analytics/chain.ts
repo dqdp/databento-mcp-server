@@ -47,6 +47,11 @@ interface QuoteEntry {
   bid: number | null;
   ask: number | null;
   mid: number;
+  /** This book's own timestamp. Carried per quote because the chain's `asOf` must be the
+   * vintage of the books that were USED: a gated shell ticking hours later moved the global
+   * clock while the IVs stayed frozen on old prints, so the smile advertised a freshness it
+   * did not have. */
+  ts: string | null;
 }
 
 export interface ChainState {
@@ -74,7 +79,7 @@ export function applyTick(state: ChainState, rec: ChainRec): ChainState {
   } else if (rec.type === 'quote') {
     const m = mid(rec.bid, rec.ask);
     if (m != null) {
-      state.quotes.set(rec.instrument_id, { bid: rec.bid, ask: rec.ask, mid: m });
+      state.quotes.set(rec.instrument_id, { bid: rec.bid, ask: rec.ask, mid: m, ts: rec.ts ?? null });
       if (rec.ts) state.lastTs = rec.ts;
     }
   } else if (rec.type === 'statistics' && rec.stat_type === 'open_interest') {
@@ -99,6 +104,14 @@ export interface Chain {
   spot: number;
   spotEstimated: boolean;
   atmStrike: number;
+  /** Whether `atmStrike` is genuinely AT the money — i.e. the nearest usable strike sits
+   * within one listed strike-step of the forward. False means the near-money books were gated
+   * and only a wing survived: `atmStrike` is then merely the nearest survivor, and the
+   * at-the-money figures below are withheld rather than filled from that wing. */
+  atmNearForward: boolean;
+  /** Option books excluded by the usability gate (one-sided, crossed, cabinet-bid, or wider
+   * than the forward cap). A thin smile and a gate-thinned smile look identical without it. */
+  nGated: number;
   atmIV: number | null;
   skew25: number | null;
   call25IV: number | null;
@@ -136,6 +149,14 @@ export interface BuildChainOpts {
    * consumer can see the other expirations and offer to switch. Omitted -> derive from state.
    */
   allExpirations?: string[];
+  /**
+   * Return a DEGRADED chain (no strikes, null IVs) instead of throwing when every option book
+   * is unusable. The quote-independent half — OI totals, PCR, max pain, the expirations list —
+   * comes from definitions and settlement statistics, which the gate has nothing to say about;
+   * failing the whole call threw it away too. The LIVE path leaves this off on purpose: there
+   * a flush that cannot be built must be skipped and retried, not published.
+   */
+  allowUnquoted?: boolean;
 }
 
 /**
@@ -152,9 +173,21 @@ export interface BuildChainOpts {
  */
 const MAX_OPTION_SPREAD_FRAC_OF_F = 0.1;
 
+/**
+ * ...and the forward cap ALONE is not enough, because it is keyed to the wrong quantity. A
+ * fair ATM premium is ~0.4·F·σ·√T, so on a short-dated or low-vol series the cap sits many
+ * times above any honest price: at F=82 the cap is $8.20 while a 40-DTE ATM call is ~$2.50,
+ * and a 0.0001 x 5.00 shell walks under it. What actually identifies the class is the BID: a
+ * cabinet-minimum bid against a safety ask is a market in name only, at any scale. This
+ * ratio test is scale-free, so it keeps the genuine tiny deep-OTM book the cap was written to
+ * protect (0.0001 x 0.0003 — a bid worth a third of the ask) while refusing 0.0001 x 3.
+ */
+const MIN_BID_FRAC_OF_ASK = 0.01;
+
 function usableOptionQuote(q: QuoteEntry, F: number): boolean {
   if (q.bid == null || q.ask == null) return false;
   if (q.ask < q.bid) return false;
+  if (q.ask > 0 && q.bid < MIN_BID_FRAC_OF_ASK * q.ask) return false;
   return q.ask - q.bid <= MAX_OPTION_SPREAD_FRAC_OF_F * F;
 }
 
@@ -187,22 +220,83 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
 
   const calls = new Map<number, { iid: number; mid: number }>();
   const puts = new Map<number, { iid: number; mid: number }>();
+  const listedStrikes: number[] = [];
   let sawOptionQuote = false;
+  let nGated = 0;
+  // `asOf` is built from the books that ACTUALLY entered the chain — the forward's, plus each
+  // surviving option's. A gated shell must not lend its clock to prices it did not set.
+  const usedTs: string[] = [];
+  const fq = state.futureId != null ? state.quotes.get(state.futureId) : undefined;
+  if (fq?.ts) usedTs.push(fq.ts);
   for (const [iid, d] of state.defs) {
     if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
+    listedStrikes.push(d.strike);
     const q = state.quotes.get(iid);
     if (!q) continue;
     sawOptionQuote = true;
-    if (usableOptionQuote(q, F)) (d.cls === 'C' ? calls : puts).set(d.strike, { iid, mid: q.mid });
+    if (usableOptionQuote(q, F)) {
+      (d.cls === 'C' ? calls : puts).set(d.strike, { iid, mid: q.mid });
+      if (q.ts) usedTs.push(q.ts);
+    } else {
+      nGated++;
+    }
   }
+  const asOf = usedTs.length ? usedTs.reduce((a, b) => (a >= b ? a : b)) : state.lastTs;
   const strikes = [...new Set([...calls.keys(), ...puts.keys()])].sort((a, b) => a - b);
+  // The LISTED strike nearest the forward — a fact about the definitions, independent of any
+  // quote. Stands in for the at-the-money anchor wherever the quoted set cannot supply one.
+  const atmListed = listedStrikes.length
+    ? listedStrikes.reduce((best, k) => (Math.abs(k - F) < Math.abs(best - F) ? k : best), listedStrikes[0])
+    : F;
+
+  // OI aggregates (totals, PCR, max pain) over the FULL expiration, independent of which
+  // strikes were quoted — the quote pull may be narrowed to a band around the forward, but OI
+  // is loaded for the whole chain. Deriving these from the quoted band only would band-clamp
+  // max pain and skew PCR. Per-strike display arrays (callOI/putOI, below) stay windowed.
+  const allCoi = new Map<number, number>();
+  const allPoi = new Map<number, number>();
+  for (const [iid, d] of state.defs) {
+    if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
+    const v = state.oi.get(iid);
+    if (v == null) continue;
+    const m = d.cls === 'C' ? allCoi : allPoi;
+    m.set(d.strike, (m.get(d.strike) ?? 0) + v);
+  }
+  let coi = 0;
+  let poi = 0;
+  for (const v of allCoi.values()) coi += v;
+  for (const v of allPoi.values()) poi += v;
+  const pcrOI = coi ? poi / coi : null;
+
+  const oiStrikes = [...new Set([...allCoi.keys(), ...allPoi.keys()])].sort((a, b) => a - b);
+  const payout = (Kp: number): number => {
+    let total = 0;
+    for (const [K, v] of allCoi) if (K < Kp) total += v * (Kp - K);
+    for (const [K, v] of allPoi) if (K > Kp) total += v * (K - Kp);
+    return total;
+  };
+  const maxPain = oiStrikes.length ? oiStrikes.reduce((best, k) => (payout(k) < payout(best) ? k : best), oiStrikes[0]) : atmListed;
+
+  const exps =
+    opts.allExpirations ??
+    [...new Set([...state.defs.values()].filter((d) => d.cls === 'C' || d.cls === 'P').map((d) => d.expiration))].sort();
+
   if (strikes.length === 0) {
-    throw new Error(
-      sawOptionQuote
-        ? 'buildChain: no usable option quote (books are one-sided, crossed, or wider than ' +
-          `${MAX_OPTION_SPREAD_FRAC_OF_F * 100}% of the forward — placeholder markets, not price discovery)`
-        : 'buildChain: no option quotes yet',
-    );
+    const why = sawOptionQuote
+      ? 'buildChain: no usable option quote (books are one-sided, crossed, or wider than ' +
+        `${MAX_OPTION_SPREAD_FRAC_OF_F * 100}% of the forward — placeholder markets, not price discovery)`
+      : 'buildChain: no option quotes yet';
+    if (!opts.allowUnquoted) throw new Error(why);
+    // Degraded: everything the gate cannot speak to is still true and still worth returning.
+    return {
+      symbol, expiration, dte: Math.max(0, Math.round(T * 365)), asOf, spot: F, spotEstimated: false,
+      atmStrike: atmListed, atmNearForward: false, nGated, atmIV: null, skew25: null,
+      call25IV: null, put25IV: null, call25Strike: null, put25Strike: null,
+      pcrOI, pcrVol: null, callOItotal: coi, putOItotal: poi, maxPain,
+      nContracts: 0, nExpirations: exps.length, expirations: exps, window,
+      strikes: [], callIV: [], putIV: [], callOI: [], putOI: [],
+      callDelta: [], putDelta: [], callVol: [], putVol: [],
+    };
   }
 
   // warm-start seeds from the previous chain, per strike
@@ -248,58 +342,41 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   const ai = strikes.indexOf(atm);
   const win = strikes.slice(Math.max(0, ai - window), Math.min(strikes.length, ai + window + 1));
 
+  // Absolute spreads are widest AT the money, so a thin session gates the near-money books
+  // first and leaves a wing standing. Picking the nearest SURVIVOR then publishes a deep-OTM
+  // IV in a card labelled "ATM IV". The yardstick is the product's OWN strike grid, not a
+  // percentage: you can never be closer to F than the nearest listed strike, so one step is
+  // the tightest honest tolerance — and anything beyond it is a wing, not the money.
+  const grid = [...new Set(listedStrikes)].sort((a, b) => a - b);
+  let step = Infinity;
+  for (let i = 1; i < grid.length; i++) step = Math.min(step, grid[i] - grid[i - 1]);
+  if (!Number.isFinite(step)) step = 0.02 * F; // a single listed strike: fall back to 2% of F
+  const atmNearForward = Math.abs(atm - F) <= step;
+
   const atmCiv = civ.get(atm) ?? null;
   const atmPiv = piv.get(atm) ?? null;
-  const atmIV = atmCiv != null && atmPiv != null ? (atmCiv + atmPiv) / 2 : (atmCiv ?? atmPiv);
+  const atmIVraw = atmCiv != null && atmPiv != null ? (atmCiv + atmPiv) / 2 : (atmCiv ?? atmPiv);
+  const atmIV = atmNearForward ? atmIVraw : null;
 
   // 25-delta skew over the whole expiration
   const c25 = delta25(calls.keys(), cdl, 0.25, 0, 1);
   const p25 = delta25(puts.keys(), pdl, -0.25, -1, 0);
   const call25IV = c25 != null ? civ.get(c25) ?? null : null;
   const put25IV = p25 != null ? piv.get(p25) ?? null : null;
-  const skew25 = call25IV != null && put25IV != null ? put25IV - call25IV : null;
+  const skew25 = atmNearForward && call25IV != null && put25IV != null ? put25IV - call25IV : null;
 
-  // OI aggregates (totals, PCR, max pain) over the FULL expiration, independent of which
-  // strikes were quoted — the quote pull may be narrowed to a band around the forward, but OI
-  // is loaded for the whole chain. Deriving these from the quoted band only would band-clamp
-  // max pain and skew PCR. Per-strike display arrays (callOI/putOI, below) stay windowed.
-  const allCoi = new Map<number, number>();
-  const allPoi = new Map<number, number>();
-  for (const [iid, d] of state.defs) {
-    if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
-    const v = state.oi.get(iid);
-    if (v == null) continue;
-    const m = d.cls === 'C' ? allCoi : allPoi;
-    m.set(d.strike, (m.get(d.strike) ?? 0) + v);
-  }
-  let coi = 0;
-  let poi = 0;
-  for (const v of allCoi.values()) coi += v;
-  for (const v of allPoi.values()) poi += v;
-  const pcrOI = coi ? poi / coi : null;
-
-  const oiStrikes = [...new Set([...allCoi.keys(), ...allPoi.keys()])].sort((a, b) => a - b);
-  const payout = (Kp: number): number => {
-    let total = 0;
-    for (const [K, v] of allCoi) if (K < Kp) total += v * (Kp - K);
-    for (const [K, v] of allPoi) if (K > Kp) total += v * (K - Kp);
-    return total;
-  };
-  const maxPain = oiStrikes.length ? oiStrikes.reduce((best, k) => (payout(k) < payout(best) ? k : best), oiStrikes[0]) : atm;
-
-  const exps =
-    opts.allExpirations ??
-    [...new Set([...state.defs.values()].filter((d) => d.cls === 'C' || d.cls === 'P').map((d) => d.expiration))].sort();
   const col = (m: Map<number, number | null>): (number | null)[] => win.map((K) => m.get(K) ?? null);
 
   return {
     symbol,
     expiration,
     dte: Math.max(0, Math.round(T * 365)),
-    asOf: state.lastTs,
+    asOf,
     spot: F,
     spotEstimated: false,
     atmStrike: atm,
+    atmNearForward,
+    nGated,
     atmIV,
     skew25,
     call25IV,

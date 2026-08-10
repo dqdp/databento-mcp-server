@@ -68,6 +68,17 @@ export class LiveSmileSession {
     return this.lastBuildError;
   }
 
+  /**
+   * True when current() is serving a chain that can NO LONGER be rebuilt — the books have
+   * degenerated into shells since it was built. Holding the last good chain beats serving
+   * nothing, but it must not pass for a live one: the page's badge clocks the CLIENT's own
+   * fetch, so without this flag an hours-old smile reads as "updated 2s ago". Cleared by the
+   * first flush that builds.
+   */
+  stale(): boolean {
+    return this.latest != null && this.lastBuildError != null;
+  }
+
   stop(): void {
     this.consumer.stop();
     this.feed.stop();

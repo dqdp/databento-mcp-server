@@ -302,3 +302,100 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
     expect(c.callIV[0]!).toBeCloseTo(SIG, 2);
   });
 });
+
+// The gate introduced states the surrounding code did not model: a chain whose clock keeps
+// advancing on quotes the gate threw away, an all-gated build that discards the
+// quote-independent half of the chain, an "ATM" that drifted onto a surviving wing, and a
+// cap keyed to the forward that a cheap option's shell slips straight under.
+describe('buildChain — what the gate must not break', () => {
+  const F_HO = 3.9651;
+  const T_HO = 40 / 365;
+  const EXP_HO = '2026-08-26';
+  const hoState = (optionQuotes: ChainRec[]) => {
+    const s = newState();
+    const base: ChainRec[] = [
+      { type: 'definition', instrument_id: 486417, instrument_class: 'F', strike: null, expiration: EXP_HO },
+      { type: 'quote', instrument_id: 486417, bid: 3.964, ask: 3.9662, ts: '2026-07-17T10:00:00Z' },
+      { type: 'definition', instrument_id: 42658626, instrument_class: 'C', strike: 3.97, expiration: EXP_HO },
+      { type: 'definition', instrument_id: 42831140, instrument_class: 'P', strike: 3.97, expiration: EXP_HO },
+      { type: 'definition', instrument_id: 42506345, instrument_class: 'C', strike: 4.17, expiration: EXP_HO },
+      { type: 'statistics', instrument_id: 42658626, stat_type: 'open_interest', value: 400 },
+      { type: 'statistics', instrument_id: 42831140, stat_type: 'open_interest', value: 900 },
+    ];
+    for (const r of [...base, ...optionQuotes]) applyTick(s, r);
+    return s;
+  };
+  const tightCall = (sig = 0.66) => black76(F_HO, 3.97, T_HO, sig, { isCall: true }).price;
+
+  it('asOf is the vintage of the quotes that were USED, not of a gated shell that ticked later', () => {
+    const m = tightCall();
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: m - 0.005, ask: m + 0.005, ts: '2026-07-17T09:55:00Z' },
+      // the shell ticks HOURS later and is gated — it must not pass for freshness
+      { type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 3.0647, ts: '2026-07-17T13:40:00Z' },
+    ]);
+    const c = buildChain('OH', s, EXP_HO, T_HO);
+    expect(c.asOf).toBe('2026-07-17T10:00:00Z'); // the newest USED book (the future's), not 13:40
+  });
+
+  it('an all-gated build can DEGRADE instead of failing the whole call', () => {
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: 0.0001, ask: 3.1588 },
+      { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: 3.1438 },
+    ]);
+    expect(() => buildChain('OH', s, EXP_HO, T_HO)).toThrow(/usable option quote/); // live: unchanged
+    const c = buildChain('OH', s, EXP_HO, T_HO, { allowUnquoted: true });
+    expect(c.strikes).toEqual([]);
+    expect(c.atmIV).toBeNull();
+    expect(c.nContracts).toBe(0);
+    // the half the gate has nothing to say about survives: it comes from defs + statistics
+    expect(c.callOItotal).toBe(400);
+    expect(c.putOItotal).toBe(900);
+    expect(c.pcrOI).toBeCloseTo(900 / 400, 6);
+    expect(c.maxPain).toBeGreaterThan(0);
+    expect(c.expirations).toContain(EXP_HO);
+    expect(c.nGated).toBe(2);
+  });
+
+  it('a surviving WING is not published as ATM when the near-money books were gated', () => {
+    const wing = black76(F_HO, 4.17, T_HO, 0.7, { isCall: true }).price;
+    const s = hoState([
+      { type: 'quote', instrument_id: 42658626, bid: 0.20, ask: 0.70 },  // near-money, gated (wide)
+      { type: 'quote', instrument_id: 42831140, bid: 0.20, ask: 0.70 },  // ditto
+      { type: 'quote', instrument_id: 42506345, bid: wing - 0.002, ask: wing + 0.002 }, // wing survives
+    ]);
+    const c = buildChain('OH', s, EXP_HO, T_HO);
+    expect(c.strikes).toEqual([4.17]);
+    expect(c.atmNearForward).toBe(false);
+    expect(c.atmIV).toBeNull();   // 4.17 is 5% out — its IV is a wing IV, not "ATM IV"
+    expect(c.skew25).toBeNull();
+  });
+
+  it('a survivor one strike-step from the forward still reports a real ATM', () => {
+    const m = tightCall();
+    const s = hoState([{ type: 'quote', instrument_id: 42658626, bid: m - 0.005, ask: m + 0.005 }]);
+    const c = buildChain('OH', s, EXP_HO, T_HO);
+    expect(c.atmNearForward).toBe(true);
+    expect(c.atmIV!).toBeCloseTo(0.66, 2);
+  });
+
+  it('a cabinet bid is gated even when the spread fits UNDER the forward cap', () => {
+    // WTI scale: F=82 -> the 10%-of-F cap is $8.20, while a fair 40-DTE ATM premium is ~$2.5.
+    // A 0.0001 x 5.00 shell slips under the cap; it is still a bid of nothing.
+    const s = newState();
+    for (const r of [
+      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP_HO },
+      { type: 'quote', instrument_id: 1, bid: 81.99, ask: 82.01 },
+      { type: 'definition', instrument_id: 2, instrument_class: 'C', strike: 82, expiration: EXP_HO },
+      { type: 'quote', instrument_id: 2, bid: 0.0001, ask: 5.0 },
+    ] as ChainRec[]) applyTick(s, r);
+    expect(() => buildChain('LO', s, EXP_HO, T_HO)).toThrow(/usable option quote/);
+  });
+
+  it('a genuinely tiny two-sided wing still passes (the cap is not a bid floor in dollars)', () => {
+    const s = hoState([{ type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 0.0003 }]);
+    const c = buildChain('OH', s, EXP_HO, T_HO, { allowUnquoted: true });
+    expect(c.strikes).toEqual([4.17]); // kept: 0.0001 is 33% of the ask, a real market
+    expect(c.nGated).toBe(0);
+  });
+});

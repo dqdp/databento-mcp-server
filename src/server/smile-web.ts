@@ -32,7 +32,7 @@ export const MAX_LIVE_SESSIONS = 32;
 function placeholder(root: string): Chain {
   return {
     symbol: resolveOptionsRoot(root.toUpperCase()), expiration: '…', dte: 0, asOf: null, spot: 0,
-    spotEstimated: false, atmStrike: 0, atmIV: null, skew25: null, call25IV: null, put25IV: null,
+    spotEstimated: false, atmStrike: 0, atmNearForward: false, nGated: 0, atmIV: null, skew25: null, call25IV: null, put25IV: null,
     call25Strike: null, put25Strike: null, pcrOI: null, pcrVol: null, callOItotal: 0, putOItotal: 0,
     maxPain: 0, nContracts: 0, nExpirations: 0, expirations: [], window: 0, strikes: [], callIV: [],
     putIV: [], callOI: [], putOI: [], callDelta: [], putDelta: [], callVol: [], putVol: [],
@@ -86,7 +86,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     root: string,
     expiry: string | undefined,
     window: number | undefined,
-  ): Promise<{ chain: Chain | null; reason: string | null }> {
+  ): Promise<{ chain: Chain | null; reason: string | null; stale: boolean }> {
     const key = sessionKey(root, expiry, window);
     lastPoll.set(key, Date.now());   // mark demand; the idle sweeper stops sessions nobody polls
     let building = sessions.get(key);
@@ -124,9 +124,12 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
       session.stop();
       throw new Error(err);
     }
-    // buildError() is the ROUTINE null-chain reason (e.g. every book gated as a placeholder
-    // shell pre-RTH) — surfaced in the 503 body, never treated as session poison like error().
-    return { chain: session.current(), reason: session.buildError() };
+    // buildError() is the ROUTINE reason a flush produced nothing (e.g. every book gated as a
+    // placeholder shell pre-RTH) — never treated as session poison like error(). It answers two
+    // different questions: WHY there is no chain yet (the 503 body), and — once a chain exists —
+    // why the one we hold is no longer being rebuilt. Both must reach the client; a held chain
+    // served bare would be read as live, because the page's badge clocks its own fetch.
+    return { chain: session.current(), reason: session.buildError(), stale: session.stale() };
   }
 
   const server = http.createServer((req, res) => {
@@ -211,9 +214,13 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
           try {
             let chain: Chain | null;
             let reason: string | null = null;
-            if (options.live) ({ chain, reason } = await liveCurrent(root, expiry, window));
+            let stale = false;
+            if (options.live) ({ chain, reason, stale } = await liveCurrent(root, expiry, window));
             else chain = await fetchSmileSnapshot(clients, root, { expiry, window });
-            if (chain) send(res, 200, 'application/json', JSON.stringify(chain));
+            if (chain) {
+              const body = stale ? { ...chain, stale: true, staleReason: reason } : chain;
+              send(res, 200, 'application/json', JSON.stringify(body));
+            }
             else send(res, 503, 'application/json', JSON.stringify({ error: reason ?? 'live buffer warming up' }));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));

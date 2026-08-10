@@ -438,7 +438,12 @@ export async function buildSmile(src: TimeseriesSource, root: string, opts: Buil
   const T = Math.max(1, dteDays(expiration, opts.today)) / 365;
   // Pass the FULL expiration universe so nExpirations/expirations reflect the whole chain, not
   // just the one expiration we pulled quotes for (state only holds the selected expiration).
+  // allowUnquoted: the SNAPSHOT path degrades instead of failing. OI totals, PCR, max pain and
+  // the expirations list come from definitions + settlement statistics, which the quote gate has
+  // nothing to say about — throwing the whole call away threw those away too, for a market state
+  // ("every book is a pre-RTH shell") that lasts hours. The live path keeps the throw.
   const chain = buildChain(root, state, expiration, T, {
+    allowUnquoted: true,
     window: opts.window ?? 20,
     r: opts.r ?? 0,
     allExpirations: listExpirations(defs),
