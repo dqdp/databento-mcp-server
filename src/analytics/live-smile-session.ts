@@ -5,7 +5,7 @@
  * consumer is injected (a factory taking the feed's onData) so this is transport-agnostic and
  * offline-testable; smile-web owns the map of sessions keyed by (root, expiration).
  */
-import type { Chain } from './chain.js';
+import type { Chain, ChainBuildCode } from './chain.js';
 import type { SeedOpts } from './live-chain.js';
 import { LiveSmileFeed } from './live-feed.js';
 
@@ -21,17 +21,27 @@ export class LiveSmileSession {
   private latest: Chain | null = null;
   private lastError: string | null = null;
   private lastBuildError: string | null = null;
-  private lastBuildCode: string | null = null;
+  private lastBuildCode: ChainBuildCode | null = null;
+  /** When the last chain was built. Staleness is not only about FAILING to rebuild. */
+  private lastBuiltAt = 0;
+  private readonly staleAfterMs: number;
   /** Whether this session has EVER produced a chain — the ceiling in smile-web keys off it. */
   private everBuilt = false;
 
-  constructor(seed: SeedOpts, instrumentIds: number[], makeConsumer: ConsumerFactory, opts: { coalesceMs?: number } = {}) {
+  constructor(
+    seed: SeedOpts,
+    instrumentIds: number[],
+    makeConsumer: ConsumerFactory,
+    opts: { coalesceMs?: number; staleAfterMs?: number } = {},
+  ) {
+    this.staleAfterMs = opts.staleAfterMs ?? 5 * 60_000;
     this.feed = new LiveSmileFeed({
       ...seed,
       coalesceMs: opts.coalesceMs,
       onChain: (chain) => {
         this.latest = chain;
         this.everBuilt = true;
+        this.lastBuiltAt = Date.now();
         this.lastError = null;
         this.lastBuildError = null;
         this.lastBuildCode = null;
@@ -41,12 +51,13 @@ export class LiveSmileSession {
       },
       onBuildError: (err) => {
         this.lastBuildError = err.message;
-        this.lastBuildCode = (err as { code?: string }).code ?? null;
+        this.lastBuildCode = (err as { code?: ChainBuildCode }).code ?? null;
       },
     });
     try {
       this.latest = this.feed.current(); // the seeded chain, before any live tick
       this.everBuilt = true;
+      this.lastBuiltAt = Date.now();
     } catch (e) {
       // Seed not buildable YET: no forward, or every option book gated as a placeholder shell
       // (the HO 6am class — routine for hours pre-RTH). Keep the reason for buildError(); it
@@ -54,7 +65,7 @@ export class LiveSmileSession {
       // which would re-seed a metered session per poll all morning.
       this.latest = null;
       this.lastBuildError = (e as Error).message;
-      this.lastBuildCode = (e as { code?: string }).code ?? null;
+      this.lastBuildCode = (e as { code?: ChainBuildCode }).code ?? null;
     }
     this.consumer = makeConsumer((chunk) => this.feed.onData(chunk));
     this.consumer.start(instrumentIds);
@@ -84,11 +95,17 @@ export class LiveSmileSession {
    * first flush that builds.
    */
   stale(): boolean {
-    return this.latest != null && this.lastBuildError != null;
+    if (this.latest == null) return false;
+    if (this.lastBuildError != null) return true;
+    // A feed can also just go QUIET — a closed market, a half-open socket that never produced a
+    // DBN ERROR record, a reconnect that never recovered. Nothing FAILS in that case, so a
+    // failure-only signal would report an hours-old chain as current for as long as it is held.
+    return Date.now() - this.lastBuiltAt > this.staleAfterMs;
   }
 
-  /** The machine-readable reason behind buildError() ('no-forward' | 'no-quotes' | 'all-gated'). */
-  buildErrorCode(): string | null {
+  /** The machine-readable reason behind buildError(). Narrow on purpose: a caller switching on
+   * it must not have to handle strings the reducer can never produce. */
+  buildErrorCode(): ChainBuildCode | null {
     return this.lastBuildCode;
   }
 

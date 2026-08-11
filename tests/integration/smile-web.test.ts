@@ -246,6 +246,53 @@ describe('smile-web server', () => {
     }
   });
 
+  it('a DEGRADED snapshot is marked, not served as an ordinary 200', async () => {
+    // The quote-less chain is the right answer, but a page that previously got a 503 with the
+    // reason in its badge now gets a 200 with empty arrays and no channel to explain them.
+    let shellBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    for (const oid of [201, 202, 203, 204]) shellBbo += `${oid},1,100000,6000000000000\n`;
+    const shellClients = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : shellBbo,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    const s = createSmileServer(shellClients);
+    await new Promise<void>((r) => s.listen(0, r));
+    try {
+      const c = await (await fetch(`http://localhost:${(s.address() as AddressInfo).port}/smile/ES.json`)).json();
+      expect(c.degraded).toBe(true);
+      expect(c.degradedReason).toMatch(/shell|one-sided|usable/);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('every 503 body carries a code, snapshot mode included', async () => {
+    const failing = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv
+            : `instrument_id,ts_event,bid_px_00,ask_px_00\n`,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    const s = createSmileServer(failing);
+    await new Promise<void>((r) => s.listen(0, r));
+    try {
+      const res = await fetch(`http://localhost:${(s.address() as AddressInfo).port}/smile/ES.json`);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(typeof body.code).toBe('string');   // never a bare {error} a client must regex
+      expect(body.code).not.toBe('');
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
   it('live mode: a chain that stops rebuilding is served MARKED stale, not as fresh', async () => {
     // Once a chain exists, an all-gated flush no longer produces a 503 — current() still
     // returns it. Serving it is right; serving it silently is not: the page's badge clocks

@@ -7,7 +7,7 @@
  * Both accept ?expiry= & ?window=; the page also takes ?interval= (default 10s).
  */
 import http from 'node:http';
-import type { Chain } from '../analytics/chain.js';
+import type { Chain, ChainBuildCode } from '../analytics/chain.js';
 import { seedLiveFromHistorical } from '../analytics/live-seed.js';
 import { LiveSmileSession, type ConsumerFactory } from '../analytics/live-smile-session.js';
 import { resolveExpirySelector, resolveOptionsRoot } from '../analytics/pull-chain.js';
@@ -37,6 +37,13 @@ export const MAX_LIVE_SESSIONS = 32;
  * instead of one held socket per morning.
  */
 export const UNBUILT_SESSION_MAX_MS = 30 * 60_000;
+
+/**
+ * The code every non-200 body carries. `ChainBuildCode` covers the reducer's own reasons;
+ * 'warming' is a session with no reason yet, 'error' is anything else. Declared as ONE union so
+ * a client can switch exhaustively instead of matching English inside `error`.
+ */
+export type SmileErrorCode = ChainBuildCode | 'warming' | 'error';
 
 /** An empty chain so the live page renders INSTANTLY; the first client poll fills it. */
 function placeholder(root: string): Chain {
@@ -98,7 +105,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     root: string,
     expiry: string | undefined,
     window: number | undefined,
-  ): Promise<{ chain: Chain | null; reason: string | null; code: string | null; stale: boolean }> {
+  ): Promise<{ chain: Chain | null; reason: string | null; code: SmileErrorCode | null; stale: boolean }> {
     const key = sessionKey(root, expiry, window);
     const now = Date.now();
     lastPoll.set(key, now);   // mark demand; the idle sweeper stops sessions nobody polls
@@ -120,6 +127,8 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
         const victim = sessions.get(oldest)!;
         sessions.delete(oldest);
         lastPoll.delete(oldest); // keep lastPoll from outliving its session (else it lingers until the next sweep)
+        unbuiltSince.delete(oldest); // ...and neither may the deadline: a NEW session under this
+                                     // key would inherit an expired one and be stopped at once
         void victim.then((s) => s.stop()).catch(() => {});
       }
     }
@@ -133,6 +142,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
       if (sessions.get(key) === building) {
         sessions.delete(key);
         lastPoll.delete(key); // evicting the session -> drop its lastPoll too, so it can't linger
+        unbuiltSince.delete(key);
       }
       session.stop();
       throw new Error(err);
@@ -253,13 +263,28 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
             if (options.live) ({ chain, reason, code, stale } = await liveCurrent(root, expiry, window));
             else chain = await fetchSmileSnapshot(clients, root, { expiry, window });
             if (chain) {
-              const body = stale ? { ...chain, stale: true, staleReason: reason, staleCode: code } : chain;
+              // A quote-less chain is the right answer, but it must not look like an ordinary
+              // one: empty arrays with no explanation replaced a 503 whose reason the page used
+              // to paint. Mark it, in both modes.
+              const degraded = chain.strikes.length === 0;
+              const body = {
+                ...chain,
+                ...(stale ? { stale: true, staleReason: reason, staleCode: code } : {}),
+                ...(degraded
+                  ? {
+                      degraded: true,
+                      degradedReason:
+                        reason ?? 'no usable option book — every quote is one-sided, crossed or a shell',
+                    }
+                  : {}),
+              };
               send(res, 200, 'application/json', JSON.stringify(body));
             }
             else send(res, 503, 'application/json',
                       JSON.stringify({ error: reason ?? 'live buffer warming up', code: code ?? 'warming' }));
           } catch (e) {
-            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
+            const c: SmileErrorCode = (e as { code?: ChainBuildCode }).code ?? 'error';
+            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message, code: c }));
           }
           return;
         }

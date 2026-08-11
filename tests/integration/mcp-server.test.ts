@@ -1036,6 +1036,27 @@ describe("get_futures_options_smile tool", () => {
       return { data, schema: req.schema, symbols: [], dateRange: {}, recordCount: 0 };
     });
 
+  it("never states a cause the chain does not support", async () => {
+    // The degraded chain drops the build code, leaving nGated as the only signal — and a
+    // no-quotes chain has nGated 0, so the honesty line asserted "0 book(s) gated as unusable"
+    // as the REASON the smile is empty. A wrong cause is worse than no cause.
+    const emptyBbo =
+      `instrument_id,ts_event,bid_px_00,ask_px_00\n` +
+      `${FUT},${bboTsNs},7466000000000,7468000000000\n`;   // forward only: no option quoted at all
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange({ bboCsv: emptyBbo });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      const text = result.content.map((c: any) => c.text).join("\n");
+      expect(text).not.toMatch(/0 book\(s\) gated/);
+      expect(text).toMatch(/no strike is priceable|not quoted|no option quote/i);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("pulls the chain and returns a summary + chain JSON", async () => {
     const clients = createMockClients();
     (clients.timeseriesClient as any).getRange = makeGetRange();

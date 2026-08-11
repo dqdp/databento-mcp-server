@@ -81,12 +81,12 @@ export function applyTick(state: ChainState, rec: ChainRec): ChainState {
     if (m != null) {
       state.quotes.set(rec.instrument_id, { bid: rec.bid, ask: rec.ask, mid: m, ts: rec.ts ?? null });
       if (rec.ts) state.lastTs = rec.ts;
-    } else {
-      // BOTH sides UNDEF is a WITHDRAWAL, not a non-event. Ignoring it left the last price in
-      // place, and the gate made that expensive: once the shells around it are refused, the
-      // stale print is the only strike still standing and it becomes the whole smile.
-      state.quotes.delete(rec.instrument_id);
     }
+    // A both-UNDEF row is deliberately a NON-EVENT here. It looks like a withdrawal, but on the
+    // only path that produces it — normalizeQuotes over a multi-row bbo window — it is a quiet
+    // MINUTE, and deleting on it erased the real print that came before (wiping the forward
+    // outright when the quiet minute was the future's). A genuine live withdrawal never reaches
+    // applyTick: decodeL1Quote returns null for a both-UNDEF book and live-feed drops nulls.
   } else if (rec.type === 'statistics' && rec.stat_type === 'open_interest') {
     state.oi.set(rec.instrument_id, rec.value);
   }
@@ -245,9 +245,11 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   let nGated = 0;
   // `asOf` is built from the books that ACTUALLY entered the chain — the forward's, plus each
   // surviving option's. A gated shell must not lend its clock to prices it did not set.
+  // ...and it is built from the OPTION books only. The forward is used by every chain and ticks
+  // whenever the underlying does, so folding its clock in re-dates a smile whose option prints
+  // are hours old — the same false freshness, moved from the gated shell onto the future.
   const usedTs: string[] = [];
   const fq = state.futureId != null ? state.quotes.get(state.futureId) : undefined;
-  if (fq?.ts) usedTs.push(fq.ts);
   // The future is exempt from the gate on purpose — its mid is the only forward there is, and
   // refusing it would leave nothing to price against. But a one-sided or shell-wide future book
   // is a BOUND, not a price: it biases every IV and it sets the gate's own threshold. Exempt is
@@ -266,7 +268,9 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
       nGated++;
     }
   }
-  const asOf = usedTs.length ? usedTs.reduce((a, b) => (a >= b ? a : b)) : state.lastTs;
+  const asOf = usedTs.length
+    ? usedTs.reduce((a, b) => (a >= b ? a : b))
+    : (fq?.ts ?? state.lastTs); // no option book priced this chain — the forward's clock is all there is
   const strikes = [...new Set([...calls.keys(), ...puts.keys()])].sort((a, b) => a - b);
   // The LISTED strike nearest the forward — a fact about the definitions, independent of any
   // quote. Stands in for the at-the-money anchor wherever the quoted set cannot supply one.
@@ -371,10 +375,15 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   // IV in a card labelled "ATM IV". The yardstick is the product's OWN strike grid, not a
   // percentage: you can never be closer to F than the nearest listed strike, so one step is
   // the tightest honest tolerance — and anything beyond it is a wing, not the money.
+  // The step is measured AROUND THE FORWARD, not across the whole ladder: chains mix increments
+  // (weekly strips, legacy fine ranges), and the finest gap anywhere would shrink the tolerance
+  // at the money and disqualify a survivor that genuinely is the money.
   const grid = [...new Set(listedStrikes)].sort((a, b) => a - b);
-  let step = Infinity;
-  for (let i = 1; i < grid.length; i++) step = Math.min(step, grid[i] - grid[i - 1]);
-  if (!Number.isFinite(step)) step = 0.02 * F; // a single listed strike: fall back to 2% of F
+  const gi = grid.findIndex((k) => k >= F);
+  const localGaps = [gi - 1, gi, gi + 1]
+    .filter((i) => i > 0 && i < grid.length)
+    .map((i) => grid[i] - grid[i - 1]);
+  const step = localGaps.length ? Math.max(...localGaps) : 0.02 * F; // one listed strike -> 2% of F
   const atmNearForward = Math.abs(atm - F) <= step;
 
   const atmCiv = civ.get(atm) ?? null;
@@ -383,11 +392,14 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   const atmIV = atmNearForward ? atmIVraw : null;
 
   // 25-delta skew over the whole expiration
-  const c25 = delta25(calls.keys(), cdl, 0.25, 0, 1);
-  const p25 = delta25(puts.keys(), pdl, -0.25, -1, 0);
+  // Withholding only the DIFFERENCE would be theatre: a consumer subtracts the two legs and
+  // recovers the number the chain says it is not reporting. When the near-money books are gone,
+  // the 25-delta reference points are as unanchored as the ATM one — withhold the whole set.
+  const c25 = atmNearForward ? delta25(calls.keys(), cdl, 0.25, 0, 1) : null;
+  const p25 = atmNearForward ? delta25(puts.keys(), pdl, -0.25, -1, 0) : null;
   const call25IV = c25 != null ? civ.get(c25) ?? null : null;
   const put25IV = p25 != null ? piv.get(p25) ?? null : null;
-  const skew25 = atmNearForward && call25IV != null && put25IV != null ? put25IV - call25IV : null;
+  const skew25 = call25IV != null && put25IV != null ? put25IV - call25IV : null;
 
   const col = (m: Map<number, number | null>): (number | null)[] => win.map((K) => m.get(K) ?? null);
 

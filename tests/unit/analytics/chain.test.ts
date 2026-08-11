@@ -335,7 +335,10 @@ describe('buildChain — what the gate must not break', () => {
       { type: 'quote', instrument_id: 42506345, bid: 0.0001, ask: 3.0647, ts: '2026-07-17T13:40:00Z' },
     ]);
     const c = buildChain('OH', s, EXP_HO, T_HO);
-    expect(c.asOf).toBe('2026-07-17T10:00:00Z'); // the newest USED book (the future's), not 13:40
+    // the option print that actually set the smile — neither the 13:40 shell that was gated,
+    // nor the future's own 10:00 tick (see the round-2 test: the forward's clock is not the
+    // options' clock, and folding it in re-dates a stale smile just as the shell did)
+    expect(c.asOf).toBe('2026-07-17T09:55:00Z');
   });
 
   it('an all-gated build can DEGRADE instead of failing the whole call', () => {
@@ -460,27 +463,100 @@ describe('buildChain — failures are a public contract, not a stack trace', () 
   });
 });
 
-describe('applyTick — a withdrawn book is not a book', () => {
-  const EXP_HO = '2026-08-26';
-  const T_HO = 40 / 365;
+describe('applyTick — an empty bbo row is not a withdrawal', () => {
+  const EXP = '2026-09-18';
+  const T = 0.2;
 
-  it('a two-sided UNDEF quote CLEARS the strike instead of leaving yesterday\'s price', () => {
-    // The gate made this reachable and expensive. A withdrawal arrives as both sides UNDEF ->
-    // mid() is null -> the record used to be ignored, so the strike kept its last price. Once
-    // the shells around it are gated away, that hours-old print is the ONLY thing left standing
-    // and it becomes the smile: a withdrawn market reported as a live one.
+  it('a both-UNDEF row must NOT erase the quote it follows', () => {
+    // bbo-1m over a 15-minute window emits one row per instrument per MINUTE, and a quiet
+    // minute publishes UNDEF/UNDEF. Treating that as a withdrawal deletes the earlier real
+    // print — and when the quiet minute belongs to the FUTURE it wipes the forward, which
+    // fails the whole call before allowUnquoted can degrade anything. (A genuine live
+    // withdrawal never reaches here at all: decodeL1Quote returns null for a both-UNDEF book
+    // and live-feed drops nulls, so this path only ever sees historical window artefacts.)
     const s = newState();
     for (const r of [
-      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP_HO },
-      { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662, ts: '2026-07-17T13:00:00Z' },
-      { type: 'definition', instrument_id: 2, instrument_class: 'C', strike: 3.97, expiration: EXP_HO },
-      { type: 'quote', instrument_id: 2, bid: 0.30, ask: 0.32, ts: '2026-07-17T09:55:00Z' },
+      { type: 'definition', instrument_id: 100, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'definition', instrument_id: 201, instrument_class: 'C', strike: 7500, expiration: EXP },
+      { type: 'quote', instrument_id: 100, bid: 7466, ask: 7468 },
+      { type: 'quote', instrument_id: 201, bid: 100, ask: 110 },
+      { type: 'quote', instrument_id: 100, bid: null, ask: null },   // the quiet minute
+      { type: 'quote', instrument_id: 201, bid: null, ask: null },
     ] as ChainRec[]) applyTick(s, r);
-    expect(buildChain('OH', s, EXP_HO, T_HO).strikes).toEqual([3.97]); // quoted while it lasted
 
-    applyTick(s, { type: 'quote', instrument_id: 2, bid: null, ask: null, ts: '2026-07-17T13:40:00Z' });
-    expect(() => buildChain('OH', s, EXP_HO, T_HO)).toThrow(
-      expect.objectContaining({ code: 'no-quotes' }),   // withdrawn, not "gated" and not priced
-    );
+    const c = buildChain('ES', s, EXP, T);
+    expect(c.spot).toBe(7467);        // the forward survived the quiet minute
+    expect(c.strikes).toEqual([7500]);
+  });
+});
+
+describe('buildChain — round-2 corrections to the gate reporting', () => {
+  const EXP = '2026-09-18';
+  const T = 0.2;
+  const st = (recs: ChainRec[]) => { const s = newState(); for (const r of recs) applyTick(s, r); return s; };
+
+  it('a ticking FUTURE does not re-date a smile whose option prints are hours old', () => {
+    // asOf was moved off the global clock onto "the books that were used" — but the future is
+    // always one of those, so the freshness lie simply moved from the gated shell to the
+    // forward. The smile is a statement about OPTION prices; the forward's clock is not theirs.
+    const s = st([
+      { type: 'definition', instrument_id: 100, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'definition', instrument_id: 201, instrument_class: 'C', strike: 7500, expiration: EXP },
+      { type: 'quote', instrument_id: 201, bid: 100, ask: 110, ts: '2026-06-30T09:55:00Z' },
+      { type: 'quote', instrument_id: 100, bid: 7466, ask: 7468, ts: '2026-06-30T13:40:00Z' },
+    ]);
+    expect(buildChain('ES', s, EXP, T).asOf).toBe('2026-06-30T09:55:00Z');
+  });
+
+  it('with no option book at all, the forward\'s clock is the only one there is', () => {
+    const s = st([
+      { type: 'definition', instrument_id: 100, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'definition', instrument_id: 201, instrument_class: 'C', strike: 7500, expiration: EXP },
+      { type: 'quote', instrument_id: 100, bid: 7466, ask: 7468, ts: '2026-06-30T13:40:00Z' },
+    ]);
+    expect(buildChain('ES', s, EXP, T, { allowUnquoted: true }).asOf).toBe('2026-06-30T13:40:00Z');
+  });
+
+  it('withholding the skew withholds the legs it is computed from', () => {
+    // Publishing call25IV/put25IV while nulling skew25 lets any consumer subtract them back:
+    // the number is "withheld" in name only.
+    const wingC = black76(7467, 8200, T, 0.4, { isCall: true }).price;
+    const s = st([
+      { type: 'definition', instrument_id: 100, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'quote', instrument_id: 100, bid: 7466, ask: 7468 },
+      { type: 'definition', instrument_id: 201, instrument_class: 'C', strike: 7500, expiration: EXP },
+      { type: 'quote', instrument_id: 201, bid: 0.0001, ask: 3000 },              // near-money, gated
+      { type: 'definition', instrument_id: 202, instrument_class: 'C', strike: 8200, expiration: EXP },
+      { type: 'quote', instrument_id: 202, bid: wingC - 0.5, ask: wingC + 0.5 },  // wing survives
+    ]);
+    const c = buildChain('ES', s, EXP, T);
+    expect(c.atmNearForward).toBe(false);
+    expect(c.skew25).toBeNull();
+    expect(c.call25IV).toBeNull();
+    expect(c.put25IV).toBeNull();
+    expect(c.call25Strike).toBeNull();
+    expect(c.put25Strike).toBeNull();
+  });
+
+  it('the ATM tolerance is the LOCAL strike step, not the finest gap anywhere in the grid', () => {
+    // Chains mix increments: a fine strip somewhere (weeklies, a legacy range) must not shrink
+    // the tolerance around the money and disqualify a legitimately at-the-money survivor.
+    const F = 7467;
+    const atmC = black76(F, 7475, T, 0.2, { isCall: true }).price;
+    const recs: ChainRec[] = [
+      { type: 'definition', instrument_id: 100, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'quote', instrument_id: 100, bid: 7466, ask: 7468 },
+      { type: 'definition', instrument_id: 201, instrument_class: 'C', strike: 7475, expiration: EXP },
+      { type: 'quote', instrument_id: 201, bid: atmC - 0.5, ask: atmC + 0.5 },
+      { type: 'definition', instrument_id: 202, instrument_class: 'C', strike: 7450, expiration: EXP },
+      { type: 'definition', instrument_id: 203, instrument_class: 'C', strike: 7500, expiration: EXP },
+      // a fine 1-point strip far away — 25 points from the money, but 1 point apart
+      { type: 'definition', instrument_id: 204, instrument_class: 'C', strike: 9000, expiration: EXP },
+      { type: 'definition', instrument_id: 205, instrument_class: 'C', strike: 9001, expiration: EXP },
+    ];
+    const c = buildChain('ES', st(recs), EXP, T);
+    expect(c.atmStrike).toBe(7475);
+    expect(c.atmNearForward).toBe(true);   // 8 points out on a 25-point local grid IS the money
+    expect(c.atmIV).not.toBeNull();
   });
 });

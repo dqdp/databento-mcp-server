@@ -125,4 +125,18 @@ describe('LiveSmileFeed', () => {
     vi.advanceTimersByTime(30);
     expect(chains).toBe(2);
   });
+
+  it('a consumer that throws a NON-OBJECT still cannot reach the timer', () => {
+    // The guard read `.message` off whatever was thrown, so `throw null` raised a TypeError
+    // inside the guard itself — landing in the setTimeout it exists to protect.
+    let chains = 0;
+    const feed = new LiveSmileFeed({
+      ...seedOpts,
+      coalesceMs: 20,
+      onChain: () => { chains++; throw null; },
+    });
+    feed.onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.3, { isCall: true }).price)]));
+    expect(() => vi.advanceTimersByTime(30)).not.toThrow();
+    expect(chains).toBe(1);
+  });
 });

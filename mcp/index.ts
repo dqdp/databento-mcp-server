@@ -451,15 +451,24 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           `ATM IV ${pct(chain.atmIV)} · 25Δ skew ${chain.skew25 == null ? "n/a" : `${(chain.skew25 * 100).toFixed(1)}pt`} · ` +
           `PCR(OI) ${chain.pcrOI == null ? "n/a" : chain.pcrOI.toFixed(2)} · max pain ${chain.maxPain}\n` +
           // The gate's effect has to be VISIBLE in the prose the model reads, not only in a JSON
-          // field it may never look at: a smile thinned by unusable books is otherwise reported
-          // with the same confidence as a fully quoted one.
-          (chain.nGated > 0 || !chain.atmNearForward || chain.spotEstimated
-            ? `Quote quality: ${chain.nGated} book(s) gated as unusable (one-sided, crossed or placeholder)` +
-              `${chain.strikes.length === 0 ? " — NO strike is priceable, so IV/skew are absent and only OI-derived figures below are real" : ""}` +
-              `${!chain.atmNearForward && chain.strikes.length ? "; the near-money books were gated, so ATM IV and skew are withheld rather than taken from a wing" : ""}` +
-              `${chain.spotEstimated ? "; the forward comes from a ONE-SIDED future book — treat spot and every IV as approximate" : ""}` +
-              `. Say so when reporting these numbers.\n`
-            : "") +
+          // field it may never look at. Each clause states ONLY what the chain actually supports:
+          // an empty smile is not evidence of gating (a series can simply be unquoted), and
+          // asserting a cause the data does not carry is worse than asserting none.
+          ((): string => {
+            const notes: string[] = [];
+            if (chain.nGated > 0) {
+              notes.push(`${chain.nGated} book(s) excluded as unusable (one-sided, crossed or placeholder)`);
+            }
+            if (chain.strikes.length === 0) {
+              notes.push("NO strike is priceable, so IV and skew are absent — only the OI-derived figures above are real");
+            } else if (!chain.atmNearForward) {
+              notes.push("the near-money books are missing, so ATM IV and the 25\u0394 figures are withheld rather than taken from a wing");
+            }
+            if (chain.spotEstimated) {
+              notes.push("the forward comes from a ONE-SIDED future book — treat spot and every IV as approximate");
+            }
+            return notes.length ? `Quote quality: ${notes.join("; ")}. Say so when reporting these numbers.\n` : "";
+          })() +
           `Render the JSON below as an interactive Chart.js artifact — three panels, dark-mode friendly: ` +
           `(1) volatility smile — plot the OTM legs vs \`strikes\`: \`putIV\` where strike <= \`atmStrike\`, \`callIV\` where strike >= \`atmStrike\`, mark \`atmStrike\`; ` +
           `(2) open interest by strike — \`callOI\`/\`putOI\` grouped bars with a vertical line at \`maxPain\`; ` +

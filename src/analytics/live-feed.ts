@@ -33,7 +33,9 @@ function safely(fn: () => void): void {
   try {
     fn();
   } catch (e) {
-    console.error(`[live-feed] consumer callback threw: ${(e as Error).message}`);
+    // String(e), not e.message: a consumer may throw anything at all (`throw null`), and a
+    // guard that assumes an Error object fails inside the very catch meant to contain it.
+    console.error(`[live-feed] consumer callback threw: ${String(e)}`);
   }
 }
 

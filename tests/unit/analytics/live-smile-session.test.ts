@@ -123,4 +123,21 @@ describe('LiveSmileSession', () => {
     vi.advanceTimersByTime(60);
     expect(session.stale()).toBe(false);
   });
+
+  it('a feed that simply goes QUIET is stale too — not only one that fails to build', () => {
+    let onData: (chunk: Buffer) => void = () => {};
+    const fake = { start: vi.fn(), stop: vi.fn() };
+    const session = new LiveSmileSession(shellSeed, [203], (cb) => { onData = cb; return fake; },
+                                         { coalesceMs: 50, staleAfterMs: 60_000 });
+    onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.25, { isCall: true }).price)]));
+    vi.advanceTimersByTime(60);
+    expect(session.stale()).toBe(false);
+
+    // no build FAILURE — just nothing arriving. A half-open socket, a closed market, a reconnect
+    // that never recovers: buildError stays null, and staleness inferred from failures alone
+    // would report this chain as current forever.
+    vi.advanceTimersByTime(61_000);
+    expect(session.buildError()).toBeNull();
+    expect(session.stale()).toBe(true);
+  });
 });
