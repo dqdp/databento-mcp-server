@@ -204,7 +204,7 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
     ]);
     // pre-fix this "built" a chain whose every IV was ~3.1 (314%); post-fix there is no usable
     // quote at all and the build fails loud with a message DISTINCT from "no option quotes yet"
-    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option book/);
   });
 
   it('a real tight book still solves; shell-quoted strikes read as unquoted beside it', () => {
@@ -226,12 +226,12 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
       { type: 'quote', instrument_id: 42658626, bid: null, ask: 3.1588 }, // ask-only
       { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: null }, // cabinet bid-only
     ]);
-    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option book/);
   });
 
   it('a crossed book (auction/indicative state) is not usable', () => {
     const s = hoState([{ type: 'quote', instrument_id: 42658626, bid: 0.4, ask: 0.3 }]);
-    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option quote/);
+    expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option book/);
   });
 
   it('a genuine wide-but-tiny deep-OTM book is KEPT (wings stay honest)', () => {
@@ -280,7 +280,7 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
       return s;
     };
     expect(buildChain('ES', mk(12), EXP, T0).callIV[0]).not.toBeNull(); // spread 10 = 10% of F
-    expect(() => buildChain('ES', mk(12.5), EXP, T0)).toThrow(/usable option quote/); // 10.5%
+    expect(() => buildChain('ES', mk(12.5), EXP, T0)).toThrow(/usable option book/); // 10.5%
   });
 
   it('zero quotes at all still reads "no option quotes yet" (distinct from all-gated)', () => {
@@ -343,7 +343,7 @@ describe('buildChain — what the gate must not break', () => {
       { type: 'quote', instrument_id: 42658626, bid: 0.0001, ask: 3.1588 },
       { type: 'quote', instrument_id: 42831140, bid: 0.0001, ask: 3.1438 },
     ]);
-    expect(() => buildChain('OH', s, EXP_HO, T_HO)).toThrow(/usable option quote/); // live: unchanged
+    expect(() => buildChain('OH', s, EXP_HO, T_HO)).toThrow(/usable option book/); // live: unchanged
     const c = buildChain('OH', s, EXP_HO, T_HO, { allowUnquoted: true });
     expect(c.strikes).toEqual([]);
     expect(c.atmIV).toBeNull();
@@ -389,7 +389,7 @@ describe('buildChain — what the gate must not break', () => {
       { type: 'definition', instrument_id: 2, instrument_class: 'C', strike: 82, expiration: EXP_HO },
       { type: 'quote', instrument_id: 2, bid: 0.0001, ask: 5.0 },
     ] as ChainRec[]) applyTick(s, r);
-    expect(() => buildChain('LO', s, EXP_HO, T_HO)).toThrow(/usable option quote/);
+    expect(() => buildChain('LO', s, EXP_HO, T_HO)).toThrow(/usable option book/);
   });
 
   it('a genuinely tiny two-sided wing still passes (the cap is not a bid floor in dollars)', () => {
@@ -397,5 +397,90 @@ describe('buildChain — what the gate must not break', () => {
     const c = buildChain('OH', s, EXP_HO, T_HO, { allowUnquoted: true });
     expect(c.strikes).toEqual([4.17]); // kept: 0.0001 is 33% of the ask, a real market
     expect(c.nGated).toBe(0);
+  });
+});
+
+// The build failure now leaves the process: it is the 503 body and the live badge's text. That
+// makes the message a CONTRACT — short enough to survive the page's 80-char slice — and the
+// reason machine-readable, since "warming up" and "every book is a shell for the next 3 hours"
+// deserve different handling from a polling client.
+describe('buildChain — failures are a public contract, not a stack trace', () => {
+  const EXP_HO = '2026-08-26';
+  const T_HO = 40 / 365;
+  const st = (recs: ChainRec[]) => { const s = newState(); for (const r of recs) applyTick(s, r); return s; };
+  const base: ChainRec[] = [
+    { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP_HO },
+    { type: 'definition', instrument_id: 2, instrument_class: 'C', strike: 3.97, expiration: EXP_HO },
+  ];
+
+  it('every build failure carries a machine-readable code', () => {
+    const noFwd = st([base[1]]);
+    expect(() => buildChain('OH', noFwd, EXP_HO, T_HO)).toThrow(
+      expect.objectContaining({ code: 'no-forward' }),
+    );
+    const noQuotes = st([...base, { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662 }]);
+    expect(() => buildChain('OH', noQuotes, EXP_HO, T_HO)).toThrow(
+      expect.objectContaining({ code: 'no-quotes' }),
+    );
+    const gated = st([...base,
+      { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662 },
+      { type: 'quote', instrument_id: 2, bid: 0.0001, ask: 3.1588 }]);
+    expect(() => buildChain('OH', gated, EXP_HO, T_HO)).toThrow(
+      expect.objectContaining({ code: 'all-gated' }),
+    );
+  });
+
+  it('the message survives the page slice that renders it (80 chars)', () => {
+    const gated = st([...base,
+      { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662 },
+      { type: 'quote', instrument_id: 2, bid: 0.0001, ask: 3.1588 }]);
+    let msg = '';
+    try { buildChain('OH', gated, EXP_HO, T_HO); } catch (e) { msg = (e as Error).message; }
+    expect(msg.length).toBeLessThanOrEqual(80);
+    expect(msg).not.toMatch(/buildChain:/);   // the function name is not the client's business
+    expect(msg).toMatch(/shell|one-sided|usable/);
+  });
+
+  it('a one-sided FUTURE still anchors the forward, but the chain says so', () => {
+    // The future is exempt from the gate on purpose — its mid is the only forward there is —
+    // but a bid-only book is a bound, not a price, and it also SETS the gate threshold.
+    const s = st([...base,
+      { type: 'quote', instrument_id: 1, bid: 3.964, ask: null },
+      { type: 'quote', instrument_id: 2, bid: 0.30, ask: 0.32 }]);
+    const c = buildChain('OH', s, EXP_HO, T_HO);
+    expect(c.spot).toBe(3.964);
+    expect(c.spotEstimated).toBe(true);
+  });
+
+  it('a two-sided future reports an exact forward', () => {
+    const s = st([...base,
+      { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662 },
+      { type: 'quote', instrument_id: 2, bid: 0.30, ask: 0.32 }]);
+    expect(buildChain('OH', s, EXP_HO, T_HO).spotEstimated).toBe(false);
+  });
+});
+
+describe('applyTick — a withdrawn book is not a book', () => {
+  const EXP_HO = '2026-08-26';
+  const T_HO = 40 / 365;
+
+  it('a two-sided UNDEF quote CLEARS the strike instead of leaving yesterday\'s price', () => {
+    // The gate made this reachable and expensive. A withdrawal arrives as both sides UNDEF ->
+    // mid() is null -> the record used to be ignored, so the strike kept its last price. Once
+    // the shells around it are gated away, that hours-old print is the ONLY thing left standing
+    // and it becomes the smile: a withdrawn market reported as a live one.
+    const s = newState();
+    for (const r of [
+      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP_HO },
+      { type: 'quote', instrument_id: 1, bid: 3.964, ask: 3.9662, ts: '2026-07-17T13:00:00Z' },
+      { type: 'definition', instrument_id: 2, instrument_class: 'C', strike: 3.97, expiration: EXP_HO },
+      { type: 'quote', instrument_id: 2, bid: 0.30, ask: 0.32, ts: '2026-07-17T09:55:00Z' },
+    ] as ChainRec[]) applyTick(s, r);
+    expect(buildChain('OH', s, EXP_HO, T_HO).strikes).toEqual([3.97]); // quoted while it lasted
+
+    applyTick(s, { type: 'quote', instrument_id: 2, bid: null, ask: null, ts: '2026-07-17T13:40:00Z' });
+    expect(() => buildChain('OH', s, EXP_HO, T_HO)).toThrow(
+      expect.objectContaining({ code: 'no-quotes' }),   // withdrawn, not "gated" and not priced
+    );
   });
 });

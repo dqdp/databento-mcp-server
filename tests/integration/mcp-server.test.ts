@@ -147,6 +147,12 @@ describe("MCP server integration", () => {
       expect(response.tools).toHaveLength(19);
       expect(toolsByName.get("get_futures_options_smile")?.description).toContain("volatility-smile");
       expect(toolsByName.get("get_futures_options_smile")?.inputSchema.required).toEqual(["root"]);
+      // The gate is part of the contract now: quotes that carry no price information are
+      // dropped, and a fully-gated series answers with a quote-less chain rather than failing.
+      // A description that still promises an unconditional smile is a promise the code broke.
+      expect(toolsByName.get("get_futures_options_smile")?.description).toMatch(/gated|unusable|one-sided/i);
+      expect(toolsByName.get("get_futures_options_smile")?.description).toMatch(/nGated/);
+
       expect((toolsByName.get("get_futures_options_smile")?.inputSchema.properties as any)?.window).toMatchObject({
         minimum: 1,
         maximum: 200,

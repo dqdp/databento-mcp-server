@@ -21,6 +21,9 @@ export class LiveSmileSession {
   private latest: Chain | null = null;
   private lastError: string | null = null;
   private lastBuildError: string | null = null;
+  private lastBuildCode: string | null = null;
+  /** Whether this session has EVER produced a chain — the ceiling in smile-web keys off it. */
+  private everBuilt = false;
 
   constructor(seed: SeedOpts, instrumentIds: number[], makeConsumer: ConsumerFactory, opts: { coalesceMs?: number } = {}) {
     this.feed = new LiveSmileFeed({
@@ -28,18 +31,22 @@ export class LiveSmileSession {
       coalesceMs: opts.coalesceMs,
       onChain: (chain) => {
         this.latest = chain;
+        this.everBuilt = true;
         this.lastError = null;
         this.lastBuildError = null;
+        this.lastBuildCode = null;
       },
       onError: (err) => {
         this.lastError = err.message;
       },
       onBuildError: (err) => {
         this.lastBuildError = err.message;
+        this.lastBuildCode = (err as { code?: string }).code ?? null;
       },
     });
     try {
       this.latest = this.feed.current(); // the seeded chain, before any live tick
+      this.everBuilt = true;
     } catch (e) {
       // Seed not buildable YET: no forward, or every option book gated as a placeholder shell
       // (the HO 6am class — routine for hours pre-RTH). Keep the reason for buildError(); it
@@ -47,6 +54,7 @@ export class LiveSmileSession {
       // which would re-seed a metered session per poll all morning.
       this.latest = null;
       this.lastBuildError = (e as Error).message;
+      this.lastBuildCode = (e as { code?: string }).code ?? null;
     }
     this.consumer = makeConsumer((chunk) => this.feed.onData(chunk));
     this.consumer.start(instrumentIds);
@@ -77,6 +85,16 @@ export class LiveSmileSession {
    */
   stale(): boolean {
     return this.latest != null && this.lastBuildError != null;
+  }
+
+  /** The machine-readable reason behind buildError() ('no-forward' | 'no-quotes' | 'all-gated'). */
+  buildErrorCode(): string | null {
+    return this.lastBuildCode;
+  }
+
+  /** True while this session has never produced a chain at all — not once, not even the seed. */
+  neverBuilt(): boolean {
+    return !this.everBuilt;
   }
 
   stop(): void {

@@ -28,6 +28,15 @@ export interface LiveFeedOpts extends SeedOpts {
   onBuildError?: (err: Error) => void;
 }
 
+/** Run a consumer callback without letting its failure escape into the flush timer. */
+function safely(fn: () => void): void {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[live-feed] consumer callback threw: ${(e as Error).message}`);
+  }
+}
+
 export class LiveSmileFeed {
   private readonly framer = new DbnFramer();
   private readonly lc: LiveChain;
@@ -51,10 +60,13 @@ export class LiveSmileFeed {
       try {
         chain = buildLiveChain(this.lc);
       } catch (e) {
-        this.onBuildError?.(e as Error);
+        // The consumer callbacks are supplied by arbitrary callers and run in the SAME timer
+        // this try/catch exists to protect, so a throwing consumer would kill the feed by the
+        // very route the guard was written to close. Their failure is theirs, not the feed's.
+        safely(() => this.onBuildError?.(e as Error));
         return;
       }
-      this.onChain(chain);
+      safely(() => this.onChain(chain));
     });
   }
 

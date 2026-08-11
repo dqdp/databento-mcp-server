@@ -82,7 +82,7 @@ describe('LiveSmileSession', () => {
     const fake = { start: vi.fn(), stop: vi.fn() };
     const session = new LiveSmileSession(shellSeed, [201, 203, FUT], () => fake, { coalesceMs: 50 });
     expect(session.current()).toBeNull();
-    expect(session.buildError()).toMatch(/usable option quote/);
+    expect(session.buildError()).toMatch(/usable option book/);
     expect(session.error()).toBeNull(); // NOT the gateway-error path — no evict/re-seed loop
   });
 
@@ -116,7 +116,7 @@ describe('LiveSmileSession', () => {
     vi.advanceTimersByTime(60);
     expect(session.current()).not.toBeNull();      // still served — better than nothing
     expect(session.stale()).toBe(true);            // ...but no longer passes for fresh
-    expect(session.buildError()).toMatch(/usable option quote/);
+    expect(session.buildError()).toMatch(/usable option book/);
 
     // a usable tick clears it again
     onData(l1(203, black76(F, 7500, T, 0.3, { isCall: true }).price));

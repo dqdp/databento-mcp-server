@@ -170,10 +170,79 @@ describe('smile-web server', () => {
       expect(c.atmIV).toBeNull();
       expect(c.nGated).toBe(4);               // ...and the page can say WHY it is empty
       expect(c.expirations).toContain(EXP);   // the quote-independent half survives
+      expect(c.spotEstimated).toBe(false);    // the FUTURE's own book was two-sided
       expect(c.callOItotal).toBeGreaterThan(0);
       expect(c.maxPain).toBeGreaterThan(0);
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('live mode: the 503 says WHICH not-ready this is, in a field a poller can branch on', async () => {
+    // "seeding, back in a second" and "every book is a shell until the pit opens" are the same
+    // status and the same shape today, so the documented consumer maps both to "warming up" and
+    // retries for hours. The reason must be machine-readable, not English prose.
+    let shellBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    for (const oid of [201, 202, 203, 204]) shellBbo += `${oid},1,100000,6000000000000\n`;
+    const shellClients = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : shellBbo,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    const live = createSmileServer(shellClients, {
+      live: { makeConsumer: () => ({ start() {}, stop() {} }), coalesceMs: 20 },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    try {
+      const res = await fetch(`http://localhost:${(live.address() as AddressInfo).port}/smile/ES.json`);
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe('all-gated');       // NOT the generic warm-up
+      expect(body.error).toMatch(/shell|one-sided/);
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
+    }
+  });
+
+  it('live mode: a session that never builds does not hold its metered socket forever', async () => {
+    // The buildError path deliberately does not evict — that is what stops a re-seed storm.
+    // But "not per poll" is not "never": a session that has NEVER produced a chain is holding
+    // an authenticated Live socket for nothing, and the idle sweeper cannot reclaim it because
+    // every poll re-stamps demand.
+    let shellBbo = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    for (const oid of [201, 202, 203, 204]) shellBbo += `${oid},1,100000,6000000000000\n`;
+    const shellClients = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : shellBbo,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    let started = 0;
+    let stopped = 0;
+    const live = createSmileServer(shellClients, {
+      live: {
+        makeConsumer: () => ({ start() { started++; }, stop() { stopped++; } }),
+        coalesceMs: 20,
+      },
+    });
+    await new Promise<void>((r) => live.listen(0, r));
+    const b = `http://localhost:${(live.address() as AddressInfo).port}`;
+    try {
+      await fetch(`${b}/smile/ES.json`);
+      await fetch(`${b}/smile/ES.json`);
+      expect(started).toBe(1);   // polling alone never re-seeds — that part stays
+      expect(stopped).toBe(0);
+
+      vi.setSystemTime(new Date('2026-06-30T14:31:00Z')); // past the unbuilt deadline
+      await fetch(`${b}/smile/ES.json`);
+      expect(stopped).toBe(1);   // the socket is released rather than held all morning
+    } finally {
+      await new Promise<void>((r) => live.close(() => r()));
     }
   });
 
@@ -209,7 +278,7 @@ describe('smile-web server', () => {
       const held = await res.json();
       expect(held.spot).toBe(F);
       expect(held.stale).toBe(true);
-      expect(held.staleReason).toMatch(/usable option quote/);
+      expect(held.staleReason).toMatch(/usable option book/);
     } finally {
       await new Promise<void>((r) => live.close(() => r()));
     }
@@ -239,10 +308,10 @@ describe('smile-web server', () => {
     try {
       const r1 = await fetch(`${b}/smile/ES.json`);
       expect(r1.status).toBe(503);
-      expect((await r1.json()).error).toMatch(/usable option quote/); // the honest reason rides
+      expect((await r1.json()).error).toMatch(/usable option book/); // the honest reason rides
       const r2 = await fetch(`${b}/smile/ES.json`);
       expect(r2.status).toBe(503);
-      expect((await r2.json()).error).toMatch(/usable option quote/);
+      expect((await r2.json()).error).toMatch(/usable option book/);
       expect(consumers).toBe(1); // still ONE session — the all-gated state is not treated as poison
     } finally {
       await new Promise<void>((r) => live.close(() => r()));

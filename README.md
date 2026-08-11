@@ -1038,6 +1038,23 @@ strikes around the forward before requesting BBO.
 chain JSON: `spot`, `atmStrike`, `strikes[]`, `callIV[]`/`putIV[]`,
 `callOI[]`/`putOI[]`, `expirations[]`, and render guidance for the artifact.
 
+**Quote quality is gated, and the chain says so.** A book that carries no price
+information — one-sided, crossed, or a cabinet bid against a market-maker safety
+ask — is not solved into an IV; it is left out of `strikes[]` entirely. (Probed
+live on HO outside its liquid session: every strike quoted $0.0001 × ~$3, whose
+mid produced a uniform ~314% "smile".) Three fields report what that cost:
+
+| Field | Meaning |
+|---|---|
+| `nGated` | books dropped as unusable — distinguishes a thin series from a gate-thinned one |
+| `atmNearForward` | `false` = the near-money books were gated; `atmIV`/`skew25` are withheld rather than taken from a surviving wing |
+| `spotEstimated` | `true` = the forward itself came from a one-sided future book, so spot and every IV are approximate |
+
+Outside a product's hours EVERY book can be a placeholder. The call then returns
+a **quote-less chain** (`strikes: []`, `atmIV: null`) rather than failing: OI
+totals, `pcrOI`, `maxPain` and `expirations` come from definitions and settlement
+statistics, which the gate has nothing to say about.
+
 ### Live futures-options smile page
 
 The `get_futures_options_smile` tool returns a **snapshot**. For a **tick-live** view,

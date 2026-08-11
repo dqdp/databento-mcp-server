@@ -28,6 +28,16 @@ export interface SmileServerOptions {
 /** Cap the number of concurrent Live sessions (each holds an authenticated socket); LRU-evicted. */
 export const MAX_LIVE_SESSIONS = 32;
 
+/**
+ * How long a session that has NEVER produced a chain may keep its authenticated Live socket.
+ * The buildError path deliberately does not evict per poll — that is what stops a re-seed storm
+ * on a routine hours-long market state — but "not per poll" is not "never": the idle sweeper
+ * cannot reclaim the session either, because every poll re-stamps demand. Past this deadline the
+ * socket is released and the next poll re-seeds, bounding the cost at one pull per window
+ * instead of one held socket per morning.
+ */
+export const UNBUILT_SESSION_MAX_MS = 30 * 60_000;
+
 /** An empty chain so the live page renders INSTANTLY; the first client poll fills it. */
 function placeholder(root: string): Chain {
   return {
@@ -71,6 +81,8 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
   // any more (the dashboard/browser closed), we must stop it — not leave it streaming in the
   // background. A sweeper stops sessions idle beyond IDLE_MS; the next poll re-seeds a fresh one.
   const lastPoll = new Map<string, number>();
+  /** When each never-yet-built session first reported a failed build (see UNBUILT_SESSION_MAX_MS). */
+  const unbuiltSince = new Map<string, number>();
   const IDLE_MS = Math.max(15_000, options.live?.idleMs ?? 45_000);
 
   function sessionKey(root: string, expiry: string | undefined, window: number | undefined): string {
@@ -86,9 +98,10 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     root: string,
     expiry: string | undefined,
     window: number | undefined,
-  ): Promise<{ chain: Chain | null; reason: string | null; stale: boolean }> {
+  ): Promise<{ chain: Chain | null; reason: string | null; code: string | null; stale: boolean }> {
     const key = sessionKey(root, expiry, window);
-    lastPoll.set(key, Date.now());   // mark demand; the idle sweeper stops sessions nobody polls
+    const now = Date.now();
+    lastPoll.set(key, now);   // mark demand; the idle sweeper stops sessions nobody polls
     let building = sessions.get(key);
     if (building) {
       sessions.delete(key); // LRU touch: mark most-recently-polled (Map preserves insertion order)
@@ -129,7 +142,28 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     // different questions: WHY there is no chain yet (the 503 body), and — once a chain exists —
     // why the one we hold is no longer being rebuilt. Both must reach the client; a held chain
     // served bare would be read as live, because the page's badge clocks its own fetch.
-    return { chain: session.current(), reason: session.buildError(), stale: session.stale() };
+    if (session.neverBuilt()) {
+      const since = unbuiltSince.get(key) ?? now;
+      unbuiltSince.set(key, since);
+      if (now - since > UNBUILT_SESSION_MAX_MS) {
+        console.error(
+          `[smile-web] ${key}: no chain built in ${Math.round((now - since) / 60_000)} min ` +
+            `(${session.buildError() ?? 'unknown'}) — releasing the Live socket`,
+        );
+        if (sessions.get(key) === building) sessions.delete(key);
+        lastPoll.delete(key);
+        unbuiltSince.delete(key);
+        session.stop();
+      }
+    } else {
+      unbuiltSince.delete(key);
+    }
+    return {
+      chain: session.current(),
+      reason: session.buildError(),
+      code: session.buildErrorCode(),
+      stale: session.stale(),
+    };
   }
 
   const server = http.createServer((req, res) => {
@@ -214,14 +248,16 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
           try {
             let chain: Chain | null;
             let reason: string | null = null;
+            let code: string | null = null;
             let stale = false;
-            if (options.live) ({ chain, reason, stale } = await liveCurrent(root, expiry, window));
+            if (options.live) ({ chain, reason, code, stale } = await liveCurrent(root, expiry, window));
             else chain = await fetchSmileSnapshot(clients, root, { expiry, window });
             if (chain) {
-              const body = stale ? { ...chain, stale: true, staleReason: reason } : chain;
+              const body = stale ? { ...chain, stale: true, staleReason: reason, staleCode: code } : chain;
               send(res, 200, 'application/json', JSON.stringify(body));
             }
-            else send(res, 503, 'application/json', JSON.stringify({ error: reason ?? 'live buffer warming up' }));
+            else send(res, 503, 'application/json',
+                      JSON.stringify({ error: reason ?? 'live buffer warming up', code: code ?? 'warming' }));
           } catch (e) {
             send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
           }

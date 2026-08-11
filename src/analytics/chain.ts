@@ -81,6 +81,11 @@ export function applyTick(state: ChainState, rec: ChainRec): ChainState {
     if (m != null) {
       state.quotes.set(rec.instrument_id, { bid: rec.bid, ask: rec.ask, mid: m, ts: rec.ts ?? null });
       if (rec.ts) state.lastTs = rec.ts;
+    } else {
+      // BOTH sides UNDEF is a WITHDRAWAL, not a non-event. Ignoring it left the last price in
+      // place, and the gate made that expensive: once the shells around it are refused, the
+      // stale print is the only strike still standing and it becomes the whole smile.
+      state.quotes.delete(rec.instrument_id);
     }
   } else if (rec.type === 'statistics' && rec.stat_type === 'open_interest') {
     state.oi.set(rec.instrument_id, rec.value);
@@ -93,6 +98,21 @@ export function forward(state: ChainState): number | null {
   if (state.futureId == null) return null;
   const q = state.quotes.get(state.futureId);
   return q ? q.mid : null;
+}
+
+/**
+ * A build failure is not an internal detail any more: it is the 503 body and the text the live
+ * badge paints (which slices at 80 chars). So the message is kept short and free of function
+ * names, and the REASON travels as a code — a poller must be able to tell "seeding, try again
+ * in a second" from "every book is a shell and will be for the next three hours".
+ */
+export type ChainBuildCode = 'no-forward' | 'no-quotes' | 'all-gated';
+
+export class ChainBuildError extends Error {
+  constructor(readonly code: ChainBuildCode, message: string) {
+    super(message);
+    this.name = 'ChainBuildError';
+  }
 }
 
 export interface Chain {
@@ -216,7 +236,7 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   const r = opts.r ?? 0;
   const prev = opts.prev ?? null;
   const F = forward(state);
-  if (F == null || F <= 0) throw new Error('buildChain: no future quote yet (forward unknown)');
+  if (F == null || F <= 0) throw new ChainBuildError('no-forward', 'no future quote yet — forward unknown');
 
   const calls = new Map<number, { iid: number; mid: number }>();
   const puts = new Map<number, { iid: number; mid: number }>();
@@ -228,6 +248,11 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   const usedTs: string[] = [];
   const fq = state.futureId != null ? state.quotes.get(state.futureId) : undefined;
   if (fq?.ts) usedTs.push(fq.ts);
+  // The future is exempt from the gate on purpose — its mid is the only forward there is, and
+  // refusing it would leave nothing to price against. But a one-sided or shell-wide future book
+  // is a BOUND, not a price: it biases every IV and it sets the gate's own threshold. Exempt is
+  // not the same as trustworthy, so the chain says which one it got.
+  const fwdEstimated = !fq || fq.bid == null || fq.ask == null || !usableOptionQuote(fq, F);
   for (const [iid, d] of state.defs) {
     if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
     listedStrikes.push(d.strike);
@@ -282,14 +307,13 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
     [...new Set([...state.defs.values()].filter((d) => d.cls === 'C' || d.cls === 'P').map((d) => d.expiration))].sort();
 
   if (strikes.length === 0) {
-    const why = sawOptionQuote
-      ? 'buildChain: no usable option quote (books are one-sided, crossed, or wider than ' +
-        `${MAX_OPTION_SPREAD_FRAC_OF_F * 100}% of the forward — placeholder markets, not price discovery)`
-      : 'buildChain: no option quotes yet';
-    if (!opts.allowUnquoted) throw new Error(why);
+    const err = sawOptionQuote
+      ? new ChainBuildError('all-gated', 'no usable option book — every quote is one-sided, crossed or a shell')
+      : new ChainBuildError('no-quotes', 'no option quotes yet');
+    if (!opts.allowUnquoted) throw err;
     // Degraded: everything the gate cannot speak to is still true and still worth returning.
     return {
-      symbol, expiration, dte: Math.max(0, Math.round(T * 365)), asOf, spot: F, spotEstimated: false,
+      symbol, expiration, dte: Math.max(0, Math.round(T * 365)), asOf, spot: F, spotEstimated: fwdEstimated,
       atmStrike: atmListed, atmNearForward: false, nGated, atmIV: null, skew25: null,
       call25IV: null, put25IV: null, call25Strike: null, put25Strike: null,
       pcrOI, pcrVol: null, callOItotal: coi, putOItotal: poi, maxPain,
@@ -373,7 +397,7 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
     dte: Math.max(0, Math.round(T * 365)),
     asOf,
     spot: F,
-    spotEstimated: false,
+    spotEstimated: fwdEstimated,
     atmStrike: atm,
     atmNearForward,
     nGated,

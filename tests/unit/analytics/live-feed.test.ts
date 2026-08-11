@@ -92,4 +92,37 @@ describe('LiveSmileFeed', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatch(/gateway error.*bad symbol/i);
   });
+
+  it('a THROWING consumer callback cannot kill the feed from inside the timer', () => {
+    // The whole reason the flush is wrapped is that an uncaught throw inside the coalescer's
+    // setTimeout takes the process down — there is no caller to catch it. Handing the reason to
+    // a consumer callback re-opened that hole: the callback runs in the same timer.
+    const shell = (iid: number, bid: number, ask: number) => {
+      const b = Buffer.alloc(80); b[0] = 20; b[1] = 1; b.writeUInt32LE(iid, 4);
+      b.writeBigInt64LE(BigInt(Math.round(bid * 1e9)), 48);
+      b.writeBigInt64LE(BigInt(Math.round(ask * 1e9)), 56);
+      return b;
+    };
+    let chains = 0;
+    const feed = new LiveSmileFeed({
+      ...seedOpts,
+      coalesceMs: 20,
+      onChain: () => { chains++; throw new Error('consumer blew up on a good chain'); },
+      onBuildError: () => { throw new Error('consumer blew up on a build error'); },
+    });
+
+    // 1) a good flush whose onChain throws
+    feed.onData(Buffer.concat([prelude(), l1(203, black76(F, 7500, T, 0.3, { isCall: true }).price)]));
+    expect(() => vi.advanceTimersByTime(30)).not.toThrow();
+    expect(chains).toBe(1);
+
+    // 2) an all-gated flush whose onBuildError throws
+    for (const oid of [201, 203]) feed.onData(shell(oid, 0.0001, 6000));
+    expect(() => vi.advanceTimersByTime(30)).not.toThrow();
+
+    // ...and the feed is still alive: a usable tick still reaches onChain
+    feed.onData(l1(203, black76(F, 7500, T, 0.28, { isCall: true }).price));
+    vi.advanceTimersByTime(30);
+    expect(chains).toBe(2);
+  });
 });
