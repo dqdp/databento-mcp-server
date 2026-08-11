@@ -151,12 +151,15 @@ export function listDatabentoTools(options: DatabentoMcpServerOptions = {}): Too
   return listDatabentoToolContracts().filter((tool) => !disabledTools.has(tool.name));
 }
 
-function createToolErrorResult(error: string): CallToolResult {
+function createToolErrorResult(error: string, code?: string): CallToolResult {
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify({ error }, null, 2),
+        // The docs promise a machine-readable `code` beside the message, so a caller can tell a
+        // two-second warm-up from a market state that lasts all morning. Omitting it here made
+        // that promise false for the MCP surface, which is the one the model actually reads.
+        text: JSON.stringify(code ? { error, code } : { error }, null, 2),
       },
     ],
     isError: true,
@@ -854,7 +857,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
     }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return createToolErrorResult(errorMessage);
+      return createToolErrorResult(errorMessage, (error as { code?: string } | null)?.code);
     }
   };
 }

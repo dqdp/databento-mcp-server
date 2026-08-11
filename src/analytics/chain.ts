@@ -129,6 +129,13 @@ export interface Chain {
    * and only a wing survived: `atmStrike` is then merely the nearest survivor, and the
    * at-the-money figures below are withheld rather than filled from that wing. */
   atmNearForward: boolean;
+  /** True when this chain carries NO priceable strike — the quote-independent half (OI, PCR,
+   * max pain, expirations) is real, everything IV-derived is absent. Set by the reducer, not by
+   * a transport, so every consumer sees it and nobody has to infer the reason from an empty
+   * array. `degradedCode` says WHICH emptiness it is: books refused by the gate ('all-gated')
+   * or simply never quoted ('no-quotes'). */
+  degraded: boolean;
+  degradedCode: ChainBuildCode | null;
   /** Option books excluded by the usability gate (one-sided, crossed, cabinet-bid, or wider
    * than the forward cap). A thin smile and a gate-thinned smile look identical without it. */
   nGated: number;
@@ -180,35 +187,44 @@ export interface BuildChainOpts {
 }
 
 /**
- * An option book is IV-usable only when it's a genuine two-sided market of bounded width,
- * relative to the forward. Live-probed failure class (HO, 2026-07-17 ~10:07Z): outside the
+ * An option book is IV-usable only when it is a genuine two-sided market whose width is small
+ * against WHAT IS BEING PRICED. Live-probed failure class (HO, 2026-07-17 ~10:07Z): outside the
  * liquid session every strike's book was bid $0.0001 (the cabinet minimum) x ask ~$3 (a
- * market-maker safety quote ~80% of the forward away); the mid of that shell (~$1.58 on a
- * ~$0.35 option) solved to a uniform ~314% "smile". Such a book carries no price information —
- * the strike must read as UNQUOTED, at the source, not clamped downstream. One-sided books are
- * a bound, not a value; crossed books are an auction/indicative state. Real spreads sit orders
- * of magnitude under the cap (liquid ATM ~0.5% of F; the shells were ~80%), and genuine tiny
- * deep-OTM books (e.g. 0.0001x0.0003) pass because the cap scales with F, not with the mid.
- * The FUTURE is deliberately outside this gate (its one-sided mid still anchors the forward).
- */
-const MAX_OPTION_SPREAD_FRAC_OF_F = 0.1;
-
-/**
- * ...and the forward cap ALONE is not enough, because it is keyed to the wrong quantity. A
- * fair ATM premium is ~0.4·F·σ·√T, so on a short-dated or low-vol series the cap sits many
- * times above any honest price: at F=82 the cap is $8.20 while a 40-DTE ATM call is ~$2.50,
- * and a 0.0001 x 5.00 shell walks under it. What actually identifies the class is the BID: a
- * cabinet-minimum bid against a safety ask is a market in name only, at any scale. This
- * ratio test is scale-free, so it keeps the genuine tiny deep-OTM book the cap was written to
- * protect (0.0001 x 0.0003 — a bid worth a third of the ask) while refusing 0.0001 x 3.
+ * market-maker safety quote ~80% of the forward away); the mid of that shell (~$1.58 on a ~$0.35
+ * option) solved to a uniform ~314% "smile". Such a book carries no price information — the
+ * strike must read as UNQUOTED, at the source, not clamped downstream.
+ *
+ * Three independent tests, because the class has three signatures:
+ *
+ *  - ONE-SIDED or CROSSED. A missing side is a bound, not a value; a crossed book is an
+ *    auction/indicative state.
+ *  - A CABINET BID against a safety ask — a market in name only. Scale-free by construction,
+ *    which is why it catches the shell on a $4 underlying and on an $82 one alike.
+ *  - WIDTH against the option's own value. The first cut capped the spread at 10% of the
+ *    FORWARD, which is the wrong quantity: a fair ATM premium is ~0.4·F·sigma·sqrt(T), so on a
+ *    high-priced or low-vol series that cap sits 10-30x above any honest price and a wide but
+ *    non-cabinet book (1.00 x 5.00 on an option worth ~3) passes and prints an inflated IV.
+ *    The width is measured against the MID instead: spread <= mid, i.e. the bid is at least a
+ *    third of the ask. That still admits the genuinely wide wings a thin series legitimately
+ *    quotes (a 60%-of-mid spread on a small real premium) while refusing a book whose own
+ *    width exceeds what it claims to price. The absolute escape below keeps a near-zero book
+ *    the ratio would decide by rounding: a spread a tenth of a percent of the forward is
+ *    precise in absolute terms whatever its ratio says.
+ *
+ * The FUTURE is deliberately outside this gate (its one-sided mid still anchors the forward);
+ * `spotEstimated` reports when that exemption was actually used.
  */
 const MIN_BID_FRAC_OF_ASK = 0.01;
+const MAX_SPREAD_FRAC_OF_MID = 1.0;
+const NEGLIGIBLE_SPREAD_FRAC_OF_F = 0.001;
 
 function usableOptionQuote(q: QuoteEntry, F: number): boolean {
   if (q.bid == null || q.ask == null) return false;
   if (q.ask < q.bid) return false;
   if (q.ask > 0 && q.bid < MIN_BID_FRAC_OF_ASK * q.ask) return false;
-  return q.ask - q.bid <= MAX_OPTION_SPREAD_FRAC_OF_F * F;
+  const spread = q.ask - q.bid;
+  if (spread <= NEGLIGIBLE_SPREAD_FRAC_OF_F * F) return true;
+  return q.mid > 0 && spread <= MAX_SPREAD_FRAC_OF_MID * q.mid;
 }
 
 function delta25(strikeKeys: Iterable<number>, dl: Map<number, number | null>, target: number, lo: number, hi: number): number | null {
@@ -268,9 +284,12 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
       nGated++;
     }
   }
+  // state.lastTs is deliberately NOT a fallback: it is stamped by every stored quote, gated
+  // shells included, so reaching for it lets a book the gate threw away date the chain — the
+  // original defect, surviving in a narrower branch. Unknown is reported as unknown.
   const asOf = usedTs.length
     ? usedTs.reduce((a, b) => (a >= b ? a : b))
-    : (fq?.ts ?? state.lastTs); // no option book priced this chain — the forward's clock is all there is
+    : (fq?.ts ?? null); // no option book priced this chain — the forward's clock, or nothing
   const strikes = [...new Set([...calls.keys(), ...puts.keys()])].sort((a, b) => a - b);
   // The LISTED strike nearest the forward — a fact about the definitions, independent of any
   // quote. Stands in for the at-the-money anchor wherever the quoted set cannot supply one.
@@ -318,6 +337,7 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
     // Degraded: everything the gate cannot speak to is still true and still worth returning.
     return {
       symbol, expiration, dte: Math.max(0, Math.round(T * 365)), asOf, spot: F, spotEstimated: fwdEstimated,
+      degraded: true, degradedCode: err.code,
       atmStrike: atmListed, atmNearForward: false, nGated, atmIV: null, skew25: null,
       call25IV: null, put25IV: null, call25Strike: null, put25Strike: null,
       pcrOI, pcrVol: null, callOItotal: coi, putOItotal: poi, maxPain,
@@ -379,12 +399,19 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   // (weekly strips, legacy fine ranges), and the finest gap anywhere would shrink the tolerance
   // at the money and disqualify a survivor that genuinely is the money.
   const grid = [...new Set(listedStrikes)].sort((a, b) => a - b);
-  const gi = grid.findIndex((k) => k >= F);
-  const localGaps = [gi - 1, gi, gi + 1]
-    .filter((i) => i > 0 && i < grid.length)
-    .map((i) => grid[i] - grid[i - 1]);
-  const step = localGaps.length ? Math.max(...localGaps) : 0.02 * F; // one listed strike -> 2% of F
-  const atmNearForward = Math.abs(atm - F) <= step;
+  const hi = grid.findIndex((k) => k >= F);
+  // ONLY the gap the forward sits inside. Taking the widest of the neighbouring gaps re-admitted
+  // the defect on a mixed-increment ladder (fine near the money, coarse beyond): the tolerance
+  // inflated and a wing was published as ATM again. And when F is outside the listed range
+  // altogether there is no bracketing gap at all — that is not a case for a 2%-of-F guess, it
+  // is a chain whose money is off the ladder, so nothing may be called at-the-money.
+  // When F sits outside the listed range the bracketing gap does not exist; the increment at
+  // the nearest END of the ladder is the honest stand-in (and is what "one strike step" means
+  // there). With a single listed strike there is no increment at all — then nothing may be
+  // called at-the-money, rather than falling back to a percentage guess.
+  const gi = hi === -1 ? grid.length - 1 : Math.max(1, hi);
+  const step = grid.length >= 2 ? grid[gi] - grid[gi - 1] : null;
+  const atmNearForward = step != null && Math.abs(atm - F) <= step;
 
   const atmCiv = civ.get(atm) ?? null;
   const atmPiv = piv.get(atm) ?? null;
@@ -411,6 +438,8 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
     spot: F,
     spotEstimated: fwdEstimated,
     atmStrike: atm,
+    degraded: false,
+    degradedCode: null,
     atmNearForward,
     nGated,
     atmIV,

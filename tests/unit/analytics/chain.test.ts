@@ -267,20 +267,28 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
     expect(c.pcrOI!).toBeCloseTo(7000 / 5010, 9); // impossible if gating ate the OI maps
   });
 
-  it('the spread cap is relative to the forward: <=10% of F passes, wider is gated', () => {
-    const mk = (ask: number) => {
+  it('the width cap is keyed to the OPTION\'s own value, not to the forward alone', () => {
+    // 10% of F is the wrong yardstick: a fair ATM premium is ~0.4·F·sigma·sqrt(T), so on a
+    // high-priced underlying the F-cap sits many times above any honest price and a wide
+    // non-cabinet book (bid 1 x ask 5 on an option worth ~3) walks under it and prints an
+    // inflated IV. The width is measured against the mid instead, with an absolute escape for
+    // books whose whole spread is a rounding error against F.
+    const mk = (bid: number, ask: number) => {
       const s = newState();
       const recs: ChainRec[] = [
         { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
         { type: 'quote', instrument_id: 1, bid: 99.5, ask: 100.5 }, // F = 100
         { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 100, expiration: EXP },
-        { type: 'quote', instrument_id: 10, bid: 2, ask },
+        { type: 'quote', instrument_id: 10, bid, ask },
       ];
       for (const r of recs) applyTick(s, r);
       return s;
     };
-    expect(buildChain('ES', mk(12), EXP, T0).callIV[0]).not.toBeNull(); // spread 10 = 10% of F
-    expect(() => buildChain('ES', mk(12.5), EXP, T0)).toThrow(/usable option book/); // 10.5%
+    expect(buildChain('ES', mk(3.9, 4.1), EXP, T0).callIV[0]).not.toBeNull();  // a real market
+    // wide but NOT a cabinet bid: passes the bid-ratio test and the old 10%-of-F cap alike
+    expect(() => buildChain('ES', mk(1, 5), EXP, T0)).toThrow(/usable option book/);
+    // ...and a genuinely tiny two-sided book stays, because its whole width is negligible vs F
+    expect(buildChain('ES', mk(0.02, 0.04), EXP, T0).callIV[0]).not.toBeNull();
   });
 
   it('zero quotes at all still reads "no option quotes yet" (distinct from all-gated)', () => {

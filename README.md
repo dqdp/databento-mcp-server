@@ -1051,16 +1051,19 @@ mid produced a uniform ~314% "smile".) Three fields report what that cost:
 | `spotEstimated` | `true` = the forward itself came from a one-sided future book, so spot and every IV are approximate |
 
 Outside a product's hours EVERY book can be a placeholder. The call then returns
-a **quote-less chain** (`strikes: []`, `atmIV: null`, `degraded: true`) rather
+a **quote-less chain** (`strikes: []`, `atmIV: null`, `degraded: true`, plus
+`degradedCode` — `all-gated` when the books were refused, `no-quotes` when none
+was published at all) rather
 than failing: OI totals, `pcrOI`, `maxPain` and `expirations` come from
 definitions and settlement statistics, which the gate has nothing to say about.
 
 That degrade covers unusable **option** books. If the window carries no
 underlying quote at all there is no forward to price against, and the call still
 fails — with code `no-forward`. Every non-200 body carries such a `code`
-(`no-forward` | `no-quotes` | `all-gated` | `warming` | `error`) beside its
-human-readable `error`, so a poller can tell a two-second warm-up from a market
-state that lasts all morning.
+(`no-forward` | `no-quotes` | `all-gated` | `warming` | `error` | `not-found`)
+beside its human-readable `error`, so a poller can tell a two-second warm-up
+from a market state that lasts all morning. The MCP tool's error result carries
+the same `code`.
 
 ### Live futures-options smile page
 

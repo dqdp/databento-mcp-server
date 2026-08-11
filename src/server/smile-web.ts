@@ -43,13 +43,19 @@ export const UNBUILT_SESSION_MAX_MS = 30 * 60_000;
  * 'warming' is a session with no reason yet, 'error' is anything else. Declared as ONE union so
  * a client can switch exhaustively instead of matching English inside `error`.
  */
-export type SmileErrorCode = ChainBuildCode | 'warming' | 'error';
+export type SmileErrorCode = ChainBuildCode | 'warming' | 'error' | 'not-found';
+
+/** The code for a thrown value: the reducer's own when it carries one, else the catch-all. */
+function errorCode(e: unknown): SmileErrorCode {
+  const c = (e as { code?: string } | null)?.code;
+  return c === 'no-forward' || c === 'no-quotes' || c === 'all-gated' ? c : 'error';
+}
 
 /** An empty chain so the live page renders INSTANTLY; the first client poll fills it. */
 function placeholder(root: string): Chain {
   return {
     symbol: resolveOptionsRoot(root.toUpperCase()), expiration: '…', dte: 0, asOf: null, spot: 0,
-    spotEstimated: false, atmStrike: 0, atmNearForward: false, nGated: 0, atmIV: null, skew25: null, call25IV: null, put25IV: null,
+    spotEstimated: false, degraded: false, degradedCode: null, atmStrike: 0, atmNearForward: false, nGated: 0, atmIV: null, skew25: null, call25IV: null, put25IV: null,
     call25Strike: null, put25Strike: null, pcrOI: null, pcrVol: null, callOItotal: 0, putOItotal: 0,
     maxPain: 0, nContracts: 0, nExpirations: 0, expirations: [], window: 0, strikes: [], callIV: [],
     putIV: [], callOI: [], putOI: [], callDelta: [], putDelta: [], callVol: [], putVol: [],
@@ -213,7 +219,8 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
             send(res, 200, 'application/json',
               JSON.stringify(summarizeSeries(sroot, resolveOptionsRoot(sroot.toUpperCase()), defs, asOf, oi, seriesOi)));
           } catch (e) {
-            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
+            send(res, 503, 'application/json',
+                 JSON.stringify({ error: (e as Error).message, code: errorCode(e) }));
           }
           return;
         }
@@ -236,13 +243,14 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
             const data = await getTermData(clients.timeseriesClient, troot, { asOf, end, maxSeries, maxDays });
             send(res, 200, 'application/json', JSON.stringify(data));
           } catch (e) {
-            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message }));
+            send(res, 503, 'application/json',
+                 JSON.stringify({ error: (e as Error).message, code: errorCode(e) }));
           }
           return;
         }
         const m = url.pathname.match(/^\/smile\/([^/]+?)(\.json)?$/);
         if (!m || (req.method !== 'GET' && req.method !== 'HEAD')) {
-          send(res, 404, 'application/json', JSON.stringify({ error: 'not_found' }));
+          send(res, 404, 'application/json', JSON.stringify({ error: 'not_found', code: 'not-found' }));
           return;
         }
         const root = decodeURIComponent(m[1]);
@@ -266,25 +274,17 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
               // A quote-less chain is the right answer, but it must not look like an ordinary
               // one: empty arrays with no explanation replaced a 503 whose reason the page used
               // to paint. Mark it, in both modes.
-              const degraded = chain.strikes.length === 0;
-              const body = {
-                ...chain,
-                ...(stale ? { stale: true, staleReason: reason, staleCode: code } : {}),
-                ...(degraded
-                  ? {
-                      degraded: true,
-                      degradedReason:
-                        reason ?? 'no usable option book — every quote is one-sided, crossed or a shell',
-                    }
-                  : {}),
-              };
+              // `degraded`/`degradedCode` ride on the chain itself now: hard-coding the
+              // all-gated wording here asserted a cause the data need not carry — a chain in
+              // which nothing was gated was told every quote was a shell.
+              const body = stale ? { ...chain, stale: true, staleReason: reason, staleCode: code } : chain;
               send(res, 200, 'application/json', JSON.stringify(body));
             }
             else send(res, 503, 'application/json',
                       JSON.stringify({ error: reason ?? 'live buffer warming up', code: code ?? 'warming' }));
           } catch (e) {
-            const c: SmileErrorCode = (e as { code?: ChainBuildCode }).code ?? 'error';
-            send(res, 503, 'application/json', JSON.stringify({ error: (e as Error).message, code: c }));
+            send(res, 503, 'application/json',
+                 JSON.stringify({ error: (e as Error).message, code: errorCode(e) }));
           }
           return;
         }
@@ -312,6 +312,9 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
         for (const [key, when] of lastPoll) {
           if (now - when <= IDLE_MS) continue;
           lastPoll.delete(key);
+          unbuiltSince.delete(key); // the deadline dies with the session it was measuring —
+                                    // otherwise the next poll seeds a fresh one that inherits
+                                    // an expired clock and is stopped on its first request
           const victim = sessions.get(key);
           if (victim) {
             sessions.delete(key);
@@ -347,6 +350,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
     for (const p of sessions.values()) void p.then((s) => s.stop()).catch(() => {});
     sessions.clear();
     lastPoll.clear();
+    unbuiltSince.clear(); // every per-key map, or a restarted server inherits dead deadlines
   });
   return server;
 }

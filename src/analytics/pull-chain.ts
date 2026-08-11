@@ -8,7 +8,7 @@
  * step and composes on top of this.
  */
 import type { Chain, ChainRec, DefinitionRec, QuoteRec } from './chain.js';
-import { applyTick, buildChain, newState } from './chain.js';
+import { applyTick, buildChain, ChainBuildError, newState } from './chain.js';
 import { normalizeDefinitions, normalizeQuotes, normalizeSettlements, normalizeStatistics } from './databento-normalize.js';
 
 const DATASET = 'GLBX.MDP3';
@@ -361,9 +361,12 @@ export async function pullQuotesSnapshot(
   const futureQuotes = normalizeQuotes((await bbo(String(futureDef.instrument_id))).data);
   const F = midOf(futureQuotes, futureDef.instrument_id);
   if (F == null) {
-    throw new Error(
-      `no forward: underlying future ${futureDef.instrument_id} has no BBO in the last ` +
-        `${Math.round(BBO_WINDOW_MS / 60000)} min for ${expiration} — market may be closed`,
+    // Same CODE as the reducer's own no-forward: the documented contract is "no underlying
+    // quote in the window -> code no-forward", and a plain Error here made the wire say 'error'.
+    throw new ChainBuildError(
+      'no-forward',
+      `no forward for ${expiration}: the underlying future has no BBO in the last ` +
+        `${Math.round(BBO_WINDOW_MS / 60000)} min — market may be closed`,
     );
   }
 

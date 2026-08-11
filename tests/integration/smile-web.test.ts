@@ -264,10 +264,40 @@ describe('smile-web server', () => {
     try {
       const c = await (await fetch(`http://localhost:${(s.address() as AddressInfo).port}/smile/ES.json`)).json();
       expect(c.degraded).toBe(true);
-      expect(c.degradedReason).toMatch(/shell|one-sided|usable/);
+      expect(c.degradedCode).toBe('all-gated');   // the cause the DATA carries, not a hard-coded one
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }
+  });
+
+  it('a chain nobody quoted is not accused of being gated', async () => {
+    // The reason used to be hard-coded at the transport, so a series in which no option book
+    // was quoted at all was served asserting "every quote is one-sided, crossed or a shell".
+    const bboNoOptions = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
+    const clients2 = {
+      timeseriesClient: {
+        getRange: async (req: { schema: string }) => ({
+          data: req.schema === 'definition' ? defCsv : req.schema === 'statistics' ? statCsv : bboNoOptions,
+        }),
+      },
+      metadataClient: { getDatasetRange: async () => ({ end: '2026-06-30T14:00:00Z' }) },
+    } as any;
+    const s = createSmileServer(clients2);
+    await new Promise<void>((r) => s.listen(0, r));
+    try {
+      const c = await (await fetch(`http://localhost:${(s.address() as AddressInfo).port}/smile/ES.json`)).json();
+      expect(c.degraded).toBe(true);
+      expect(c.degradedCode).toBe('no-quotes');   // nothing was gated — nGated is 0
+      expect(c.nGated).toBe(0);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('an unmatched path answers with a code too', async () => {
+    const res = await fetch(`${base}/nope`);
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('not-found');
   });
 
   it('every 503 body carries a code, snapshot mode included', async () => {

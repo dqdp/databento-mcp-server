@@ -1036,6 +1036,43 @@ describe("get_futures_options_smile tool", () => {
       return { data, schema: req.schema, symbols: [], dateRange: {}, recordCount: 0 };
     });
 
+  it("emits the degraded fields the docs promise, and a code when it fails", async () => {
+    // The description and README advertise `degraded: true` and a `code` on failure. Both were
+    // set only in the HTTP layer of smile-web, so the MCP surface — the one the model reads —
+    // never carried either.
+    const emptyBbo =
+      `instrument_id,ts_event,bid_px_00,ask_px_00\n` +
+      `${FUT},${bboTsNs},7466000000000,7468000000000\n`;
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange({ bboCsv: emptyBbo });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      const chain = JSON.parse(result.content[1].text);
+      expect(chain.degraded).toBe(true);
+      expect(chain.degradedCode).toBe("no-quotes");
+      expect(chain.strikes).toEqual([]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("a failing smile carries the documented code, not just a message", async () => {
+    const noQuotesAtAll = `instrument_id,ts_event,bid_px_00,ask_px_00\n`;   // not even the future
+    const clients = createMockClients();
+    (clients.timeseriesClient as any).getRange = makeGetRange({ bboCsv: noQuotesAtAll });
+    const { client, server } = await connectTestClient(clients);
+    try {
+      const result: any = await client.callTool({ name: "get_futures_options_smile", arguments: { root: "ES" } });
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text).code).toBe("no-forward");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("never states a cause the chain does not support", async () => {
     // The degraded chain drops the build code, leaving nGated as the only signal — and a
     // no-quotes chain has nGated 0, so the honesty line asserted "0 book(s) gated as unusable"
