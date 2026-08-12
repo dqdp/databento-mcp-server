@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "databento-mcp",
   "display_name": "Databento MCP",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Databento market data MCP server for Claude Desktop",
   "long_description": "Local Databento MCP server for CME futures market data, true live futures and futures-options quote updates, symbology, metadata, reference data, and guarded batch workflows. Optionally hosts a tick-live futures-options volatility-smile web page (set a port in configuration) streamed from the Databento Live socket. API keys are collected through sensitive configuration.",
   "author": {
