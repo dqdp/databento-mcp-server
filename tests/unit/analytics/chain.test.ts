@@ -234,12 +234,18 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
     expect(() => buildChain('OH', s, '2026-08-26', T_HO)).toThrow(/usable option book/);
   });
 
-  it('a genuine wide-but-tiny deep-OTM book is KEPT (wings stay honest)', () => {
-    const m = black76(F_HO, 4.17, T_HO, 0.7, { isCall: true }).price; // small, real premium
-    const s = hoState([{ type: 'quote', instrument_id: 42506345, bid: m * 0.7, ask: m * 1.3 }]);
+  it('a genuine deep-OTM wing is KEPT — the live-probed shapes, not an invented one', () => {
+    // These are the widths real wings actually quote (NG/6E/CL ladders from the review's own
+    // runs): wide in RATIO terms, but a fraction of a percent to ~2% of the forward. An earlier
+    // version of this test used an invented +/-30%-of-mid book, which lands at ~4% of F — the
+    // same magnitude as the 1.00 x 5.00 placeholder the gate must refuse. Two cases that far
+    // apart in provenance should not be separated by a threshold tuned to split them, so the
+    // invented one is gone and the boundary answers to the probed shapes.
+    const m = black76(F_HO, 4.17, T_HO, 0.7, { isCall: true }).price;
+    const s = hoState([{ type: 'quote', instrument_id: 42506345, bid: m * 0.88, ask: m * 1.12 }]);
     const c = buildChain('OH', s, '2026-08-26', T_HO);
     expect(c.strikes).toEqual([4.17]);
-    expect(c.callIV[0]!).toBeCloseTo(0.7, 1); // 100%-of-mid spread but tiny vs F — usable
+    expect(c.callIV[0]!).toBeCloseTo(0.7, 1);
   });
 
   it('a truly-tiny cabinet book (0.0001 x 0.0003) passes — the cap scales with F, not the mid', () => {
@@ -267,28 +273,56 @@ describe('option quote-quality gate (the HO 6am shell-book class)', () => {
     expect(c.pcrOI!).toBeCloseTo(7000 / 5010, 9); // impossible if gating ate the OI maps
   });
 
-  it('the width cap is keyed to the OPTION\'s own value, not to the forward alone', () => {
-    // 10% of F is the wrong yardstick: a fair ATM premium is ~0.4·F·sigma·sqrt(T), so on a
-    // high-priced underlying the F-cap sits many times above any honest price and a wide
-    // non-cabinet book (bid 1 x ask 5 on an option worth ~3) walks under it and prints an
-    // inflated IV. The width is measured against the mid instead, with an absolute escape for
-    // books whose whole spread is a rounding error against F.
-    const mk = (bid: number, ask: number) => {
+  it('separates a shell from a wide REAL wing — they share the same bid/ask ratio', () => {
+    // The two signatures are independent and neither alone is enough. A genuine wing quotes
+    // 0.02 x 0.08 and a placeholder quotes 1.00 x 5.00 — both are bid-a-fifth-of-ask, so the
+    // ratio cannot separate them; what does is the ABSOLUTE width against the forward. And a
+    // cabinet bid (0.05 x 3.00) is negligible in absolute terms on an expensive underlying, so
+    // width cannot separate that one; the ratio does. Both tests must pass, with no escape
+    // hatch short-circuiting either — the previous cut let a forward-keyed escape run first.
+    const mk = (bid: number, ask: number, F = 100) => {
       const s = newState();
-      const recs: ChainRec[] = [
+      for (const r of [
         { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
-        { type: 'quote', instrument_id: 1, bid: 99.5, ask: 100.5 }, // F = 100
-        { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 100, expiration: EXP },
+        { type: 'quote', instrument_id: 1, bid: F - 0.5, ask: F + 0.5 },
+        { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: F, expiration: EXP },
         { type: 'quote', instrument_id: 10, bid, ask },
-      ];
-      for (const r of recs) applyTick(s, r);
+      ] as ChainRec[]) applyTick(s, r);
       return s;
     };
-    expect(buildChain('ES', mk(3.9, 4.1), EXP, T0).callIV[0]).not.toBeNull();  // a real market
-    // wide but NOT a cabinet bid: passes the bid-ratio test and the old 10%-of-F cap alike
-    expect(() => buildChain('ES', mk(1, 5), EXP, T0)).toThrow(/usable option book/);
-    // ...and a genuinely tiny two-sided book stays, because its whole width is negligible vs F
-    expect(buildChain('ES', mk(0.02, 0.04), EXP, T0).callIV[0]).not.toBeNull();
+    const kept = (b: number, a: number, F?: number) => buildChain('ES', mk(b, a, F), EXP, T0).callIV[0] != null;
+    const gated = (b: number, a: number, F?: number) => {
+      try { buildChain('ES', mk(b, a, F), EXP, T0); return false; } catch { return true; }
+    };
+
+    expect(kept(3.9, 4.1)).toBe(true);            // a real market
+    expect(kept(0.10, 0.40)).toBe(true);          // a wide but REAL wing: 0.3% of F
+    expect(kept(0.02, 0.08, 3.5)).toBe(true);     // NG wing — same 1:4 ratio, 1.7% of F
+    expect(kept(0.0005, 0.0020, 1.08)).toBe(true); // 6E wing
+    expect(gated(1, 5)).toBe(true);               // 4% of F wide — a placeholder, not a wing
+    // ...and the shells that a forward-keyed rule waves through on an expensive underlying
+    expect(gated(0.05, 3.00, 6000)).toBe(true);
+    expect(gated(0.25, 20.0, 21000)).toBe(true);
+    // NOT asserted: 1.00 x 5.00 at F=6000. The review listed it as a bypass, but that judgement
+    // travels from F=100, where the same book is 4% of the forward; at F=6000 it is 0.07% — an
+    // ordinary illiquid wing by the very standard that keeps NG 0.02 x 0.08. Carrying a verdict
+    // across a 60x change of scale is the error this whole finding is about.
+  });
+
+  it('the FUTURE is judged by its own rule — its mid is the forward, so a mid-ratio is blind', () => {
+    // usableOptionQuote is also what decides spotEstimated. Once width was measured against the
+    // mid, the check went blind for the future (its mid IS F), and an 60 x 140 book — 80% of F
+    // — reported spotEstimated false: the honesty flag said the forward was exact.
+    const s = newState();
+    for (const r of [
+      { type: 'definition', instrument_id: 1, instrument_class: 'F', strike: null, expiration: EXP },
+      { type: 'quote', instrument_id: 1, bid: 60, ask: 140 },
+      { type: 'definition', instrument_id: 10, instrument_class: 'C', strike: 100, expiration: EXP },
+      { type: 'quote', instrument_id: 10, bid: 3.9, ask: 4.1 },
+    ] as ChainRec[]) applyTick(s, r);
+    const c = buildChain('ES', s, EXP, T0);
+    expect(c.spot).toBe(100);
+    expect(c.spotEstimated).toBe(true);
   });
 
   it('zero quotes at all still reads "no option quotes yet" (distinct from all-gated)', () => {

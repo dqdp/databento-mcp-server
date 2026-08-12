@@ -139,7 +139,7 @@ export function renderSmileHtml(chain: Chain, opts: SmileHtmlOpts = {}): string 
   <div class="legend">
     <span><span class="sw" style="background:var(--put)"></span>Put IV (OTM, K ≤ ATM)</span>
     <span><span class="sw" style="background:var(--call)"></span>Call IV (OTM, K ≥ ATM)</span>
-    <span><span class="sw" style="border-top:1px solid var(--mut);height:0"></span>ATM <span id="h-atm">${chain.atmStrike}</span></span>
+    <span><span class="sw" style="border-top:1px solid var(--mut);height:0"></span><span id="h-atmlab">${chain.atmNearForward ? 'ATM' : 'nearest quoted'}</span> <span id="h-atm">${chain.atmStrike}</span></span>
   </div>
   <div class="panel"><canvas id="smile"></canvas></div>
 
@@ -182,7 +182,7 @@ export function renderSmileHtml(chain: Chain, opts: SmileHtmlOpts = {}): string 
       plugins:{ legend:{display:false}, tooltip:{ callbacks:{ title:function(t){return 'Strike '+cur.strikes[t[0].dataIndex];}, label:function(c){return c.dataset.label+': '+c.parsed.y+'%';} } } },
       scales:{ x:{ title:{display:true,text:'Strike',color:mut}, ticks:{color:mut,autoSkip:true,maxTicksLimit:11}, grid:{display:false} },
                y:{ title:{display:true,text:'Implied vol (%)',color:mut}, ticks:{color:mut,callback:function(v){return v+'%';}}, grid:{color:line} } } },
-    plugins:[{ afterDraw:function(c){ vline(c,cur.atmStrike,mut,[],'ATM '+cur.atmStrike); if(cur.put25Strike)vline(c,cur.put25Strike,put,[3,3],'25Δ put'); if(cur.call25Strike)vline(c,cur.call25Strike,call,[3,3],'25Δ call'); } }] });
+    plugins:[{ afterDraw:function(c){ vline(c,cur.atmStrike,mut,[],(cur.atmNearForward===false?'nearest quoted ':'ATM ')+cur.atmStrike); if(cur.put25Strike)vline(c,cur.put25Strike,put,[3,3],'25Δ put'); if(cur.call25Strike)vline(c,cur.call25Strike,call,[3,3],'25Δ call'); } }] });
   var oi = new Chart(document.getElementById('oi'),{ type:'bar',
     data:{ labels:cur.strikes, datasets:[
       { label:'Call OI', data:cur.callOI.map(function(x){return x||0;}), backgroundColor:call },

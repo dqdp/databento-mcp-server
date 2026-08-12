@@ -1040,7 +1040,14 @@ chain JSON: `spot`, `atmStrike`, `strikes[]`, `callIV[]`/`putIV[]`,
 
 **Quote quality is gated, and the chain says so.** A book that carries no price
 information — one-sided, crossed, or a cabinet bid against a market-maker safety
-ask — is not solved into an IV; it is left out of `strikes[]` entirely. (Probed
+ask — is not solved into an IV; it is left out of `strikes[]` entirely. Two independent
+tests decide it: the **bid/ask ratio** (a bid under 15% of the ask is a cabinet
+placeholder — the only signature that catches a shell on an expensive
+underlying, where its width is a rounding error) and the **absolute width**
+against the forward (over 3% of F — the only signature that separates a
+placeholder from a wide but genuine wing, since both quote bid-a-fifth-of-ask).
+The future's own book is judged separately and far more tightly, at 1% of F,
+because its mid IS the forward. (Probed
 live on HO outside its liquid session: every strike quoted $0.0001 × ~$3, whose
 mid produced a uniform ~314% "smile".) Three fields report what that cost:
 

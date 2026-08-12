@@ -465,7 +465,17 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
             if (chain.strikes.length === 0) {
               notes.push("NO strike is priceable, so IV and skew are absent — only the OI-derived figures above are real");
             } else if (!chain.atmNearForward) {
-              notes.push("the near-money books are missing, so ATM IV and the 25\u0394 figures are withheld rather than taken from a wing");
+              // Three different states reach here and they call for different reactions: books
+              // refused at the money, a forward off the listed ladder, or a ladder too small to
+              // have a step at all. Naming only the first made the other two a false cause.
+              const listed = chain.strikes.length;
+              const why =
+                listed < 2
+                  ? "this expiration lists too few strikes to say what 'at the money' means"
+                  : chain.atmStrike < Math.min(...chain.strikes) || chain.atmStrike > Math.max(...chain.strikes)
+                    ? "the forward sits outside the listed strike ladder"
+                    : "the near-money books are missing";
+              notes.push(`${why}, so ATM IV and the 25\u0394 figures are withheld rather than taken from a wing`);
             }
             if (chain.spotEstimated) {
               notes.push("the forward comes from a ONE-SIDED future book — treat spot and every IV as approximate");
@@ -473,7 +483,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
             return notes.length ? `Quote quality: ${notes.join("; ")}. Say so when reporting these numbers.\n` : "";
           })() +
           `Render the JSON below as an interactive Chart.js artifact — three panels, dark-mode friendly: ` +
-          `(1) volatility smile — plot the OTM legs vs \`strikes\`: \`putIV\` where strike <= \`atmStrike\`, \`callIV\` where strike >= \`atmStrike\`, mark \`atmStrike\`; ` +
+          `(1) volatility smile — plot the OTM legs vs \`strikes\`: \`putIV\` where strike <= \`atmStrike\`, \`callIV\` where strike >= \`atmStrike\`, mark \`atmStrike\` — but label that marker "ATM" ONLY if \`atmNearForward\` is true; when it is false the strike is merely the nearest one still quoted (the at-the-money books were refused), so label it "nearest quoted" and do not present it as the money; ` +
           `(2) open interest by strike — \`callOI\`/\`putOI\` grouped bars with a vertical line at \`maxPain\`; ` +
           `(3) a metric strip — \`atmIV\`, \`skew25\`, \`pcrOI\`, \`maxPain\`, \`spot\`, \`dte\`. IV values are decimals (0.15 = 15%).`;
 
@@ -857,7 +867,11 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
     }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      return createToolErrorResult(errorMessage, (error as { code?: string } | null)?.code);
+      // A code on EVERY failure, not only the reducer's own: the contract says a caller can
+      // branch on it, and "sometimes present" is worse than absent — it reads as a taxonomy
+      // while silently collapsing bad-expiry, no-OI-to-rank-by and a Databento HTTP failure
+      // into the same undefined.
+      return createToolErrorResult(errorMessage, (error as { code?: string } | null)?.code ?? "error");
     }
   };
 }

@@ -852,6 +852,7 @@ describe("MCP server integration", () => {
       expect(result.isError).toBe(true);
       expect(textPayload(result)).toEqual({
         error: expect.stringContaining("Databento estimated this covered Standard CME request as billable"),
+        code: "error",
       });
       expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
     } finally {
@@ -889,6 +890,7 @@ describe("MCP server integration", () => {
       expect(result.isError).toBe(true);
       expect(textPayload(result)).toEqual({
         error: expect.stringContaining("Databento estimated this covered Standard CME request as billable"),
+        code: "error",
       });
       expect(clients.batchClient.submitJob).not.toHaveBeenCalled();
     } finally {
@@ -964,6 +966,7 @@ describe("MCP server integration", () => {
       expect(result.isError).toBe(true);
       expect(textPayload(result)).toEqual({
         error: "HTTP 401: Unauthorized",
+        code: "error",
       });
     } finally {
       await client.close();
@@ -980,6 +983,7 @@ describe("MCP server integration", () => {
       expect(result.isError).toBe(true);
       expect(textPayload(result)).toEqual({
         error: "Unknown tool: not_a_tool",
+        code: "error",
       });
     } finally {
       await client.close();

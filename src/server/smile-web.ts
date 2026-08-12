@@ -44,6 +44,9 @@ export const UNBUILT_SESSION_MAX_MS = 30 * 60_000;
  * a client can switch exhaustively instead of matching English inside `error`.
  */
 export type SmileErrorCode = ChainBuildCode | 'warming' | 'error' | 'not-found';
+// "every non-200 body" includes the handler's own catch-all 500, which a malformed request can
+// reach from the wire — a type whose doc says "every" and a server that means "most" is the
+// kind of contract a client only discovers by crashing on it.
 
 /** The code for a thrown value: the reducer's own when it carries one, else the catch-all. */
 function errorCode(e: unknown): SmileErrorCode {
@@ -298,7 +301,7 @@ export function createSmileServer(clients: SmileClients, options: SmileServerOpt
         const jsonUrl = `/smile/${encodeURIComponent(root)}.json${qs.toString() ? `?${qs.toString()}` : ''}`;
         send(res, 200, 'text/html; charset=utf-8', renderSmileHtml(placeholder(root), { live: { jsonUrl, interval } }));
       } catch {
-        send(res, 500, 'application/json', JSON.stringify({ error: 'internal_error' }));
+        send(res, 500, 'application/json', JSON.stringify({ error: 'internal_error', code: 'error' }));
       }
     })();
   });

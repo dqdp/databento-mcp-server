@@ -59,11 +59,10 @@ export interface ChainState {
   quotes: Map<number, QuoteEntry>;
   oi: Map<number, number>;
   futureId: number | null;
-  lastTs: string | null;
 }
 
 export function newState(): ChainState {
-  return { defs: new Map(), quotes: new Map(), oi: new Map(), futureId: null, lastTs: null };
+  return { defs: new Map(), quotes: new Map(), oi: new Map(), futureId: null };
 }
 
 function mid(bid: number | null, ask: number | null): number | null {
@@ -79,8 +78,10 @@ export function applyTick(state: ChainState, rec: ChainRec): ChainState {
   } else if (rec.type === 'quote') {
     const m = mid(rec.bid, rec.ask);
     if (m != null) {
+      // No global clock is kept: it was stamped by every quote, gated shells included, and
+      // reaching for it as a fallback let a refused book date the chain. Each book carries its
+      // own ts and `asOf` is built from the ones that were actually used.
       state.quotes.set(rec.instrument_id, { bid: rec.bid, ask: rec.ask, mid: m, ts: rec.ts ?? null });
-      if (rec.ts) state.lastTs = rec.ts;
     }
     // A both-UNDEF row is deliberately a NON-EVENT here. It looks like a withdrawal, but on the
     // only path that produces it — normalizeQuotes over a multi-row bbo window — it is a quiet
@@ -187,44 +188,48 @@ export interface BuildChainOpts {
 }
 
 /**
- * An option book is IV-usable only when it is a genuine two-sided market whose width is small
- * against WHAT IS BEING PRICED. Live-probed failure class (HO, 2026-07-17 ~10:07Z): outside the
- * liquid session every strike's book was bid $0.0001 (the cabinet minimum) x ask ~$3 (a
- * market-maker safety quote ~80% of the forward away); the mid of that shell (~$1.58 on a ~$0.35
- * option) solved to a uniform ~314% "smile". Such a book carries no price information — the
- * strike must read as UNQUOTED, at the source, not clamped downstream.
+ * An option book is IV-usable only when it is a genuine two-sided market of bounded width.
+ * Live-probed failure class (HO, 2026-07-17 ~10:07Z): outside the liquid session every strike's
+ * book was bid $0.0001 (the cabinet minimum) x ask ~$3 (a market-maker safety quote ~80% of the
+ * forward away); the mid of that shell (~$1.58 on a ~$0.35 option) solved to a uniform ~314%
+ * "smile". Such a book carries no price information — the strike must read as UNQUOTED, at the
+ * source, not clamped downstream.
  *
- * Three independent tests, because the class has three signatures:
+ * Two INDEPENDENT signatures, and neither one alone can do the job:
  *
- *  - ONE-SIDED or CROSSED. A missing side is a bound, not a value; a crossed book is an
- *    auction/indicative state.
- *  - A CABINET BID against a safety ask — a market in name only. Scale-free by construction,
- *    which is why it catches the shell on a $4 underlying and on an $82 one alike.
- *  - WIDTH against the option's own value. The first cut capped the spread at 10% of the
- *    FORWARD, which is the wrong quantity: a fair ATM premium is ~0.4·F·sigma·sqrt(T), so on a
- *    high-priced or low-vol series that cap sits 10-30x above any honest price and a wide but
- *    non-cabinet book (1.00 x 5.00 on an option worth ~3) passes and prints an inflated IV.
- *    The width is measured against the MID instead: spread <= mid, i.e. the bid is at least a
- *    third of the ask. That still admits the genuinely wide wings a thin series legitimately
- *    quotes (a 60%-of-mid spread on a small real premium) while refusing a book whose own
- *    width exceeds what it claims to price. The absolute escape below keeps a near-zero book
- *    the ratio would decide by rounding: a spread a tenth of a percent of the forward is
- *    precise in absolute terms whatever its ratio says.
+ *  - The RATIO of bid to ask. Scale-free, and the only thing that catches a cabinet bid on an
+ *    expensive underlying: ES 0.05 x 3.00 is a placeholder, yet its width is 0.05% of a 6000
+ *    forward, so no absolute rule will ever object to it.
+ *  - The ABSOLUTE width against the forward. This is what separates a placeholder from a wide
+ *    but REAL wing, which the ratio cannot: NG 0.02 x 0.08 and a 1.00 x 5.00 shell are both
+ *    bid-a-fifth-of-ask, and the honest one is 1.7% of its forward while the other is 4%.
  *
- * The FUTURE is deliberately outside this gate (its one-sided mid still anchors the forward);
- * `spotEstimated` reports when that exemption was actually used.
+ * Both must pass. Earlier cuts of this predicate failed by trying to make one of them carry the
+ * whole load: a lone 10%-of-F cap admitted every cabinet shell, a lone spread<=mid ratio threw
+ * away real wings across NG/6E/grains, and an absolute "negligible width" ESCAPE evaluated
+ * before the ratio short-circuited it entirely — reinstating the very bypass it replaced, since
+ * its allowance grows with F ($6 on ES, $21 on NQ).
+ *
+ * The FUTURE is judged by usableFutureQuote instead: its mid IS the forward, so a width measured
+ * against the mid is vacuous for it, and applying the option rule left `spotEstimated` reporting
+ * a 60 x 140 book as an exact forward.
  */
-const MIN_BID_FRAC_OF_ASK = 0.01;
-const MAX_SPREAD_FRAC_OF_MID = 1.0;
-const NEGLIGIBLE_SPREAD_FRAC_OF_F = 0.001;
+const MIN_BID_FRAC_OF_ASK = 0.15;
+const MAX_OPTION_SPREAD_FRAC_OF_F = 0.03;
+/** The future's own book: it anchors every IV, so it is held to a far tighter width than a wing. */
+const MAX_FUTURE_SPREAD_FRAC_OF_F = 0.01;
 
 function usableOptionQuote(q: QuoteEntry, F: number): boolean {
   if (q.bid == null || q.ask == null) return false;
   if (q.ask < q.bid) return false;
   if (q.ask > 0 && q.bid < MIN_BID_FRAC_OF_ASK * q.ask) return false;
-  const spread = q.ask - q.bid;
-  if (spread <= NEGLIGIBLE_SPREAD_FRAC_OF_F * F) return true;
-  return q.mid > 0 && spread <= MAX_SPREAD_FRAC_OF_MID * q.mid;
+  return q.ask - q.bid <= MAX_OPTION_SPREAD_FRAC_OF_F * F;
+}
+
+function usableFutureQuote(q: QuoteEntry | undefined, F: number): boolean {
+  if (!q || q.bid == null || q.ask == null) return false;
+  if (q.ask < q.bid) return false;
+  return q.ask - q.bid <= MAX_FUTURE_SPREAD_FRAC_OF_F * F;
 }
 
 function delta25(strikeKeys: Iterable<number>, dl: Map<number, number | null>, target: number, lo: number, hi: number): number | null {
@@ -270,7 +275,7 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
   // refusing it would leave nothing to price against. But a one-sided or shell-wide future book
   // is a BOUND, not a price: it biases every IV and it sets the gate's own threshold. Exempt is
   // not the same as trustworthy, so the chain says which one it got.
-  const fwdEstimated = !fq || fq.bid == null || fq.ask == null || !usableOptionQuote(fq, F);
+  const fwdEstimated = !usableFutureQuote(fq, F);
   for (const [iid, d] of state.defs) {
     if ((d.cls !== 'C' && d.cls !== 'P') || d.expiration !== expiration || d.strike == null) continue;
     listedStrikes.push(d.strike);
@@ -284,12 +289,16 @@ export function buildChain(symbol: string, state: ChainState, expiration: string
       nGated++;
     }
   }
-  // state.lastTs is deliberately NOT a fallback: it is stamped by every stored quote, gated
-  // shells included, so reaching for it lets a book the gate threw away date the chain — the
-  // original defect, surviving in a narrower branch. Unknown is reported as unknown.
+  // There is deliberately no global-clock fallback (the old state.lastTs, now removed): it was
+  // stamped by every stored quote, gated shells included, so reaching for it let a book the gate
+  // threw away date the chain. Unknown is reported as unknown.
   const asOf = usedTs.length
     ? usedTs.reduce((a, b) => (a >= b ? a : b))
-    : (fq?.ts ?? null); // no option book priced this chain — the forward's clock, or nothing
+    // Only when NO option book priced this chain does the forward's clock stand in — it is then
+    // the sole evidence of when any of this was true. While option books DID price it, the
+    // forward is excluded on purpose: it ticks whenever the underlying does and would re-date a
+    // smile made of hours-old prints.
+    : (fq?.ts ?? null);
   const strikes = [...new Set([...calls.keys(), ...puts.keys()])].sort((a, b) => a - b);
   // The LISTED strike nearest the forward — a fact about the definitions, independent of any
   // quote. Stands in for the at-the-money anchor wherever the quoted set cannot supply one.
