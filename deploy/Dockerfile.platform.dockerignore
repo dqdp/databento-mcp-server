@@ -1,0 +1,18 @@
+# Allowlist build inputs. No user state, API keys, original data or Git metadata.
+**
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.mcp.json
+!SOURCE_MANIFEST.json
+!mcp/
+!mcp/**/*.ts
+!src/
+!src/**/*.ts
+!src/api/batch-tools.json
+!deploy/
+!deploy/Dockerfile.platform
+**/.env*
+**/node_modules/**
+**/*.db*
+**/*.sqlite*

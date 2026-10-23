@@ -1,0 +1,28 @@
+ARG NODE_IMAGE
+FROM ${NODE_IMAGE} AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY tsconfig.json tsconfig.mcp.json ./
+COPY mcp ./mcp
+COPY src ./src
+RUN npm run build:mcp
+
+FROM ${NODE_IMAGE} AS production-dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+FROM ${NODE_IMAGE} AS runtime
+ARG SOURCE_SHA
+LABEL org.opencontainers.image.title="Private Databento platform connector" \
+      org.opencontainers.image.revision="${SOURCE_SHA}"
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=production-dependencies /app/node_modules ./node_modules
+COPY --from=builder /app/dist/mcp ./dist/mcp
+COPY package.json package-lock.json ./
+COPY SOURCE_MANIFEST.json /usr/share/mcp-platform/source-manifest.json
+USER node
+EXPOSE 8002
+CMD ["node", "dist/mcp/mcp/platform.js"]
