@@ -49,6 +49,9 @@ interface RequestOptions {
   timeout?: number;
 }
 
+/** A response rejected by a caller's safety policy must not be downloaded again. */
+export class NonRetryableResponseError extends Error {}
+
 /**
  * DataBento API HTTP Client
  * Handles authentication, retries, and error handling for all Databento API requests
@@ -69,6 +72,11 @@ export class DataBentoHTTP {
       ...DATABENTO_CONFIG,
       ...(overrides || {}),
     };
+  }
+
+  /** Default local behavior; a private adapter may install a bounded byte reader. */
+  public async readResponseText(response: Response): Promise<string> {
+    return response.text();
   }
 
   /**
@@ -179,7 +187,7 @@ export class DataBentoHTTP {
     requestOptions?: RequestOptions
   ): Promise<string> {
     const response = await this.fetchWithRetry(url, options, requestOptions);
-    return response.text();
+    return this.readResponseText(response);
   }
 
   /**
@@ -218,7 +226,7 @@ export class DataBentoHTTP {
         } as RequestInit & { dispatcher?: UndiciAgent });
 
         if (!response.ok) {
-          const errorText = await response.text();
+          const errorText = await this.readResponseText(response);
           throw new Error(
             `HTTP ${response.status}: ${response.statusText} - ${errorText}`
           );
@@ -226,6 +234,9 @@ export class DataBentoHTTP {
 
         return response;
       } catch (error) {
+        if (error instanceof NonRetryableResponseError) {
+          throw error;
+        }
         // If this is the last attempt, throw the error
         if (attempt === retryAttempts) {
           throw new Error(
