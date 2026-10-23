@@ -2,6 +2,8 @@
 
 Professional market data access via DataBento API, available as both an MCP server and Claude Code skills.
 
+Общая multi-user платформа: [private Databento RPC за единым авторизованным MCP Gateway](docs/platform-gateway.md). Локальный stdio и существующий remote HTTP сохраняются.
+
 ## What's New
 
 **Live futures-options volatility smile (v1.3.0)**
