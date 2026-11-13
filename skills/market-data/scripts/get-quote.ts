@@ -29,6 +29,8 @@ async function main() {
       timestamp: quote.timestamp.toISOString(),
       dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
       source: "DataBento",
+      dataMode: "historical",
+      availableEnd: quote.availableEnd,
     };
 
     console.log(JSON.stringify(result, null, 2));

@@ -208,6 +208,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           timestamp: quote.timestamp.toISOString(),
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
           source: "DataBento",
+          dataMode: "historical",
+          availableEnd: quote.availableEnd,
         };
 
         return {
