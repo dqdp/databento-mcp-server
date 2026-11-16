@@ -83,6 +83,12 @@ jobs:
       - name: Build and smoke Windows client packages
         run: npm run smoke:windows
 
+      - name: Run the Windows installation wrapper
+        shell: powershell
+        run: .\dist\windows\databento-mcp\Install-ChatGPT.ps1
+        env:
+          DATABENTO_API_KEY: db-test-key
+
       - name: Upload Windows client packages
         uses: actions/upload-artifact@v4
         with:

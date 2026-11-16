@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const require = createRequire(import.meta.url);
-const { installPlugin, verifyPayload } = require('../packaging/openai/install-openai.cjs');
+const { verifyPayload } = require('../packaging/openai/install-openai.cjs');
 const root = process.cwd();
 const version = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 const temp = mkdtempSync(path.join(os.tmpdir(), 'databento Windows тест '));
@@ -29,7 +30,15 @@ async function main() {
   assert.equal(manifest.extensions['com.openai'].requires_local_executor, true);
   assert(existsSync(path.join(extracted, 'skills/market-data/SKILL.md')));
   assert.equal(readFileSync(path.join(extracted, 'runtime/node.exe')).subarray(0, 2).toString(), 'MZ');
-  const installed = installPlugin({ source: extracted, home: path.join(temp, 'clean home'), apiKey: 'db-test-key' });
+  // Isolate os.homedir in child processes without changing the user's HOME or
+  // USERPROFILE. The real extracted CLI writes the key; the real launcher must
+  // then load that file with no key injected into its environment.
+  const preload = path.join(temp, 'isolated-home.cjs');
+  writeFileSync(preload, `require('node:os').homedir = () => ${JSON.stringify(path.join(temp, 'clean home'))};\n`);
+  const runtime = process.platform === 'win32' ? path.join(extracted, 'runtime/node.exe') : process.execPath;
+  const installed = JSON.parse(execFileSync(runtime, ['--require', preload, path.join(extracted, 'install-openai.cjs')], {
+    cwd: extracted, env: { ...getDefaultEnvironment(), DATABENTO_API_KEY: 'db-test-key' }, encoding: 'utf8',
+  }));
   const config = JSON.parse(readFileSync(path.join(installed.target, 'mcp.json'), 'utf8')).mcpServers.databento;
   const legacy = JSON.parse(readFileSync(path.join(installed.target, '.mcp.json'), 'utf8')).mcpServers.databento;
   assert.equal(config.type, 'stdio'); assert.equal(config.command, legacy.command);
@@ -37,8 +46,8 @@ async function main() {
   const resolve = (value: string) => value.replaceAll('${PLUGIN_ROOT}', installed.target);
   const transport = new StdioClientTransport({
     command: process.platform === 'win32' ? resolve(config.command) : process.execPath,
-    args: config.args.map(resolve), cwd: resolve(config.cwd),
-    env: { ...getDefaultEnvironment(), DATABENTO_API_KEY: 'db-test-key', SMILE_WEB_PORT: '' }, stderr: 'pipe',
+    args: ['--require', preload, ...config.args.map(resolve)], cwd: resolve(config.cwd),
+    env: { ...getDefaultEnvironment(), SMILE_WEB_PORT: '' }, stderr: 'pipe',
   });
   const client = new Client({ name: 'windows-package-smoke', version: '1.0.0' });
   try {
