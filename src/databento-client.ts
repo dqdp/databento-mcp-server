@@ -12,6 +12,7 @@ interface QuoteData {
   ask: number;
   timestamp: Date;
   dataAge: number; // milliseconds since data was generated
+  availableEnd: string; // exclusive Historical mbp-1 frontier used for this lookup
 }
 
 interface BarData {
@@ -40,6 +41,25 @@ const DATASET = "GLBX.MDP3"; // CME Group Market Data Platform 3
 export const MAX_INTRADAY_HISTORICAL_BARS = 100;
 export const MAX_DAILY_HISTORICAL_BARS = 10000;
 
+const QUOTE_RECORD_LIMIT = 1000;
+const QUOTE_MAX_REQUESTS = 32;
+const QUOTE_TIMEOUT_MS = 10_000;
+const QUOTE_LOOKBACK_NS = 7n * 86_400_000_000_000n;
+const UNDEF_PRICE = 9_223_372_036_854_775_807n;
+
+// Keep nanosecond boundaries exact: rounding a split to milliseconds can skip the
+// last updates of a busy market. Databento accepts UNIX nanoseconds over HTTP.
+function quoteRangeNanos(value: unknown): bigint {
+  const match = typeof value === "string"
+    ? /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/.exec(value)
+    : null;
+  const secondsMs = match ? Date.parse(`${match[1]}${match[3]}`) : NaN;
+  if (!Number.isFinite(secondsMs) || secondsMs < 0) {
+    throw new Error("Invalid mbp-1 historical availability timestamp");
+  }
+  return BigInt(secondsMs) * 1_000_000n + BigInt((match![2] ?? "").padEnd(9, "0"));
+}
+
 function maxHistoricalBarsForTimeframe(timeframe: "1h" | "H4" | "1d"): number {
   return timeframe === "1d" ? MAX_DAILY_HISTORICAL_BARS : MAX_INTRADAY_HISTORICAL_BARS;
 }
@@ -56,77 +76,106 @@ export class DataBentoClient {
     this.http = new DataBentoHTTP(apiKey);
   }
 
-  /**
-   * Get current quote for a futures symbol (ES or NQ)
-   */
+  /** Get the latest Historical MBP-1 update within a bounded seven-day lookback. */
   async getQuote(symbol: "ES" | "NQ"): Promise<QuoteData> {
-    // Check cache first
-    const cacheKey = symbol;
-    const cached = this.priceCache.get(cacheKey);
+    const cached = this.priceCache.get(symbol);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      return cached.data;
+      return { ...cached.data, dataAge: Date.now() - cached.data.timestamp.getTime() };
     }
 
     const databentoSymbol = SYMBOL_MAP[symbol];
-    if (!databentoSymbol) {
-      throw new Error(`Invalid symbol: ${symbol}`);
-    }
+    if (!databentoSymbol) throw new Error(`Invalid symbol: ${symbol}`);
 
-    const endDate = new Date();
-    const startDate = new Date(endDate);
-    startDate.setDate(startDate.getDate() - 7); // 7-day lookback for weekends
+    const now = Date.now();
+    const deadline = now + QUOTE_TIMEOUT_MS;
+    const searchError = () => new Error(
+      `Unable to establish the latest historical quote for ${symbol} within the bounded search; use an explicit timeseries range or get_live_futures_quote`
+    );
+    const requestOptions = () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw searchError();
+      return { retry: false, timeout: remaining };
+    };
+    const metadata = JSON.parse(await this.http.get(
+      "/v0/metadata.get_dataset_range", { dataset: DATASET }, requestOptions()
+    ));
+    // The dataset-wide frontier may be ahead of MBP-1. Missing schema metadata
+    // is an error, never a reason to fall back to wall-clock time.
+    const availability = metadata?.schema?.["mbp-1"];
+    const availableStart = quoteRangeNanos(availability?.start);
+    const availableEnd = quoteRangeNanos(availability?.end);
+    if (availableStart >= availableEnd) throw new Error("Invalid mbp-1 historical availability range");
+    const wallEnd = BigInt(now) * 1_000_000n;
+    let end = availableEnd < wallEnd ? availableEnd : wallEnd;
+    const lookbackStart = wallEnd - QUOTE_LOOKBACK_NS;
+    const lowerBound = availableStart > lookbackStart ? availableStart : lookbackStart;
+    let requests = 0;
 
-    const params = {
-      dataset: DATASET,
-      symbols: databentoSymbol,
-      stype_in: "continuous",
-      stype_out: "instrument_id",
-      start: startDate.toISOString().split("T")[0],
-      end: endDate.toISOString(),
-      schema: "mbp-1", // Market by price level 1 (best bid/ask)
-      encoding: "csv",
-      limit: 100,
+    const search = async (start: bigint, stop: bigint): Promise<QuoteData | undefined> => {
+      if (requests >= QUOTE_MAX_REQUESTS) throw searchError();
+      const options = requestOptions();
+      requests++;
+      const response = await this.http.get("/v0/timeseries.get_range", {
+        dataset: DATASET,
+        symbols: databentoSymbol,
+        stype_in: "continuous",
+        stype_out: "instrument_id",
+        start: start.toString(),
+        end: stop.toString(),
+        schema: "mbp-1",
+        encoding: "csv",
+        pretty_px: false,
+        pretty_ts: false,
+        limit: QUOTE_RECORD_LIMIT,
+      }, options);
+      if (Date.now() >= deadline) throw searchError();
+      const lines = response.trim().split("\n");
+      const rows = lines.slice(1).filter(line => line.trim());
+      if (rows.length >= QUOTE_RECORD_LIMIT) {
+        // A limited response is a chronological PREFIX. Search the newer half
+        // first, then the older half only if the newer half is fully empty.
+        const mid = start + (stop - start) / 2n;
+        if (mid === start) throw searchError();
+        return await search(mid, stop) ?? await search(start, mid);
+      }
+      if (rows.length === 0) return undefined;
+
+      const headers = lines[0].trim().split(",");
+      const fields = rows[rows.length - 1].trim().split(",");
+      const integerField = (name: string): bigint => {
+        const raw = fields[headers.indexOf(name)];
+        if (!raw || !/^-?\d+$/.test(raw)) throw new Error(`Invalid historical quote ${name} for ${symbol}`);
+        return BigInt(raw);
+      };
+      const received = integerField("ts_recv");
+      const event = integerField("ts_event");
+      const bid = integerField("bid_px_00");
+      const ask = integerField("ask_px_00");
+      // Do not silently substitute an older two-sided book for an invalid last update.
+      if (received < start || received >= stop || event <= 0n || event > wallEnd || bid === UNDEF_PRICE || ask === UNDEF_PRICE) {
+        throw new Error(`Invalid historical quote for ${symbol}`);
+      }
+      const bidPx = Number(bid) / 1e9;
+      const askPx = Number(ask) / 1e9;
+      const timestamp = new Date(Number(event / 1_000_000n));
+      return {
+        symbol, price: (bidPx + askPx) / 2, bid: bidPx, ask: askPx, timestamp,
+        dataAge: Date.now() - timestamp.getTime(), availableEnd: availability.end,
+      };
     };
 
-    const response = await this.http.get("/v0/timeseries.get_range", params);
-
-    if (!response || response.length === 0) {
-      throw new Error(`No quote data available for ${symbol}`);
+    let window = 60_000_000_000n;
+    while (end > lowerBound) {
+      const start = end - window > lowerBound ? end - window : lowerBound;
+      const quote = await search(start, end);
+      if (quote) {
+        this.priceCache.set(symbol, { data: quote, timestamp: Date.now() });
+        return quote;
+      }
+      end = start;
+      window *= 2n;
     }
-
-    // Parse CSV response
-    const lines = response.split("\n");
-    const dataLines = lines.slice(1).filter((line) => line.trim());
-
-    if (dataLines.length === 0) {
-      throw new Error(`No recent data available for ${symbol}`);
-    }
-
-    const latestLine = dataLines[dataLines.length - 1];
-    const fields = latestLine.split(",");
-
-    // CSV format: ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,...
-    const bidPx = parseFloat(fields[13]) / 1e9; // bid_px_00
-    const askPx = parseFloat(fields[14]) / 1e9; // ask_px_00
-    const tsEvent = parseInt(fields[1]); // ts_event in nanoseconds
-
-    const price = (bidPx + askPx) / 2;
-    const timestamp = new Date(Math.floor(tsEvent / 1_000_000)); // nanoseconds to milliseconds
-    const dataAge = Date.now() - timestamp.getTime();
-
-    const quoteData: QuoteData = {
-      symbol,
-      price,
-      bid: bidPx,
-      ask: askPx,
-      timestamp,
-      dataAge,
-    };
-
-    // Cache the result
-    this.priceCache.set(cacheKey, { data: quoteData, timestamp: Date.now() });
-
-    return quoteData;
+    throw new Error(`No quote data available for ${symbol} within the last seven days`);
   }
 
   /**

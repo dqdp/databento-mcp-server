@@ -27,7 +27,7 @@ import {
   parseDatabentoToolArguments,
 } from "./tool-contracts.js";
 
-export const DATABENTO_MCP_SERVER_VERSION = "1.3.0";
+export const DATABENTO_MCP_SERVER_VERSION = "1.3.2";
 
 function countBatchSymbols(symbols: string[] | string): number {
   if (Array.isArray(symbols)) {
@@ -208,6 +208,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           timestamp: quote.timestamp.toISOString(),
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
           source: "DataBento",
+          dataMode: "historical",
+          availableEnd: quote.availableEnd,
         };
 
         return {

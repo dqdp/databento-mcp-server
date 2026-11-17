@@ -308,6 +308,17 @@ Get the latest ES or NQ futures quote from Databento Historical REST data.
 This is a separate historical-data query path, not a replacement for the true
 Live API socket tool.
 
+The lookup uses the `mbp-1` availability returned by `metadata_get_dataset_range`,
+then searches backwards from that frontier. It starts with the final minute and
+expands across empty periods, up to seven days before the request time. Responses
+that reach the 1,000-record limit are subdivided, newest interval first; a truncated
+prefix is never presented as the latest quote. The lookup is bounded by 32 timeseries
+requests and a 10-second total request budget, and reports an error if it cannot
+establish the latest update. A quote from a closed session can still be old: check
+`timestamp` and `dataAge`, which is refreshed even when the 30-second cache is used.
+`availableEnd` is the exclusive schema frontier used for the lookup;
+`dataMode: "historical"` distinguishes this response from a Live API update.
+
 **Input:**
 ```json
 {
@@ -324,8 +335,10 @@ Live API socket tool.
   "ask": 5845.50,
   "spread": 0.50,
   "timestamp": "2024-10-02T14:30:00.000Z",
-  "dataAge": "15s ago",
-  "source": "DataBento"
+  "dataAge": "1320s ago",
+  "source": "DataBento",
+  "dataMode": "historical",
+  "availableEnd": "2024-10-02T14:30:01.000000000Z"
 }
 ```
 

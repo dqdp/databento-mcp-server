@@ -76,3 +76,27 @@ jobs:
 
       - name: Smoke consumer artifacts
         run: npm run smoke:consumer
+
+      - name: Test Windows installer contracts
+        run: npm run test:once -- tests/unit/windows-packaging.test.ts
+
+      - name: Build and smoke Windows client packages
+        run: npm run smoke:windows
+
+      - name: Run the Windows installation wrapper
+        shell: powershell
+        run: .\dist\windows\databento-mcp\Install-ChatGPT.ps1
+        env:
+          DATABENTO_API_KEY: db-test-key
+
+      - name: Upload Windows client packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: databento-windows-client-packages
+          if-no-files-found: error
+          path: |
+            dist/windows/*.zip
+            dist/windows/*.mcpb
+            dist/windows/SHA256SUMS.txt
+            dist/windows/BUILD.json
+            dist/windows/INSTALL-WINDOWS.md

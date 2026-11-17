@@ -3,25 +3,19 @@
  * SMILE_WEB_PORT is set. Verifies the env gate (off by default), loopback bind, and that a
  * configured port serves the seeded chain (delegating to the already-tested createSmileServer).
  */
-import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { startSmileWebIfConfigured } from '../../../src/server/smile-web-host.js';
 import { black76 } from '../../../src/analytics/black76.js';
 import { clearSmileStaticCache } from '../../../src/analytics/smile-cache.js';
 
-// Keep the fixture before its option expiry; networking and scheduling use real timers.
-vi.hoisted(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
-  vi.setSystemTime(new Date('2026-08-03T12:00:00Z'));
-});
-afterAll(() => vi.useRealTimers());
-
 const ns = (d: string) => (BigInt(Date.parse(`${d}T00:00:00Z`)) * 1_000_000n).toString();
+const NOW = '2026-07-01T12:00:00.000Z';
 const EXP = '2026-09-18';
 const FUT = 100;
 const F = 7467;
-const T = (Date.parse(`${EXP}T00:00:00Z`) - Date.now()) / 86_400_000 / 365;
+const T = (Date.parse(`${EXP}T00:00:00Z`) - Date.parse(NOW)) / 86_400_000 / 365;
 
 let defCsv = `instrument_id,raw_symbol,instrument_class,expiration,underlying_id,strike_price\n`;
 let bboCsv = `instrument_id,ts_event,bid_px_00,ask_px_00\n${FUT},1,7466000000000,7468000000000\n`;
@@ -49,10 +43,15 @@ const clients = {
 
 describe('startSmileWebIfConfigured', () => {
   let server: Server | null = null;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW));
+  });
   afterEach(async () => {
     if (server) await new Promise<void>((r) => server!.close(() => r()));
     server = null;
     clearSmileStaticCache();
+    vi.useRealTimers();
   });
 
   it('does not host when SMILE_WEB_PORT is unset (default off)', () => {
