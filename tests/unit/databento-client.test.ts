@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DataBentoClient } from '../../src/databento-client.js';
 import { DataBentoHTTP } from '../../src/http/databento-http.js';
+import { historicalQuoteProvider, quoteAvailability, quoteCsv, quoteNanos, QUOTE_END, QUOTE_NOW, type QuoteRow } from '../fixtures/historical-quotes.js';
 
 // Mock DataBentoHTTP
 vi.mock('../../src/http/databento-http.js', () => {
@@ -41,194 +42,146 @@ describe('DataBentoClient', () => {
   });
 
   describe('getQuote', () => {
-    let sessionSpy: ReturnType<typeof vi.spyOn>;
+    const frontier = quoteNanos(QUOTE_END);
+    const recent: QuoteRow = { recv: frontier - 1_000_000n };
+    const queries = () => mockHttpGet.mock.calls.filter(([endpoint]) => endpoint === '/v0/timeseries.get_range');
 
     beforeEach(() => {
-      sessionSpy = vi.spyOn(client, 'getSessionInfo').mockReturnValue({
-        currentSession: 'Unknown',
-        sessionStart: new Date(0),
-        sessionEnd: new Date(0),
-        timestamp: new Date(0),
-      });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(QUOTE_NOW));
+      mockHttpGet.mockImplementation(historicalQuoteProvider([recent]));
     });
 
-    afterEach(() => {
-      sessionSpy.mockRestore();
+    it.each(['ES', 'NQ'] as const)('gets the latest available historical quote for %s', async symbol => {
+      const quote = await client.getQuote(symbol);
+      expect(quote).toMatchObject({ symbol, bid: 7611, ask: 7611.25, price: 7611.125, availableEnd: QUOTE_END });
+      expect(quote.timestamp.getTime()).toBe(Number((recent.recv - 1000n) / 1_000_000n));
+      expect(quote.dataAge).toBe(Date.now() - quote.timestamp.getTime());
+      expect(mockHttpGet.mock.calls[0].slice(0, 2)).toEqual(['/v0/metadata.get_dataset_range', { dataset: 'GLBX.MDP3' }]);
+      for (const [, params] of queries()) {
+        expect(params).toMatchObject({ dataset: 'GLBX.MDP3', symbols: `${symbol}.c.0`, stype_in: 'continuous', schema: 'mbp-1', encoding: 'csv' });
+        expect(quoteNanos(params.end)).toBeLessThanOrEqual(frontier);
+      }
     });
 
-    // Mock response with prices in DataBento fixed-point format (value * 1e9)
-    const mockQuoteResponse = `ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00
-1234567890123456,1234567890000000,1,1,1234,A,B,0,0,0,0,0,0,4500000000,4502000000,10,15`;
-
-    it('should get quote for ES symbol', async () => {
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
-      const quote = await client.getQuote('ES');
-
-      expect(quote.symbol).toBe('ES');
-      expect(quote.bid).toBe(4.5);
-      expect(quote.ask).toBe(4.502);
-      expect(quote.price).toBe((4.5 + 4.502) / 2);
-      expect(quote.timestamp).toBeInstanceOf(Date);
-      expect(quote.dataAge).toBeGreaterThanOrEqual(0);
-
-      expect(mockHttpGet).toHaveBeenCalledWith('/v0/timeseries.get_range', {
-        dataset: 'GLBX.MDP3',
-        symbols: 'ES.c.0',
-        stype_in: 'continuous',
-        stype_out: 'instrument_id',
-        start: expect.any(String),
-        end: expect.any(String),
-        schema: 'mbp-1',
-        encoding: 'csv',
-        limit: 100,
-      });
-    });
-
-    it('should get quote for NQ symbol', async () => {
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
-      const quote = await client.getQuote('NQ');
-
-      expect(quote.symbol).toBe('NQ');
-      expect(mockHttpGet).toHaveBeenCalledWith(
-        '/v0/timeseries.get_range',
-        expect.objectContaining({
-          symbols: 'NQ.c.0',
-        })
-      );
-    });
-
-    it('should send quote end as the current ISO timestamp', async () => {
-      vi.useFakeTimers();
-      const now = new Date('2024-03-15T18:30:00.000Z');
-      vi.setSystemTime(now);
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
+    it('uses the schema frontier instead of the later dataset end or wall clock', async () => {
       await client.getQuote('ES');
-
-      const callArgs = mockHttpGet.mock.calls[0][1];
-      expect(callArgs.end).toBe(now.toISOString());
-      expect(callArgs.end).toContain('T');
-
-      vi.useRealTimers();
+      expect(quoteNanos(queries()[0][1].end)).toBe(frontier);
+      expect(frontier).toBeLessThan(quoteNanos(QUOTE_NOW));
     });
 
-    it('should use historical API during NY session', async () => {
-      sessionSpy.mockReturnValue({
-        currentSession: 'NY',
-        sessionStart: new Date(),
-        sessionEnd: new Date(),
-        timestamp: new Date(),
+    it('finds the latest update when the final minute exceeds the record limit', async () => {
+      const rows = Array.from({ length: 3000 }, (_, i) => ({ recv: frontier - 60_000_000_000n + BigInt(i) * 20_000_000n, bid: String(7611000000000n + BigInt(i) * 250000000n) }));
+      mockHttpGet.mockImplementation(historicalQuoteProvider(rows));
+      const quote = await client.getQuote('ES');
+      expect(quote.bid).toBe(Number(rows.at(-1)!.bid) / 1e9);
+      expect(quote.timestamp.getTime()).toBe(Number((rows.at(-1)!.recv - 1000n) / 1_000_000n));
+      expect(queries().length).toBeGreaterThan(1);
+    });
+
+    it('searches the older half when a saturated interval has an empty newer half', async () => {
+      const rows = Array.from({ length: 1200 }, (_, i) => ({ recv: frontier - 59_000_000_000n + BigInt(i) * 1_000_000n }));
+      mockHttpGet.mockImplementation(historicalQuoteProvider(rows));
+      const quote = await client.getQuote('ES');
+      expect(quote.timestamp.getTime()).toBe(Number((rows.at(-1)!.recv - 1000n) / 1_000_000n));
+    });
+
+    it('preserves sub-millisecond boundaries instead of skipping updates sharing a millisecond', async () => {
+      const end = '2026-11-13T14:40:00.000000900Z';
+      const e = quoteNanos(end);
+      const rows = Array.from({ length: 1200 }, (_, i) => ({ recv: e - 2000n + BigInt(i) }));
+      mockHttpGet.mockImplementation(historicalQuoteProvider(rows, quoteAvailability(undefined, end)));
+      const quote = await client.getQuote('ES');
+      expect(quote.timestamp.getTime()).toBe(Number((rows.at(-1)!.recv - 1000n) / 1_000_000n));
+      expect(quote.availableEnd).toBe(end);
+    });
+
+    it('walks back over an empty weekend while keeping the quote timestamp and age', async () => {
+      const row = { recv: frontier - 3n * 86_400_000_000_000n };
+      mockHttpGet.mockImplementation(historicalQuoteProvider([row]));
+      const quote = await client.getQuote('ES');
+      expect(quote.timestamp.getTime()).toBe(Number((row.recv - 1000n) / 1_000_000n));
+      expect(quote.dataAge).toBeGreaterThan(3 * 86_400_000);
+      expect(queries().length).toBeLessThanOrEqual(32);
+    });
+
+    it('stops at the schema start and reports an empty available range', async () => {
+      const start = '2026-11-13T14:39:30.000000000Z';
+      mockHttpGet.mockImplementation(historicalQuoteProvider([], quoteAvailability(start)));
+      await expect(client.getQuote('ES')).rejects.toThrow(/No quote data available/);
+      expect(queries()).toHaveLength(1);
+      expect(quoteNanos(queries()[0][1].start)).toBe(quoteNanos(start));
+    });
+
+    it('does not search beyond seven days or return an older quote', async () => {
+      mockHttpGet.mockImplementation(historicalQuoteProvider([{ recv: quoteNanos(QUOTE_NOW) - 8n * 86_400_000_000_000n }]));
+      await expect(client.getQuote('ES')).rejects.toThrow(/No quote data available/);
+      expect(queries().length).toBeLessThanOrEqual(32);
+      for (const [, params] of queries()) expect(quoteNanos(params.start)).toBeGreaterThanOrEqual(quoteNanos(QUOTE_NOW) - 7n * 86_400_000_000_000n);
+    });
+
+    it('fails rather than treating a permanently saturated response as the latest quote', async () => {
+      mockHttpGet.mockImplementation(async (endpoint, params) => endpoint.includes('metadata')
+        ? JSON.stringify(quoteAvailability())
+        : quoteCsv(Array.from({ length: params.limit }, () => ({ recv: quoteNanos(params.start) }))));
+      await expect(client.getQuote('ES')).rejects.toThrow(/Unable to establish the latest historical quote/);
+      expect(queries().length).toBeLessThanOrEqual(32);
+    });
+
+    it.each([
+      {},
+      { start: '2010-06-06', end: QUOTE_NOW },
+      { schema: { 'mbp-1': { start: 'bad', end: QUOTE_END } } },
+      { schema: { 'mbp-1': { start: QUOTE_END, end: QUOTE_END } } },
+    ])('does not query timeseries without valid per-schema availability: %j', async metadata => {
+      mockHttpGet.mockResolvedValue(JSON.stringify(metadata));
+      await expect(client.getQuote('ES')).rejects.toThrow(/availability/);
+      expect(queries()).toHaveLength(0);
+    });
+
+    it('propagates unavailable metadata without falling back to wall-clock queries', async () => {
+      mockHttpGet.mockRejectedValue(new Error('metadata unavailable'));
+      await expect(client.getQuote('ES')).rejects.toThrow('metadata unavailable');
+      expect(queries()).toHaveLength(0);
+    });
+
+    it('refreshes dataAge on cache reads without mutating the earlier response', async () => {
+      const first = await client.getQuote('ES');
+      const originalAge = first.dataAge;
+      const calls = mockHttpGet.mock.calls.length;
+      vi.setSystemTime(Date.now() + 20_000);
+      const second = await client.getQuote('ES');
+      expect(mockHttpGet).toHaveBeenCalledTimes(calls);
+      expect(second.timestamp).toEqual(first.timestamp);
+      expect(second.dataAge).toBe(originalAge + 20_000);
+      expect(first.dataAge).toBe(originalAge);
+    });
+
+    it('reloads availability and the quote after cache expiry', async () => {
+      await client.getQuote('ES');
+      const calls = mockHttpGet.mock.calls.length;
+      vi.setSystemTime(Date.now() + 31_000);
+      await client.getQuote('ES');
+      expect(mockHttpGet).toHaveBeenCalledTimes(calls * 2);
+    });
+
+    it('rejects an invalid symbol before making requests', async () => {
+      await expect(client.getQuote('INVALID' as any)).rejects.toThrow('Invalid symbol: INVALID');
+      expect(mockHttpGet).not.toHaveBeenCalled();
+    });
+
+    it('bounds total search time even when individual requests complete', async () => {
+      mockHttpGet.mockImplementation(async endpoint => {
+        vi.setSystemTime(Date.now() + 6_000);
+        return endpoint.includes('metadata') ? JSON.stringify(quoteAvailability()) : quoteCsv([]);
       });
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
-      const quote = await client.getQuote('ES');
-
-      expect(mockHttpGet).toHaveBeenCalledTimes(1);
-      expect(quote.symbol).toBe('ES');
+      await expect(client.getQuote('ES')).rejects.toThrow(/Unable to establish the latest historical quote/);
+      expect(queries().length).toBeLessThanOrEqual(1);
     });
 
-    it('should cache quote data for 30 seconds', async () => {
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
-      // First call
-      const quote1 = await client.getQuote('ES');
-      expect(mockHttpGet).toHaveBeenCalledTimes(1);
-
-      // Second call within cache TTL
-      const quote2 = await client.getQuote('ES');
-      expect(mockHttpGet).toHaveBeenCalledTimes(1); // Still just 1 call
-      expect(quote2).toEqual(quote1);
-    });
-
-    it('should refresh cache after TTL expires', async () => {
-      vi.useFakeTimers();
-      mockHttpGet.mockResolvedValue(mockQuoteResponse);
-
-      // First call
-      await client.getQuote('ES');
-      expect(mockHttpGet).toHaveBeenCalledTimes(1);
-
-      // Advance time past cache TTL (30 seconds)
-      vi.advanceTimersByTime(31000);
-
-      // Second call should fetch fresh data
-      await client.getQuote('ES');
-      expect(mockHttpGet).toHaveBeenCalledTimes(2);
-
-      vi.useRealTimers();
-    });
-
-    it('should throw error for invalid symbol', async () => {
-      await expect(client.getQuote('INVALID' as any)).rejects.toThrow(
-        'Invalid symbol: INVALID'
-      );
-    });
-
-    it('should throw error when no data is available', async () => {
-      mockHttpGet.mockResolvedValue('');
-
-      await expect(client.getQuote('ES')).rejects.toThrow(
-        'No quote data available for ES'
-      );
-    });
-
-    it('should throw error when response has no data lines', async () => {
-      mockHttpGet.mockResolvedValue(
-        'ts_recv,ts_event,rtype,publisher_id,instrument_id\n'
-      );
-
-      await expect(client.getQuote('ES')).rejects.toThrow(
-        'No recent data available for ES'
-      );
-    });
-
-    it('should handle multiple data lines and return latest', async () => {
-      const multiLineResponse = `ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00
-1234567890123456,1234567890000000,1,1,1234,A,B,0,0,0,0,0,0,4500000000,4502000000,10,15
-1234567890123456,1234567891000000,1,1,1234,A,B,0,0,0,0,0,0,4510000000,4512000000,10,15`;
-
-      mockHttpGet.mockResolvedValue(multiLineResponse);
-
-      const quote = await client.getQuote('ES');
-
-      // Should use the latest line
-      expect(quote.bid).toBe(4.51);
-      expect(quote.ask).toBe(4.512);
-    });
-
-    it('should calculate correct timestamp from nanoseconds', async () => {
-      const response = `ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00
-1234567890123456,1609459200000000000,1,1,1234,A,B,0,0,0,0,0,0,4500000000,4502000000,10,15`;
-
-      mockHttpGet.mockResolvedValue(response);
-
-      const quote = await client.getQuote('ES');
-
-      // 1609459200000000000 nanoseconds = 1609459200000 milliseconds = Jan 1, 2021 00:00:00 UTC
-      expect(quote.timestamp.getTime()).toBe(1609459200000);
-    });
-
-    it('should calculate data age correctly', async () => {
-      vi.useFakeTimers();
-      const now = new Date('2021-01-01T12:00:00Z');
-      vi.setSystemTime(now);
-
-      // Set ts_event to 10 seconds ago
-      const tenSecondsAgo = now.getTime() - 10000;
-      const tsEventNanos = tenSecondsAgo * 1_000_000;
-
-      const response = `ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00
-1234567890123456,${tsEventNanos},1,1,1234,A,B,0,0,0,0,0,0,4500000000,4502000000,10,15`;
-
-      mockHttpGet.mockResolvedValue(response);
-
-      const quote = await client.getQuote('ES');
-
-      expect(quote.dataAge).toBeCloseTo(10000, -2); // Within 100ms
-
-      vi.useRealTimers();
+    it('does not convert an undefined last bid into a plausible quote or fall back to an older row', async () => {
+      mockHttpGet.mockImplementation(historicalQuoteProvider([{ recv: recent.recv - 1000n }, { ...recent, bid: '9223372036854775807' }]));
+      await expect(client.getQuote('ES')).rejects.toThrow(/Invalid historical quote/);
     });
   });
 
