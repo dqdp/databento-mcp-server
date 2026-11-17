@@ -1,7 +1,7 @@
 /** Server-only estimate allowance and exact HTTP body capture. Estimates are not actual bills. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { DataBentoHTTP, NonRetryableResponseError } from "../http/databento-http.js";
+import { DataBentoHTTP, DataBentoHTTPStatusError, NonRetryableResponseError } from "../http/databento-http.js";
 import {COST_BASIS,MAX_COST_USD,validateCostControl,type PlatformCostControl,type PlatformCostSummary} from "./platform-cost.js";
 import {isStandardCmeHistoricalCovered,validatePlatformSubscription,type PlatformSubscription} from "./platform-subscription.js";
 
@@ -32,6 +32,12 @@ function isTimeout(error:unknown):boolean {
   for(let depth=0;depth<4&&error instanceof Error;depth++,error=error.cause)
     if(["AbortError","TimeoutError"].includes(error.name))return true;
   return false;
+}
+function finalHttpStatus(error:unknown):number|undefined {
+  for(let depth=0;depth<4&&error instanceof Error;depth++,error=error.cause)
+    if(error instanceof DataBentoHTTPStatusError&&Number.isInteger(error.status)&&error.status>=400&&error.status<=599)
+      return error.status;
+  return undefined;
 }
 
 function parameters(value: unknown): Record<string, unknown> {
@@ -72,7 +78,7 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
   const originalPostForm = prototype.postForm;
   const originalBinary = prototype.postFormBinary;
   const originalReadResponseText = prototype.readResponseText;
-  const contexts = new AsyncLocalStorage<{body?: Buffer;httpStatus?:number}>();
+  const contexts = new AsyncLocalStorage<{body?: Buffer}>();
   const originals: PlatformOriginal[] = [];
   // Count every consumed body byte, including error/retry responses and parallel pulls.
   let consumedBytes = 0;
@@ -84,7 +90,6 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
       throw new NonRetryableResponseError(ERROR);
     }
     delete context.body;
-    context.httpStatus=response.status;
     if (!response.body) {
       context.body = Buffer.alloc(0);
       return "";
@@ -133,14 +138,14 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
 
   async function readInvocation(invoke: () => Promise<string>,phase:FailurePhase) {
     if (consumedBytes >= MAX_CAPTURE_BYTES) rejected("response_rejected",phase);
-    const context: {body?: Buffer;httpStatus?:number} = {};
+    const context: {body?: Buffer} = {};
     try{
       const value = await contexts.run(context, invoke);
       if (!Buffer.isBuffer(context.body)) rejected("response_rejected",phase);
       return {value, body: context.body};
     }catch(error){
-      const status=context.httpStatus;
-      failure=typeof status==="number"&&Number.isInteger(status)&&status>=400&&status<=599?
+      const status=finalHttpStatus(error);
+      failure=status!==undefined?
         {error_code:"upstream_http_error",phase,http_status:status}:
         {error_code:isTimeout(error)?"timeout":error instanceof NonRetryableResponseError?"response_rejected":"transport_error",phase};
       throw error;

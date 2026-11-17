@@ -7,6 +7,25 @@ let guard: ReturnType<typeof installPlatformTransportGuard> | undefined;
 afterEach(() => { guard?.restore(); guard = undefined; vi.restoreAllMocks(); });
 
 describe("platform transport cost and originals boundary", () => {
+  it.each([
+    ["metadata","timeout"],["metadata","transport_error"],
+    ["cost_estimate","timeout"],["cost_estimate","transport_error"],
+  ] as const)("uses the final %s retry failure %s instead of an earlier HTTP status",async(phase,errorCode)=>{
+    const upstream=vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(new Response("private first-attempt body",{status:500}))
+      .mockRejectedValueOnce(errorCode==="timeout"?
+        new DOMException("private final timeout","TimeoutError"):new TypeError("private final connection failure"));
+    guard=installPlatformTransportGuard("db-fixture");
+    const http=new DataBentoHTTP("db-fixture",{retryAttempts:2,retryDelayMs:0});
+    const operation=phase==="metadata"?http.get("/v0/metadata.list_datasets",{}):
+      http.get("/v0/timeseries.get_range",{dataset:"GLBX.MDP3",symbols:"ES",schema:"trades",start:"2020-01-01"});
+    await expect(operation).rejects.toThrow();
+    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(guard.failureSummary()).toEqual({error_code:errorCode,phase});
+    expect(guard.costSummary()).toMatchObject({estimated_spent_usd:0,approval_required:false});
+    expect(upstream.mock.calls.every(([url])=>!String(url).includes("timeseries.get_range"))).toBe(true);
+    expect(JSON.stringify(guard.failureSummary())).not.toContain("private");
+  });
   it("reports a sanitized timeout through HTTP wrappers without exposing exception text",async()=>{
     const apiKey="db-fixture";
     const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{

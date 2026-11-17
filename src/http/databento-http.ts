@@ -52,6 +52,11 @@ interface RequestOptions {
 /** A response rejected by a caller's safety policy must not be downloaded again. */
 export class NonRetryableResponseError extends Error {}
 
+/** The status belongs to this failed attempt, never to an earlier retry response. */
+export class DataBentoHTTPStatusError extends Error {
+  constructor(public readonly status:number,message:string){super(message);}
+}
+
 /**
  * DataBento API HTTP Client
  * Handles authentication, retries, and error handling for all Databento API requests
@@ -227,7 +232,7 @@ export class DataBentoHTTP {
 
         if (!response.ok) {
           const errorText = await this.readResponseText(response);
-          throw new Error(
+          throw new DataBentoHTTPStatusError(response.status,
             `HTTP ${response.status}: ${response.statusText} - ${errorText}`
           );
         }
