@@ -173,7 +173,7 @@ function historicalBarsArgs(): ToolArgumentSchema {
       .string()
       .trim()
       .min(1)
-      .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+      .refine((value) => value.length<=256 && !/[|\r\n\x00-\x1f\x7f]/.test(value) && value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
         message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
       })
       .describe(
@@ -322,6 +322,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
         .string()
         .trim()
         .min(1)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/)
         .describe("Databento dataset code. Defaults to GLBX.MDP3 for CME Globex futures and options on futures.")
         .optional(),
       stype_in: z

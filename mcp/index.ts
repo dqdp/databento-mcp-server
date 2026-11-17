@@ -255,6 +255,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
           sessionId: quote.sessionId,
           source: "DataBento Live API",
+          ...(quote.timestampNs===undefined?{}:{timestampNs:quote.timestampNs,receiveTimestampNs:quote.receiveTimestampNs,
+            receivedAt:quote.receivedAt,freshness:quote.freshness,capture_scope:quote.capture_scope}),
         };
 
         return {

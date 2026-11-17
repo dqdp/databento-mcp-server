@@ -2,21 +2,22 @@
 /** Private connector RPC. The sole external MCP and OAuth boundary is the platform Gateway. */
 import {createHash,createHmac,timingSafeEqual} from "node:crypto";
 import {spawn} from "node:child_process";
-import {mkdtemp,readFile,rm} from "node:fs/promises";
+import {mkdtemp,readFile,rm,mkdir,open} from "node:fs/promises";
 import http,{type Server as HttpServer,type IncomingMessage,type ServerResponse} from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import type {AddressInfo} from "node:net";
-import {listPlatformTools,type PlatformCall} from "./platform-contract.js";
+import {listPlatformTools,validateCostControl,validateCostSummary,type PlatformCall,type PlatformCostSummary} from "./platform-contract.js";
 import type {PlatformOriginal} from "../src/api/platform-transport.js";
 import type {CallToolResult} from "@modelcontextprotocol/sdk/types.js";
+import {validateLiveCostStatus,type PlatformLiveCostStatus} from "../src/api/platform-live.js";
 
 export {listPlatformTools} from "./platform-contract.js";
 const BODY_LIMIT=2*1024*1024;
 const RESPONSE_LIMIT=48*1024*1024;
 const DEADLINE=120000;
 const MAX_CONCURRENT=4;
-export interface PlatformReply {result:CallToolResult;originals:PlatformOriginal[]}
+export interface PlatformReply {result:CallToolResult;originals:PlatformOriginal[];cost_summary?:PlatformCostSummary;live_cost_status?:PlatformLiveCostStatus}
 export interface PlatformClaims {sub:string;workspace:string;permission:string}
 export interface StartedPlatformServer {server:HttpServer;url:string;close:()=>Promise<void>}
 
@@ -51,6 +52,35 @@ export function sanitizedWorkerEnvironment(directory:string):NodeJS.ProcessEnv {
     NODE_ENV:"production",TZ:"UTC",LANG:"C.UTF-8"};
 }
 
+class ReplayError extends Error {}
+
+/** A claimed lease stays used after failures/restarts; no provider keys or payloads are stored. */
+async function claimReservation(stateDir:string,reservationId:string):Promise<void>{
+  const directory=path.join(stateDir,"reservations");
+  await mkdir(directory,{recursive:true,mode:0o700});
+  let file;
+  try{file=await open(path.join(directory,reservationId),"wx",0o600);}
+  catch(error){if((error as NodeJS.ErrnoException).code==="EEXIST")throw new ReplayError();throw error;}
+  try{await file.writeFile("claimed\n");await file.sync();}finally{await file.close();}
+  // Persist the directory entry before spawning, so a crash cannot make a lease reusable.
+  const parent=await open(directory,"r");
+  try{await parent.sync();}finally{await parent.close();}
+  const state=await open(stateDir,"r");
+  try{await state.sync();}finally{await state.close();}
+}
+
+function validateReply(reply:PlatformReply,input:PlatformCall):PlatformReply {
+  if(!reply||!reply.result||typeof reply.result!=="object"||!Array.isArray(reply.originals))throw new Error("Worker failed");
+  if(input.name==="get_live_futures_quote"){
+    if(reply.cost_summary!==undefined||input.cost_control!==undefined)throw new Error("Invalid Live cost report");
+    if(reply.result.isError!==true&&!reply.originals.some(original=>original?.representation==="raw_live_dbn"))throw new Error("Missing Live DBN original");
+    return {result:reply.result,originals:reply.originals,live_cost_status:validateLiveCostStatus(reply.live_cost_status)};
+  }
+  if(reply.live_cost_status!==undefined)throw new Error("Invalid cost report");
+  const summary=validateCostSummary(reply.cost_summary,input.cost_control);
+  return {result:reply.result,originals:reply.originals,cost_summary:summary};
+}
+
 export async function runIsolatedPlatformWorker(input:PlatformCall,signal:AbortSignal):Promise<PlatformReply>{
   const directory=await mkdtemp(path.join(tmpdir(),"databento-platform-"));
   const source=path.extname(__filename)===".ts";
@@ -79,7 +109,7 @@ export async function runIsolatedPlatformWorker(input:PlatformCall,signal:AbortS
         try{
           const reply=JSON.parse(Buffer.concat(output).toString("utf8")) as PlatformReply;
           if(!reply||typeof reply.result!=="object"||!Array.isArray(reply.originals))throw new Error();
-          resolve(reply);
+          resolve(validateReply(reply,input));
         }catch{reject(new Error("Worker failed"));}
       });
       child.stdin.end(JSON.stringify(input));
@@ -105,11 +135,12 @@ function send(response:ServerResponse,status:number,payload:unknown){
 }
 
 export async function startPlatformHttpServer(options:{
-  signingKey:Buffer;host?:string;port?:number;
+  signingKey:Buffer;host?:string;port?:number;stateDir?:string;
   worker?:(input:PlatformCall,signal:AbortSignal)=>Promise<PlatformReply>;
 }):Promise<StartedPlatformServer>{
   if(!Buffer.isBuffer(options.signingKey)||options.signingKey.length!==32)throw new Error("A separate 32-byte signing key is required");
   const key=Buffer.from(options.signingKey),worker=options.worker??runIsolatedPlatformWorker;
+  if(options.stateDir!==undefined&&(!path.isAbsolute(options.stateDir)||!options.stateDir))throw new Error("Absolute private state directory required");
   const enabled=new Set(listPlatformTools().map(tool=>tool.name));
   let active=0;
   const controllers=new Set<AbortController>();
@@ -135,12 +166,16 @@ export async function startPlatformHttpServer(options:{
       send(response,200,{tools:listPlatformTools()});return;
     }
     if(!enabled.has(permission)){send(response,403,{error:"operation_not_allowed"});return;}
-    if(Object.keys(payload).some(k=>!["name","arguments","api_key"].includes(k))||
+    if(Object.keys(payload).some(k=>!["name","arguments","api_key","cost_control"].includes(k))||
       !payload.arguments||typeof payload.arguments!=="object"||Array.isArray(payload.arguments)||
       (payload.api_key!==undefined&&(typeof payload.api_key!=="string"||payload.api_key.length>8192||!payload.api_key.startsWith("db-")))||
       (permission!=="get_session_info"&&payload.api_key===undefined)){
       send(response,400,{error:"invalid_request"});return;
     }
+    if(permission==="get_live_futures_quote"&&payload.cost_control!==undefined){send(response,400,{error:"historical_cost_not_applicable"});return;}
+    let costControl;
+    try{costControl=validateCostControl(payload.cost_control);}catch{send(response,400,{error:"invalid_request"});return;}
+    if(costControl&&!options.stateDir){send(response,503,{error:"cost_state_unavailable"});return;}
     if(active>=MAX_CONCURRENT){send(response,429,{error:"busy"});return;}
     active++;
     const controller=new AbortController();controllers.add(controller);
@@ -148,7 +183,13 @@ export async function startPlatformHttpServer(options:{
     const abort=()=>{if(!response.writableEnded)controller.abort();};
     response.on("close",abort);
     try{
-      const reply=await worker(payload as unknown as PlatformCall,controller.signal);
+      if(costControl){
+        try{await claimReservation(options.stateDir!,costControl.reservation_id);}
+        catch(error){send(response,error instanceof ReplayError?409:503,{error:error instanceof ReplayError?"reservation_already_used":"cost_state_unavailable"});return;}
+      }
+      if(controller.signal.aborted)throw new Error("Request aborted");
+      const input=payload as unknown as PlatformCall;
+      const reply=validateReply(await worker(input,controller.signal),input);
       if(controller.signal.aborted)send(response,504,{error:"operation_failed"});
       else send(response,200,reply);
     }catch{send(response,502,{error:"operation_failed"});}
@@ -169,7 +210,7 @@ async function main(){
   const key=await readFile(filename);
   const rawPort=process.env.PORT??"8002";
   if(!/^\d+$/.test(rawPort)||Number(rawPort)>65535)throw new Error("Invalid port");
-  const started=await startPlatformHttpServer({signingKey:key,host:process.env.HOST??"127.0.0.1",port:Number(rawPort)});
+  const started=await startPlatformHttpServer({signingKey:key,host:process.env.HOST??"127.0.0.1",port:Number(rawPort),stateDir:process.env.DATABENTO_PLATFORM_STATE_DIR});
   for(const signal of ["SIGINT","SIGTERM"] as const)process.once(signal,()=>{void started.close().finally(()=>process.exit(0));});
 }
 if(require.main===module)main().catch(()=>{process.stderr.write("Databento platform startup failed\n");process.exit(1);});

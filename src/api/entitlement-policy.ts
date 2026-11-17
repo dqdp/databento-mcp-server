@@ -1,3 +1,11 @@
+import {AsyncLocalStorage} from "node:async_hooks";
+
+// Only the disposable platform worker enters this context. Local clients keep their profile.
+const providerPricedPlatform=new AsyncLocalStorage<boolean>();
+export function withPlatformProviderPricing<T>(operation:()=>Promise<T>):Promise<T> {
+  return providerPricedPlatform.run(true,operation);
+}
+
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_DATE_TIME_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/;
@@ -147,6 +155,14 @@ export function assertStandardCmeHistoricalEntitlement(
   request: HistoricalEntitlementRequest,
   options: StandardCmeEntitlementOptions = {}
 ): void {
+  if(providerPricedPlatform.getStore()===true){
+    // The authenticated account's provider estimate replaces guessed plan coverage only.
+    // Calendar/date ordering remains mandatory, as do the caller's syntax and record bounds.
+    const start=parseDateBoundary(request.start,"start");
+    const end=request.end?parseDateBoundary(request.end,"end"):undefined;
+    if(end&&end.ms<start.ms)throw new Error("end must be greater than or equal to start");
+    return;
+  }
   const dataset = normalizeDataset(request.dataset);
   const allowedDatasets = allowedDatasetsFromOptions(options);
   if (!allowedDatasets.includes(dataset)) {

@@ -1,7 +1,8 @@
-/** Server-only zero-cost guard and exact decoded HTTP body capture. Child process only. */
+/** Server-only estimate allowance and exact HTTP body capture. Estimates are not actual bills. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { DataBentoHTTP, NonRetryableResponseError } from "../http/databento-http.js";
+import {COST_BASIS,MAX_COST_USD,validateCostControl,type PlatformCostControl,type PlatformCostSummary} from "./platform-cost.js";
 
 export interface PlatformOriginal {
   name: string;
@@ -10,7 +11,7 @@ export interface PlatformOriginal {
   sha256: string;
   request: {endpoint: string; parameters: Record<string, unknown>};
   received_at: string;
-  representation: "decoded_http_body";
+  representation: "decoded_http_body" | "raw_live_dbn";
 }
 const FREE_METADATA = new Set([
   "/v0/metadata.list_datasets", "/v0/metadata.list_schemas", "/v0/metadata.list_publishers",
@@ -37,7 +38,15 @@ function parameters(value: unknown): Record<string, unknown> {
   return copied;
 }
 
-export function installPlatformTransportGuard(apiKey: string) {
+export function installPlatformTransportGuard(apiKey: string, suppliedControl?:PlatformCostControl) {
+  const control=validateCostControl(suppliedControl);
+  // Integer micro-USD are reserved before data starts; rounding cannot under-count tiny pulls.
+  const allowanceMicros=Math.floor((control?.allowance_usd??0)*1_000_000);
+  let spentMicros=0,approvalRequired=false,requiredAllowance:number|undefined;
+  function costSummary():PlatformCostSummary {
+    return {reservation_id:control?.reservation_id??null,estimated_spent_usd:spentMicros/1_000_000,
+      approval_required:approvalRequired,...(requiredAllowance===undefined?{}:{required_allowance_usd:requiredAllowance}),basis:COST_BASIS};
+  }
   const prototype = DataBentoHTTP.prototype;
   const originalGet = prototype.get;
   const originalPost = prototype.post;
@@ -128,6 +137,7 @@ export function installPlatformTransportGuard(apiKey: string) {
       return response.value;
     }
     if (endpoint !== "/v0/timeseries.get_range") throw new Error(ERROR);
+    if(approvalRequired)throw new NonRetryableResponseError(ERROR);
     if (!["dataset", "symbols", "schema", "start"].every(field => typeof safe[field] === "string" && safe[field])) throw new Error(ERROR);
     const estimate: Record<string, unknown> = {};
     for (const field of COST_FIELDS) if (safe[field] !== undefined) estimate[field] = safe[field];
@@ -135,9 +145,22 @@ export function installPlatformTransportGuard(apiKey: string) {
     const costResponse = await readInvocation(() => originalGet.call(this, "/v0/metadata.get_cost", estimate, options));
     let cost: unknown;
     try { cost = JSON.parse(costResponse.value); } catch { throw new Error(ERROR); }
-    if (typeof cost !== "number" || !Number.isFinite(cost) || cost !== 0) throw new Error(ERROR);
+    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || cost > MAX_COST_USD) throw new NonRetryableResponseError(ERROR);
     capture("/v0/metadata.get_cost", estimate, costResponse.body);
-    const response = await readInvocation(() => originalGet.call(this, endpoint, params, options));
+    if(consumedBytes>=MAX_CAPTURE_BYTES)throw new NonRetryableResponseError(ERROR);
+    const costMicros=Math.ceil(cost*1_000_000);
+    // No await between this check and reservation: parallel sub-pulls share one invocation cap.
+    if(approvalRequired)throw new NonRetryableResponseError(ERROR);
+    const requiredMicros=costMicros+spentMicros;
+    if(!Number.isSafeInteger(requiredMicros)||requiredMicros>MAX_COST_USD*1_000_000)throw new NonRetryableResponseError(ERROR);
+    if(costMicros>allowanceMicros-spentMicros){
+      approvalRequired=true;
+      requiredAllowance=requiredMicros/1_000_000;
+      throw new NonRetryableResponseError(ERROR);
+    }
+    spentMicros+=costMicros;
+    // A timeout/HTTP failure may still be billable; retain its estimate and never retry data.
+    const response = await readInvocation(() => originalGet.call(this, endpoint, params, {...options,retry:false}));
     capture(endpoint, safe, response.body);
     return response.value;
   };
@@ -151,7 +174,7 @@ export function installPlatformTransportGuard(apiKey: string) {
   prototype.post = async function() { throw new Error(ERROR); };
   prototype.postFormBinary = async function() { throw new Error(ERROR); };
 
-  return {originals, restore() {
+  return {originals, costSummary, restore() {
     prototype.get = originalGet; prototype.post = originalPost;
     prototype.postForm = originalPostForm; prototype.postFormBinary = originalBinary;
     prototype.readResponseText = originalReadResponseText;

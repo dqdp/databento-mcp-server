@@ -24,6 +24,7 @@
     "start:http": "node dist/mcp/mcp/http.js",
     "smoke:mcp": "tsx scripts/smoke-mcp-stdio.ts",
     "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts",
+    "smoke:mcp:platform": "tsx scripts/smoke-mcp-platform.ts",
     "smoke:skills": "tsx scripts/smoke-installed-skills.ts",
     "smoke:consumer": "npm run build:consumer && tsx scripts/smoke-consumer-artifacts.ts",
     "smoke:smile": "tsx scripts/smoke-smile-live.ts",

@@ -1,5 +1,17 @@
 # Repository Instructions
 
+## Platform Live priority override — 2026-11-17
+
+Последующее поручение пользователя: облачный Live API нужен в первую очередь, с проверкой и переносом существующих live-возможностей. Прежнее исключение platform Live отменено только для Live; Reference/batch остаются вне этапа. Исторические $10/$50 и `get_cost` ниже к Live не применяются. Нужны отдельные права и подтверждённая подписка/лицензия dataset, без автоматической покупки и реальных live/платных тестов. Официальный Raw TCP/DBN поставщика не объявлять WebSocket/TLS без доказательств; прежний локальный транспорт проверить по коду. Реализацию и развёртывание не считать подтверждёнными по поручению. Локальный stdio/single-user HTTP сохраняются.
+
+## Platform-only override — 2026-11-17
+
+Пользователь явно разрешил реализовать для private platform entrypoint за Marengo Gateway автоматическое выполнение по оценке до $10 на один внешний MCP-вызов и $50 на календарные сутки UTC; превышение требует разового подтверждения в кабинете Gateway. Это переопределяет прежний zero-only platform gate, но **не меняет локальный stdio и single-user HTTP baseline ниже**, их Standard entitlement profile или batch defaults.
+
+Все внутренние historical загрузки агрегируются в один вызов; Gateway атомарно резервирует оценки, а Node проверяет одноразовый допуск с persistent nonce claim records до платной загрузки. Timeout, обрыв или частичный успех сохраняют неопределённый резерв; платных автоматических retry нет, ручной повтор может снова тарифицироваться. `get_cost` учитывает flat-rate скидки, но не доказывает net списание; не вычислять включённое Standard coverage вручную. Metadata и готовый кэш с нулевыми расходами остаются доступны по обычным правам. Defaults/migration аккаунтов 0/off, отдельно согласованная policy владельца 10/50 применяется только после развёртывания. Платных тестов/реальных ключей не использовать, выполненное развёртывание не заявлять. [Контракт платформы](docs/platform-gateway.md).
+
+Node persistent volume хранит только anti-replay nonce claim records, без provider keys, выгрузок и общих HOME. Пустое восстановление допустимо лишь после истечения всех старых JWT; до этого старые допуски не разрешают повторные платные операции. Универсальный Research Storage остаётся отложенным.
+
 ## Working Mode
 
 - Work in TDD order: write or update a failing test first, make the smallest fix, then run the targeted test until it passes.

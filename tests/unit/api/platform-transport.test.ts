@@ -57,4 +57,72 @@ describe("platform transport cost and originals boundary", () => {
     expect(upstream).toHaveBeenCalledTimes(2);
     expect(guard.originals).toHaveLength(1);
   });
+  it("permits a positive estimate within a trusted lease and meters it before data", async () => {
+    const calls:string[]=[];
+    vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{
+      const endpoint=new URL(String(url)).pathname;
+      calls.push(endpoint);
+      if(endpoint.includes("get_cost"))return new Response("2.5");
+      expect(guard!.costSummary().estimated_spent_usd).toBe(2.5);
+      return new Response("ts_event,close\n1,2\n");
+    });
+    guard=installPlatformTransportGuard("db-fixture",{reservation_id:"a".repeat(32),allowance_usd:10});
+    await new DataBentoHTTP("db-fixture").get("/v0/timeseries.get_range",{
+      dataset:"GLBX.MDP3",symbols:"ES.c.0",schema:"trades",start:"2026-10-22"});
+    expect(calls).toEqual(["/v0/metadata.get_cost","/v0/timeseries.get_range"]);
+    expect(guard.costSummary()).toEqual({reservation_id:"a".repeat(32),estimated_spent_usd:2.5,
+      approval_required:false,basis:"provider_estimate_after_plan_discounts"});
+  });
+  it("aggregates parallel sub-pulls against the entire invocation allowance",async()=>{
+    const data:string[]=[];
+    vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{
+      const parsed=new URL(String(url));
+      if(parsed.pathname.includes("get_cost"))return new Response(parsed.searchParams.get("symbols")==="A"?"6":"5");
+      data.push(parsed.searchParams.get("symbols")!);
+      return new Response("x\n1\n");
+    });
+    guard=installPlatformTransportGuard("db-fixture",{reservation_id:"b".repeat(32),allowance_usd:10});
+    const http=new DataBentoHTTP("db-fixture");
+    const settled=await Promise.allSettled(["A","B"].map(symbols=>http.get("/v0/timeseries.get_range",{
+      dataset:"GLBX.MDP3",symbols,schema:"trades",start:"2026-10-22"})));
+    expect(settled.filter(item=>item.status==="fulfilled")).toHaveLength(1);
+    expect(data).toHaveLength(1);
+    expect(guard.costSummary()).toMatchObject({estimated_spent_usd:6,approval_required:true,required_allowance_usd:11});
+    await expect(http.get("/v0/timeseries.get_range",{dataset:"GLBX.MDP3",symbols:"C",schema:"trades",start:"2026-10-22"})).rejects.toThrow();
+    expect(data).toHaveLength(1);
+  });
+  it("retains a started estimate when provider data fails and never retries that download",async()=>{
+    const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>
+      new Response(String(url).includes("get_cost")?"0.25":"provider error",{status:String(url).includes("get_cost")?200:500}));
+    guard=installPlatformTransportGuard("db-fixture",{reservation_id:"c".repeat(32),allowance_usd:10});
+    await expect(new DataBentoHTTP("db-fixture",{retryDelayMs:0}).get("/v0/timeseries.get_range",{
+      dataset:"GLBX.MDP3",symbols:"ES.c.0",schema:"trades",start:"2026-10-22"})).rejects.toThrow();
+    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(guard.costSummary()).toMatchObject({estimated_spent_usd:0.25,approval_required:false});
+  });
+  it("rounds tiny estimates upward without allowing accumulated rounding bypass",async()=>{
+    let data=0;
+    vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{
+      if(String(url).includes("get_cost"))return new Response("0.0000001");
+      data++;return new Response("x\n1\n");
+    });
+    guard=installPlatformTransportGuard("db-fixture",{reservation_id:"d".repeat(32),allowance_usd:0.000001});
+    const http=new DataBentoHTTP("db-fixture");
+    const request={dataset:"GLBX.MDP3",symbols:"A",schema:"trades",start:"2026-10-22"};
+    await http.get("/v0/timeseries.get_range",request);
+    await expect(http.get("/v0/timeseries.get_range",request)).rejects.toThrow();
+    expect(data).toBe(1);
+    expect(guard.costSummary()).toMatchObject({estimated_spent_usd:0.000001,approval_required:true});
+  });
+
+  it("rejects an unsupported million-dollar estimate without claiming approval or starting data",async()=>{
+    const upstream=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("1000000.000001"));
+    guard=installPlatformTransportGuard("db-fixture",{reservation_id:"e".repeat(32),allowance_usd:10});
+    await expect(new DataBentoHTTP("db-fixture").get("/v0/timeseries.get_range",{
+      dataset:"GLBX.MDP3",symbols:"ES",schema:"trades",start:"2026-10-22"})).rejects.toThrow();
+    expect(upstream).toHaveBeenCalledTimes(1);
+    expect(guard.costSummary()).toEqual({reservation_id:"e".repeat(32),estimated_spent_usd:0,
+      approval_required:false,basis:"provider_estimate_after_plan_discounts"});
+  });
+
 });

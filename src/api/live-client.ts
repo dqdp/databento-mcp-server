@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import {AsyncLocalStorage} from "node:async_hooks";
 import net from "node:net";
+import {platformLiveCaptureActive,captureLiveDbn} from "./platform-live.js";
 
 const DEFAULT_LIVE_DATASET = "GLBX.MDP3";
 const DEFAULT_LIVE_PORT = 13000;
@@ -15,6 +17,9 @@ const DBN_RTYPE_MBP_1 = 1;
 const DBN_RTYPE_ERROR = 21;
 const MBP_1_RECORD_MIN_LENGTH = 80;
 const UNDEF_PRICE = 9_223_372_036_854_775_807n;
+const UNDEF_TIMESTAMP=18_446_744_073_709_551_615n;
+const MAX_LIVE_BYTES=16*1024*1024;
+const MAX_CONTROL_BYTES=64*1024;
 
 export const LIVE_SYMBOL_STYPES = ["raw_symbol", "instrument_id", "continuous", "parent"] as const;
 
@@ -43,6 +48,12 @@ export interface LiveQuoteData {
   receiveTimestamp: Date;
   dataAge: number;
   sessionId?: string;
+  timestampNs?:string;
+  receiveTimestampNs?:string;
+  receivedAt?:string;
+  freshness?:{status:"not_asserted";latest_confirmed:false;event_age_ms:number;
+    event_timestamp_in_future:boolean;crossed_market:boolean};
+  capture_scope?:"received_live_bytes_including_first_quote";
 }
 
 export interface LiveQuoteOptions {
@@ -141,6 +152,7 @@ class DbnMbp1QuoteDecoder {
     if (chunk.length === 0) {
       return;
     }
+    if(chunk.length>MAX_LIVE_BYTES-this.buffer.length)throw new Error("Databento Live decoder byte limit exceeded");
     this.buffer = Buffer.concat([this.buffer, chunk]);
   }
 
@@ -195,7 +207,9 @@ class DbnMbp1QuoteDecoder {
       throw new Error("Databento Live stream did not start with DBN metadata");
     }
 
+    if(this.buffer[3]<1||this.buffer[3]>3)throw new Error("Unsupported Databento Live DBN version");
     const metadataLength = this.buffer.readUInt32LE(4);
+    if(metadataLength>MAX_LIVE_BYTES-DBN_PRELUDE_LENGTH)throw new Error("Databento Live metadata byte limit exceeded");
     const totalMetadataLength = DBN_PRELUDE_LENGTH + metadataLength;
     if (this.buffer.length < totalMetadataLength) {
       return "need-more";
@@ -226,6 +240,9 @@ function parseMbp1QuoteRecord(
   const tsEvent = record.readBigUInt64LE(8);
   const tsRecv = record.readBigUInt64LE(32);
   const timestamp = unixNanosToDate(tsEvent);
+  const platform=platformLiveCaptureActive();
+  if(platform&&(tsEvent===0n||tsEvent===UNDEF_TIMESTAMP||tsRecv===0n||tsRecv===UNDEF_TIMESTAMP))return undefined;
+  const observedNow=now();
 
   return {
     instrumentId: record.readUInt32LE(4),
@@ -238,7 +255,12 @@ function parseMbp1QuoteRecord(
     askCount: record.readUInt32LE(76),
     timestamp,
     receiveTimestamp: unixNanosToDate(tsRecv),
-    dataAge: now() - timestamp.getTime(),
+    dataAge: observedNow - timestamp.getTime(),
+    ...(platform?{timestampNs:tsEvent.toString(),receiveTimestampNs:tsRecv.toString(),
+      receivedAt:new Date(observedNow).toISOString(),
+      freshness:{status:"not_asserted" as const,latest_confirmed:false as const,
+        event_age_ms:observedNow-timestamp.getTime(),event_timestamp_in_future:timestamp.getTime()>observedNow,
+        crossed_market:bid>ask},capture_scope:"received_live_bytes_including_first_quote" as const}:{}),
   };
 }
 
@@ -311,12 +333,13 @@ export class DatabentoLiveClient {
 
   private normalizeQuoteRequest(symbol: string, options: LiveQuoteOptions): NormalizedLiveQuoteRequest {
     const requestedSymbol = symbol.trim();
+    if(requestedSymbol.length>256||/[|\r\n\x00-\x1f\x7f]/.test(requestedSymbol))throw new Error("Invalid Live protocol symbol");
     if (!requestedSymbol || requestedSymbol.includes(",") || requestedSymbol.toUpperCase() === "ALL_SYMBOLS") {
       throw new Error("get_live_futures_quote requires a single symbol; ALL_SYMBOLS and comma-separated symbols are not supported");
     }
 
     const dataset = (options.dataset ?? this.dataset).trim();
-    if (!dataset) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(dataset)) {
       throw new Error("dataset must be a non-empty Databento dataset code");
     }
 
@@ -344,6 +367,9 @@ export class DatabentoLiveClient {
     const socket = this.socketFactory({ host: this.gatewayForDataset(request.dataset), port: this.port });
     const dbnDecoder = new DbnMbp1QuoteDecoder();
     let controlBuffer = Buffer.alloc(0);
+    let receivedBytes=0,controlBytes=0;
+    const rawChunks:Buffer[]=[];
+    const capture=platformLiveCaptureActive();
     let sessionId: string | undefined;
     let streaming = false;
     let settled = false;
@@ -369,6 +395,8 @@ export class DatabentoLiveClient {
 
       const fail = (error: Error): void => {
         finish(() => {
+          // A late OS error after teardown must not become an unhandled EventEmitter error.
+          socket.on("error",()=>{});
           socket.destroy();
           reject(error);
         });
@@ -376,6 +404,7 @@ export class DatabentoLiveClient {
 
       const handleDbnChunk = (chunk: Buffer): void => {
         try {
+          if(capture&&chunk.length)rawChunks.push(Buffer.from(chunk));
           dbnDecoder.write(chunk);
           while (true) {
             const result = dbnDecoder.next(this.now);
@@ -387,8 +416,12 @@ export class DatabentoLiveClient {
               return;
             }
 
+            if(capture)captureLiveDbn(Buffer.concat(rawChunks),{dataset:request.dataset,schema:"mbp-1",
+              symbols:request.liveSymbol,stype_in:request.stypeIn},result.quote.receivedAt!,this.apiKey);
             finish(() => {
+              socket.on("error",()=>{});
               socket.end();
+              socket.destroy();
               resolve({
                 symbol: request.requestedSymbol,
                 liveSymbol: request.liveSymbol,
@@ -448,12 +481,16 @@ export class DatabentoLiveClient {
         while (true) {
           const newlineIndex = controlBuffer.indexOf(0x0a);
           if (newlineIndex === -1) {
+            if(controlBytes+controlBuffer.length>MAX_CONTROL_BYTES)throw new Error("Databento Live control byte limit exceeded");
             return;
           }
+          controlBytes+=newlineIndex+1;
+          if(controlBytes>MAX_CONTROL_BYTES)throw new Error("Databento Live control byte limit exceeded");
 
           const line = controlBuffer.subarray(0, newlineIndex + 1);
           const rest = controlBuffer.subarray(newlineIndex + 1);
           handleControlMessage(parseGatewayControlLine(line));
+          if(settled)return;
           if (streaming) {
             controlBuffer = Buffer.alloc(0);
             handleDbnChunk(rest);
@@ -464,13 +501,16 @@ export class DatabentoLiveClient {
         }
       };
 
-      const onData = (chunk: Buffer): void => {
-        if (streaming) {
-          handleDbnChunk(chunk);
-        } else {
-          handleControlChunk(chunk);
-        }
-      };
+      // Factories may return an existing EventEmitter; bind the platform capture explicitly.
+      const onData = AsyncLocalStorage.bind((chunk: Buffer): void => {
+        if(settled)return;
+        try{
+          if(!Buffer.isBuffer(chunk)||chunk.length>MAX_LIVE_BYTES-receivedBytes)throw new Error("Databento Live received byte limit exceeded");
+          receivedBytes+=chunk.length;
+          if (streaming) handleDbnChunk(chunk);
+          else handleControlChunk(chunk);
+        }catch(error){fail(error instanceof Error?error:new Error("Databento Live stream failed"));}
+      });
 
       const onError = (error: Error): void => {
         fail(new Error(`Databento Live socket error: ${error.message}`));

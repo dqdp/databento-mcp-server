@@ -23,6 +23,7 @@ COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY --from=builder /app/dist/mcp ./dist/mcp
 COPY package.json package-lock.json ./
 COPY SOURCE_MANIFEST.json /usr/share/mcp-platform/source-manifest.json
+RUN mkdir -p /var/lib/databento-platform && chown node:node /var/lib/databento-platform
 USER node
 EXPOSE 8002
 CMD ["node", "dist/mcp/mcp/platform.js"]

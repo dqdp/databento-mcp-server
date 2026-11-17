@@ -1,4 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
+import {mkdtemp,rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startPlatformHttpServer, verifyPlatformToken, type StartedPlatformServer } from "../../mcp/platform.js";
 
@@ -13,7 +16,11 @@ function token(body: Buffer, permission: string, extra: Record<string, unknown> 
   return header+"."+claims+"."+signature;
 }
 let started: StartedPlatformServer | undefined;
-afterEach(async()=>{ await started?.close(); started=undefined; });
+const stateDirectories:string[]=[];
+async function stateDirectory(){const directory=await mkdtemp(path.join(tmpdir(),"db-cost-test-"));stateDirectories.push(directory);return directory;}
+function summary(reservation_id:string,estimated_spent_usd=0){return {reservation_id,estimated_spent_usd,approval_required:false,basis:"provider_estimate_after_plan_discounts" as const};}
+async function call(url:string,input:unknown){const body=Buffer.from(JSON.stringify(input));return fetch(url+"/v1/call",{method:"POST",body,headers:{authorization:"Bearer "+token(body,(input as {name:string}).name),"content-type":"application/json"}});}
+afterEach(async()=>{ await started?.close(); started=undefined; await Promise.all(stateDirectories.splice(0).map(directory=>rm(directory,{recursive:true,force:true}))); });
 
 describe("private Databento platform authentication",()=>{
   it("binds a trusted owner and exact operation to exact bytes",()=>{
@@ -39,7 +46,7 @@ describe("private Databento platform authentication",()=>{
     expect(names).toContain("get_session_info");
     expect(names).toContain("timeseries_get_range");
     expect(names).not.toContain("batch_submit_job");
-    expect(names).not.toContain("get_live_futures_quote");
+    expect(names).toContain("get_live_futures_quote");
     expect(names.some(name=>name.startsWith("reference_"))).toBe(false);
     expect(worker).not.toHaveBeenCalled();
   });
@@ -74,4 +81,94 @@ describe("private Databento platform authentication",()=>{
       expect(failure.status).toBe(400);
     }finally{delete process.env.DATABENTO_API_KEY; delete process.env.SMILE_WEB_PORT;}
   });
+  it("claims each lease once before spawning, including concurrency and parent restart",async()=>{
+    const stateDir=await stateDirectory();
+    const reservation_id="a".repeat(32);
+    const worker=vi.fn(async()=>({result:{content:[]},originals:[],cost_summary:summary(reservation_id,1)}));
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    const input={name:"get_session_info",arguments:{},cost_control:{reservation_id,allowance_usd:10}};
+    const responses=await Promise.all([call(started.url,input),call(started.url,input)]);
+    expect(responses.map(response=>response.status).sort()).toEqual([200,409]);
+    expect(worker).toHaveBeenCalledTimes(1);
+    await started.close();started=undefined;
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    expect((await call(started.url,input)).status).toBe(409);
+    expect(worker).toHaveBeenCalledTimes(1);
+  });
+  it("does not release a lease when its worker failed",async()=>{
+    const worker=vi.fn(async()=>{throw new Error("worker stopped");});
+    const stateDir=await stateDirectory();
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    const input={name:"get_session_info",arguments:{},cost_control:{reservation_id:"b".repeat(32),allowance_usd:10}};
+    expect((await call(started.url,input)).status).toBe(502);
+    expect((await call(started.url,input)).status).toBe(409);
+    expect(worker).toHaveBeenCalledTimes(1);
+  });
+  it("rejects grants without durable replay state before worker invocation",async()=>{
+    const worker=vi.fn();
+    started=await startPlatformHttpServer({signingKey:key,port:0,worker});
+    const input={name:"get_session_info",arguments:{},cost_control:{reservation_id:"c".repeat(32),allowance_usd:0}};
+    expect((await call(started.url,input)).status).toBe(503);
+    expect(worker).not.toHaveBeenCalled();
+  });
+  it.each([-1,NaN,Infinity,11])("rejects invalid or over-allowance worker spent estimate %s",async spent=>{
+    const stateDir=await stateDirectory();const reservation_id="d".repeat(32);
+    const worker=vi.fn(async()=>({result:{content:[],isError:true},originals:[],cost_summary:summary(reservation_id,spent)}));
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    const response=await call(started.url,{name:"get_session_info",arguments:{},cost_control:{reservation_id,allowance_usd:10}});
+    expect(response.status).toBe(502);
+    expect(worker).toHaveBeenCalledTimes(1);
+  });
+  it("preserves a valid cost summary even when native result isError",async()=>{
+    const stateDir=await stateDirectory();const reservation_id="e".repeat(32);
+    const worker=vi.fn(async()=>({result:{content:[],isError:true},originals:[],cost_summary:summary(reservation_id,2)}));
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    const response=await call(started.url,{name:"get_session_info",arguments:{},cost_control:{reservation_id,allowance_usd:10}});
+    expect(response.status).toBe(200);
+    expect((await response.json() as {cost_summary:unknown}).cost_summary).toEqual(summary(reservation_id,2));
+  });
+
+  it("passes a trusted zero lease through the actual disposable child MCP",async()=>{
+    const stateDir=await stateDirectory();const reservation_id="f".repeat(32);
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir});
+    const response=await call(started.url,{name:"get_session_info",arguments:{timestamp:"2026-10-23T12:00:00Z"},
+      cost_control:{reservation_id,allowance_usd:0}});
+    expect(response.status).toBe(200);
+    const reply=await response.json() as {cost_summary:unknown;result:{isError?:boolean}};
+    expect(reply.result.isError).not.toBe(true);
+    expect(reply.cost_summary).toEqual(summary(reservation_id));
+  });
+  it("requires the parent to authenticate exact lease bytes before worker execution",async()=>{
+    const stateDir=await stateDirectory();const worker=vi.fn();
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    const signed=Buffer.from(JSON.stringify({name:"get_session_info",arguments:{},
+      cost_control:{reservation_id:"1".repeat(32),allowance_usd:0}}));
+    const changed=Buffer.from(signed.toString().replace('"allowance_usd":0','"allowance_usd":10'));
+    const response=await fetch(started.url+"/v1/call",{method:"POST",body:changed,
+      headers:{authorization:"Bearer "+token(signed,"get_session_info"),"content-type":"application/json"}});
+    expect(response.status).toBe(401);expect(worker).not.toHaveBeenCalled();
+  });
+  it("fails closed before worker on malformed cost-control envelopes",async()=>{
+    const stateDir=await stateDirectory();const worker=vi.fn();
+    started=await startPlatformHttpServer({signingKey:key,port:0,stateDir,worker});
+    for(const cost_control of [null,{reservation_id:"../escape",allowance_usd:10},
+      {reservation_id:"2".repeat(32),allowance_usd:-1},{reservation_id:"2".repeat(32),allowance_usd:true},
+      {reservation_id:"2".repeat(32),allowance_usd:10,admin:true}]){
+      expect((await call(started.url,{name:"get_session_info",arguments:{},cost_control})).status).toBe(400);
+    }
+    expect(worker).not.toHaveBeenCalled();
+  });
+
+  it("does not accept historical leases or missing raw evidence for Live",async()=>{
+    const worker=vi.fn(async()=>({result:{content:[]},originals:[],live_cost_status:{
+      basis:"live_subscription_entitlement" as const,status:"not_estimated" as const,
+      additional_cost_usd:null,historical_get_cost_applicable:false as const}}));
+    started=await startPlatformHttpServer({signingKey:key,port:0,worker});
+    const input={name:"get_live_futures_quote",arguments:{symbol:"ES"},api_key:"db-synthetic"};
+    expect((await call(started.url,{...input,cost_control:{reservation_id:"9".repeat(32),allowance_usd:10}})).status).toBe(400);
+    expect(worker).not.toHaveBeenCalled();
+    expect((await call(started.url,input)).status).toBe(502);
+    expect(worker).toHaveBeenCalledTimes(1);
+  });
+
 });
