@@ -177,7 +177,7 @@ function historicalBarsArgs(): ToolArgumentSchema {
         message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
       })
       .describe(
-        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw_symbol, instrument_id, or continuous symbols for other futures and options on futures. Parent requests cannot be aggregated into bars."
       ),
     timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
     count: z
@@ -188,7 +188,7 @@ function historicalBarsArgs(): ToolArgumentSchema {
         `Number of bars to retrieve. Max ${MAX_INTRADAY_HISTORICAL_BARS} for 1h/H4, max ${MAX_DAILY_HISTORICAL_BARS} for 1d.`
       ),
     stype_in: z
-      .enum(SYMBOLOGY_TYPES)
+      .enum(["raw_symbol","instrument_id","continuous"])
       .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
       .optional(),
   }).superRefine((args, context) => {

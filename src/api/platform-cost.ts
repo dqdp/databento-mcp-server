@@ -10,6 +10,7 @@ export interface PlatformCostSummary {
   estimated_spent_usd: number;
   approval_required: boolean;
   required_allowance_usd?: number;
+  subscription_covered_requests?: number;
   basis: typeof COST_BASIS;
 }
 
@@ -31,10 +32,12 @@ export function emptyCostSummary(control?:PlatformCostControl):PlatformCostSumma
 export function validateCostSummary(value:unknown,control?:PlatformCostControl):PlatformCostSummary {
   if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Invalid cost summary");
   const item=value as Record<string,unknown>;
-  if(Object.keys(item).some(key=>!["reservation_id","estimated_spent_usd","approval_required","required_allowance_usd","basis"].includes(key))||
+  if(Object.keys(item).some(key=>!["reservation_id","estimated_spent_usd","approval_required","required_allowance_usd","subscription_covered_requests","basis"].includes(key))||
     item.reservation_id!==(control?.reservation_id??null)||item.basis!==COST_BASIS||
     typeof item.estimated_spent_usd!=="number"||!Number.isFinite(item.estimated_spent_usd)||item.estimated_spent_usd<0||
     item.estimated_spent_usd>(control?.allowance_usd??0)||typeof item.approval_required!=="boolean"||
+    (item.subscription_covered_requests!==undefined&&(!Number.isSafeInteger(item.subscription_covered_requests)||
+      (item.subscription_covered_requests as number)<0||(item.subscription_covered_requests as number)>10000))||
     (item.approval_required?(typeof item.required_allowance_usd!=="number"||
       !Number.isFinite(item.required_allowance_usd)||item.required_allowance_usd>(MAX_COST_USD)||
       item.required_allowance_usd<=(control?.allowance_usd??0)):

@@ -7,7 +7,7 @@ import http,{type Server as HttpServer,type IncomingMessage,type ServerResponse}
 import {tmpdir} from "node:os";
 import path from "node:path";
 import type {AddressInfo} from "node:net";
-import {listPlatformTools,validateCostControl,validateCostSummary,type PlatformCall,type PlatformCostSummary} from "./platform-contract.js";
+import {listPlatformTools,validateCostControl,validateCostSummary,validatePlatformSubscription,type PlatformCall,type PlatformCostSummary} from "./platform-contract.js";
 import type {PlatformOriginal} from "../src/api/platform-transport.js";
 import type {CallToolResult} from "@modelcontextprotocol/sdk/types.js";
 import {validateLiveCostStatus,type PlatformLiveCostStatus} from "../src/api/platform-live.js";
@@ -78,6 +78,7 @@ function validateReply(reply:PlatformReply,input:PlatformCall):PlatformReply {
   }
   if(reply.live_cost_status!==undefined)throw new Error("Invalid cost report");
   const summary=validateCostSummary(reply.cost_summary,input.cost_control);
+  if(summary.subscription_covered_requests&&!input.subscription)throw new Error("Unexpected subscription report");
   return {result:reply.result,originals:reply.originals,cost_summary:summary};
 }
 
@@ -166,7 +167,7 @@ export async function startPlatformHttpServer(options:{
       send(response,200,{tools:listPlatformTools()});return;
     }
     if(!enabled.has(permission)){send(response,403,{error:"operation_not_allowed"});return;}
-    if(Object.keys(payload).some(k=>!["name","arguments","api_key","cost_control"].includes(k))||
+    if(Object.keys(payload).some(k=>!["name","arguments","api_key","cost_control","subscription"].includes(k))||
       !payload.arguments||typeof payload.arguments!=="object"||Array.isArray(payload.arguments)||
       (payload.api_key!==undefined&&(typeof payload.api_key!=="string"||payload.api_key.length>8192||!payload.api_key.startsWith("db-")))||
       (permission!=="get_session_info"&&payload.api_key===undefined)){
@@ -174,7 +175,10 @@ export async function startPlatformHttpServer(options:{
     }
     if(permission==="get_live_futures_quote"&&payload.cost_control!==undefined){send(response,400,{error:"historical_cost_not_applicable"});return;}
     let costControl;
-    try{costControl=validateCostControl(payload.cost_control);}catch{send(response,400,{error:"invalid_request"});return;}
+    try{
+      costControl=validateCostControl(payload.cost_control);
+      validatePlatformSubscription(payload.subscription,payload.api_key,permission);
+    }catch{send(response,400,{error:"invalid_request"});return;}
     if(costControl&&!options.stateDir){send(response,503,{error:"cost_state_unavailable"});return;}
     if(active>=MAX_CONCURRENT){send(response,429,{error:"busy"});return;}
     active++;

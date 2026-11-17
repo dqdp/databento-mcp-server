@@ -240,7 +240,7 @@ export class DataBentoHTTP {
         // If this is the last attempt, throw the error
         if (attempt === retryAttempts) {
           throw new Error(
-            `DataBento API request failed after ${retryAttempts} attempts: ${error}`
+            `DataBento API request failed after ${retryAttempts} attempts: ${error}`,{cause:error}
           );
         }
 

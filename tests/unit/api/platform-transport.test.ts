@@ -1,11 +1,58 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DataBentoHTTP } from "../../../src/http/databento-http.js";
 import { installPlatformTransportGuard } from "../../../src/api/platform-transport.js";
+import {createHash} from "node:crypto";
 
 let guard: ReturnType<typeof installPlatformTransportGuard> | undefined;
 afterEach(() => { guard?.restore(); guard = undefined; vi.restoreAllMocks(); });
 
 describe("platform transport cost and originals boundary", () => {
+  it("reports a sanitized timeout through HTTP wrappers without exposing exception text",async()=>{
+    const apiKey="db-fixture";
+    const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{
+      if(String(url).includes("get_cost"))return new Response("0");
+      throw new DOMException("db-fixture private timeout details","TimeoutError");
+    });
+    guard=installPlatformTransportGuard(apiKey);
+    await expect(new DataBentoHTTP(apiKey).get("/v0/timeseries.get_range",{
+      dataset:"GLBX.MDP3",symbols:"ES",schema:"trades",start:"2020-01-01"})).rejects.toThrow();
+    expect(upstream).toHaveBeenCalledTimes(2);
+    expect(guard.failureSummary()).toEqual({error_code:"timeout",phase:"market_data"});
+    expect(JSON.stringify(guard.failureSummary())).not.toContain("private");
+  });
+  it("skips estimates only for each fully included subscription subrequest and blocks any uncovered positive cost",async()=>{
+    const apiKey="db-fixture";
+    const subscription={plan:"cme_standard" as const,policy_version:1 as const,
+      credential_sha256:createHash("sha256").update(apiKey).digest("hex")};
+    const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>
+      new Response(String(url).includes("get_cost")?"0.0000001":"ts_event,price\n1,2\n"));
+    guard=installPlatformTransportGuard(apiKey,{reservation_id:"a".repeat(32),allowance_usd:0},subscription);
+    const http=new DataBentoHTTP(apiKey);
+    const request={dataset:"GLBX.MDP3",symbols:"ES.c.0",schema:"ohlcv-1d",start:"2010-01-01",end:"2010-01-02"};
+    await http.get("/v0/timeseries.get_range",request);
+    await expect(http.get("/v0/timeseries.get_range",{...request,schema:"trades"})).rejects.toThrow();
+    expect(upstream.mock.calls.map(call=>new URL(String(call[0])).pathname)).toEqual([
+      "/v0/timeseries.get_range","/v0/metadata.get_cost"]);
+    expect(guard.costSummary()).toMatchObject({subscription_covered_requests:1,estimated_spent_usd:0,
+      approval_required:true,required_allowance_usd:0.000001});
+    expect(guard.originals.map(original=>original.request.endpoint)).toEqual([
+      "/v0/timeseries.get_range","/v0/metadata.get_cost"]);
+  });
+  it("still estimates uncovered zero cost and preserves covered attempts on failure without retry",async()=>{
+    const apiKey="db-fixture";
+    const subscription={plan:"cme_standard" as const,policy_version:1 as const,
+      credential_sha256:createHash("sha256").update(apiKey).digest("hex")};
+    const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>
+      new Response(String(url).includes("get_cost")?"0":"failure",{status:String(url).includes("get_cost")?200:500}));
+    guard=installPlatformTransportGuard(apiKey,undefined,subscription);
+    const http=new DataBentoHTTP(apiKey,{retryDelayMs:0});
+    const request={dataset:"GLBX.MDP3",symbols:"ES",schema:"ohlcv-1d",start:"2010-01-01",end:"2010-01-02"};
+    await expect(http.get("/v0/timeseries.get_range",request)).rejects.toThrow();
+    await expect(http.get("/v0/timeseries.get_range",{...request,dataset:"XNAS.ITCH"})).rejects.toThrow();
+    expect(upstream.mock.calls.map(call=>new URL(String(call[0])).pathname)).toEqual([
+      "/v0/timeseries.get_range","/v0/metadata.get_cost","/v0/timeseries.get_range"]);
+    expect(guard.costSummary()).toMatchObject({subscription_covered_requests:1,estimated_spent_usd:0,approval_required:false});
+  });
   it("requires raw numeric zero before each actual historical request and keeps omitted end", async () => {
     const request = { dataset: "GLBX.MDP3", symbols: "ES.c.0", schema: "ohlcv-1d",
       start: "2026-01-01", stype_in: "continuous", stype_out: "instrument_id", limit: 2, encoding: "csv" };

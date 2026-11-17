@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { DataBentoHTTP, NonRetryableResponseError } from "../http/databento-http.js";
 import {COST_BASIS,MAX_COST_USD,validateCostControl,type PlatformCostControl,type PlatformCostSummary} from "./platform-cost.js";
+import {isStandardCmeHistoricalCovered,validatePlatformSubscription,type PlatformSubscription} from "./platform-subscription.js";
 
 export interface PlatformOriginal {
   name: string;
@@ -21,6 +22,17 @@ const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const ERROR = "Databento server operation is not permitted";
 const COST_FIELDS = ["dataset", "symbols", "schema", "start", "end", "stype_in", "limit"];
+type FailurePhase="metadata"|"cost_estimate"|"market_data"|"result_processing";
+export interface PlatformFailure {
+  error_code:"upstream_http_error"|"timeout"|"transport_error"|"response_rejected"|"invalid_cost_estimate"|"approval_required"|"result_processing_failed";
+  phase:FailurePhase;
+  http_status?:number;
+}
+function isTimeout(error:unknown):boolean {
+  for(let depth=0;depth<4&&error instanceof Error;depth++,error=error.cause)
+    if(["AbortError","TimeoutError"].includes(error.name))return true;
+  return false;
+}
 
 function parameters(value: unknown): Record<string, unknown> {
   if (value == null) return {};
@@ -38,14 +50,21 @@ function parameters(value: unknown): Record<string, unknown> {
   return copied;
 }
 
-export function installPlatformTransportGuard(apiKey: string, suppliedControl?:PlatformCostControl) {
+export function installPlatformTransportGuard(apiKey: string, suppliedControl?:PlatformCostControl,suppliedSubscription?:PlatformSubscription) {
   const control=validateCostControl(suppliedControl);
+  const subscription=validatePlatformSubscription(suppliedSubscription,apiKey,"timeseries_get_range");
   // Integer micro-USD are reserved before data starts; rounding cannot under-count tiny pulls.
   const allowanceMicros=Math.floor((control?.allowance_usd??0)*1_000_000);
   let spentMicros=0,approvalRequired=false,requiredAllowance:number|undefined;
+  let subscriptionCoveredRequests=0;
+  let failure:PlatformFailure|undefined;
+  function rejected(error_code:PlatformFailure["error_code"],phase:FailurePhase):never {
+    failure={error_code,phase};throw new NonRetryableResponseError(ERROR);
+  }
   function costSummary():PlatformCostSummary {
     return {reservation_id:control?.reservation_id??null,estimated_spent_usd:spentMicros/1_000_000,
-      approval_required:approvalRequired,...(requiredAllowance===undefined?{}:{required_allowance_usd:requiredAllowance}),basis:COST_BASIS};
+      approval_required:approvalRequired,...(requiredAllowance===undefined?{}:{required_allowance_usd:requiredAllowance}),
+      ...(subscriptionCoveredRequests?{subscription_covered_requests:subscriptionCoveredRequests}:{}),basis:COST_BASIS};
   }
   const prototype = DataBentoHTTP.prototype;
   const originalGet = prototype.get;
@@ -53,7 +72,7 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
   const originalPostForm = prototype.postForm;
   const originalBinary = prototype.postFormBinary;
   const originalReadResponseText = prototype.readResponseText;
-  const contexts = new AsyncLocalStorage<{body?: Buffer}>();
+  const contexts = new AsyncLocalStorage<{body?: Buffer;httpStatus?:number}>();
   const originals: PlatformOriginal[] = [];
   // Count every consumed body byte, including error/retry responses and parallel pulls.
   let consumedBytes = 0;
@@ -65,6 +84,7 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
       throw new NonRetryableResponseError(ERROR);
     }
     delete context.body;
+    context.httpStatus=response.status;
     if (!response.body) {
       context.body = Buffer.alloc(0);
       return "";
@@ -102,21 +122,29 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
       context.body = Buffer.concat(chunks, responseBytes);
       text.push(decoder.decode());
       return text.join("");
-    } catch {
+    } catch(error) {
       delete context.body;
       await reader.cancel().catch(() => {});
-      throw new NonRetryableResponseError(ERROR);
+      throw new NonRetryableResponseError(ERROR,{cause:error});
     } finally {
       reader.releaseLock();
     }
   };
 
-  async function readInvocation(invoke: () => Promise<string>) {
-    if (consumedBytes >= MAX_CAPTURE_BYTES) throw new NonRetryableResponseError(ERROR);
-    const context: {body?: Buffer} = {};
-    const value = await contexts.run(context, invoke);
-    if (!Buffer.isBuffer(context.body)) throw new NonRetryableResponseError(ERROR);
-    return {value, body: context.body};
+  async function readInvocation(invoke: () => Promise<string>,phase:FailurePhase) {
+    if (consumedBytes >= MAX_CAPTURE_BYTES) rejected("response_rejected",phase);
+    const context: {body?: Buffer;httpStatus?:number} = {};
+    try{
+      const value = await contexts.run(context, invoke);
+      if (!Buffer.isBuffer(context.body)) rejected("response_rejected",phase);
+      return {value, body: context.body};
+    }catch(error){
+      const status=context.httpStatus;
+      failure=typeof status==="number"&&Number.isInteger(status)&&status>=400&&status<=599?
+        {error_code:"upstream_http_error",phase,http_status:status}:
+        {error_code:isTimeout(error)?"timeout":error instanceof NonRetryableResponseError?"response_rejected":"transport_error",phase};
+      throw error;
+    }
   }
 
   function capture(endpoint: string, params: Record<string, unknown>, body: Buffer) {
@@ -132,20 +160,29 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
   prototype.get = async function(endpoint, params, options) {
     const safe = parameters(params);
     if (FREE_METADATA.has(endpoint)) {
-      const response = await readInvocation(() => originalGet.call(this, endpoint, params, options));
+      const response = await readInvocation(() => originalGet.call(this, endpoint, params, options),endpoint==="/v0/metadata.get_cost"?"cost_estimate":"metadata");
       capture(endpoint, safe, response.body);
       return response.value;
     }
     if (endpoint !== "/v0/timeseries.get_range") throw new Error(ERROR);
     if(approvalRequired)throw new NonRetryableResponseError(ERROR);
     if (!["dataset", "symbols", "schema", "start"].every(field => typeof safe[field] === "string" && safe[field])) throw new Error(ERROR);
+    if(subscription&&isStandardCmeHistoricalCovered(safe)){
+      if(subscriptionCoveredRequests>=10000)throw new NonRetryableResponseError(ERROR);
+      subscriptionCoveredRequests++;
+      // An included attempt has no monetary estimate. Keep all byte limits, exact originals,
+      // and no automatic retries; a mixed tool must classify its next subrequest anew.
+      const response=await readInvocation(()=>originalGet.call(this,endpoint,params,{...options,retry:false}),"market_data");
+      capture(endpoint,safe,response.body);
+      return response.value;
+    }
     const estimate: Record<string, unknown> = {};
     for (const field of COST_FIELDS) if (safe[field] !== undefined) estimate[field] = safe[field];
     // Omitted end stays omitted: preflight and download use identical forward-fill semantics.
-    const costResponse = await readInvocation(() => originalGet.call(this, "/v0/metadata.get_cost", estimate, options));
+    const costResponse = await readInvocation(() => originalGet.call(this, "/v0/metadata.get_cost", estimate, options),"cost_estimate");
     let cost: unknown;
-    try { cost = JSON.parse(costResponse.value); } catch { throw new Error(ERROR); }
-    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || cost > MAX_COST_USD) throw new NonRetryableResponseError(ERROR);
+    try { cost = JSON.parse(costResponse.value); } catch { rejected("invalid_cost_estimate","cost_estimate"); }
+    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || cost > MAX_COST_USD) rejected("invalid_cost_estimate","cost_estimate");
     capture("/v0/metadata.get_cost", estimate, costResponse.body);
     if(consumedBytes>=MAX_CAPTURE_BYTES)throw new NonRetryableResponseError(ERROR);
     const costMicros=Math.ceil(cost*1_000_000);
@@ -156,25 +193,25 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
     if(costMicros>allowanceMicros-spentMicros){
       approvalRequired=true;
       requiredAllowance=requiredMicros/1_000_000;
-      throw new NonRetryableResponseError(ERROR);
+      rejected("approval_required","cost_estimate");
     }
     spentMicros+=costMicros;
     // A timeout/HTTP failure may still be billable; retain its estimate and never retry data.
-    const response = await readInvocation(() => originalGet.call(this, endpoint, params, {...options,retry:false}));
+    const response = await readInvocation(() => originalGet.call(this, endpoint, params, {...options,retry:false}),"market_data");
     capture(endpoint, safe, response.body);
     return response.value;
   };
   prototype.postForm = async function(endpoint, data, options) {
     if (endpoint !== "/v0/symbology.resolve") throw new Error(ERROR);
     const safe = parameters(data);
-    const response = await readInvocation(() => originalPostForm.call(this, endpoint, data, options));
+    const response = await readInvocation(() => originalPostForm.call(this, endpoint, data, options),"metadata");
     capture(endpoint, safe, response.body);
     return response.value;
   };
   prototype.post = async function() { throw new Error(ERROR); };
   prototype.postFormBinary = async function() { throw new Error(ERROR); };
 
-  return {originals, costSummary, restore() {
+  return {originals, costSummary, failureSummary:():PlatformFailure=>failure?{...failure}:{error_code:"result_processing_failed",phase:"result_processing"},restore() {
     prototype.get = originalGet; prototype.post = originalPost;
     prototype.postForm = originalPostForm; prototype.postFormBinary = originalBinary;
     prototype.readResponseText = originalReadResponseText;

@@ -306,6 +306,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           symbol,
           timeframe,
           count: bars.length,
+          ...(timeframe==="H4"?{aggregation:{timezone:"UTC",interval_hours:4,incomplete_final_bucket:"excluded"}}:{}),
           bars: bars.map((bar) => ({
             timestamp: bar.timestamp.toISOString(),
             open: bar.open,
@@ -313,6 +314,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
             low: bar.low,
             close: bar.close,
             volume: bar.volume,
+            instrument_id:bar.instrumentId,
+            ...(bar.sourceBarCount===undefined?{}:{source_bar_count:bar.sourceBarCount,aggregation_complete:bar.aggregationComplete}),
           })),
         };
 

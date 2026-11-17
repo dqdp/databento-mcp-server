@@ -633,6 +633,9 @@ describe("MCP server integration", () => {
         })
       );
       expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
+      expectValidationError(await client.callTool({name:"get_historical_bars",arguments:{
+        symbol:"ES.FUT",timeframe:"H4",count:3,stype_in:"parent"}}));
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();
       await server.close();

@@ -23,6 +23,28 @@ async function call(url:string,input:unknown){const body=Buffer.from(JSON.string
 afterEach(async()=>{ await started?.close(); started=undefined; await Promise.all(stateDirectories.splice(0).map(directory=>rm(directory,{recursive:true,force:true}))); });
 
 describe("private Databento platform authentication",()=>{
+  it("authenticates subscription bytes, rejects wrong keys/nonhistorical tools, and passes only the bound assertion",async()=>{
+    const api_key="db-subscription-fixture";
+    const subscription={plan:"cme_standard",policy_version:1,credential_sha256:createHash("sha256").update(api_key).digest("hex")};
+    const worker=vi.fn(async()=>({result:{content:[]},originals:[],cost_summary:{
+      reservation_id:null,estimated_spent_usd:0,approval_required:false,basis:"provider_estimate_after_plan_discounts" as const,
+      subscription_covered_requests:1}}));
+    started=await startPlatformHttpServer({signingKey:key,port:0,worker});
+    const input={name:"timeseries_get_range",arguments:{},api_key,subscription};
+    const response=await call(started.url,input);
+    expect(response.status).toBe(200);
+    expect(worker.mock.calls[0][0]).toEqual(input);
+    expect((await response.json() as {cost_summary:{subscription_covered_requests:number}}).cost_summary.subscription_covered_requests).toBe(1);
+    for(const change of [{api_key:"db-rotated"},{subscription:null},{subscription:{...subscription,policy_version:2}},
+      {subscription:{...subscription,extra:true}},{name:"get_live_futures_quote"},{name:"metadata_get_cost"},{name:"get_session_info"}])
+      expect((await call(started.url,{...input,...change})).status).toBe(400);
+    const signed=Buffer.from(JSON.stringify(input));
+    const changed=Buffer.from(signed.toString().replace('"policy_version":1','"policy_version":2'));
+    expect((await fetch(started.url+"/v1/call",{method:"POST",body:changed,headers:{
+      authorization:"Bearer "+token(signed,input.name),"content-type":"application/json"}})).status).toBe(401);
+    expect(worker).toHaveBeenCalledTimes(1);
+    expect((await call(started.url,{name:input.name,arguments:{},api_key})).status).toBe(502);
+  });
   it("binds a trusted owner and exact operation to exact bytes",()=>{
     const body=Buffer.from('{"name":"get_session_info","arguments":{}}');
     const claims=verifyPlatformToken(token(body,"get_session_info"),key,body,"get_session_info");

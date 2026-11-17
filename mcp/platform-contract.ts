@@ -11,6 +11,8 @@ export function listPlatformTools() {
 }
 
 import type {PlatformCostControl} from "../src/api/platform-cost.js";
+import type {PlatformSubscription} from "../src/api/platform-subscription.js";
+export {validatePlatformSubscription,type PlatformSubscription} from "../src/api/platform-subscription.js";
 export {COST_BASIS,validateCostControl,validateCostSummary,emptyCostSummary,type PlatformCostControl,type PlatformCostSummary} from "../src/api/platform-cost.js";
 
 export interface PlatformCall {
@@ -18,4 +20,5 @@ export interface PlatformCall {
   arguments: Record<string, unknown>;
   api_key?: string;
   cost_control?: PlatformCostControl;
+  subscription?: PlatformSubscription;
 }
