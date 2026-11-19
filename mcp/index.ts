@@ -25,6 +25,7 @@ import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
   parseDatabentoToolArguments,
+  type DatabentoToolProfile,
 } from "./tool-contracts.js";
 
 export const DATABENTO_MCP_SERVER_VERSION = "1.3.2";
@@ -124,6 +125,7 @@ export const REMOTE_BATCH_TOOL_NAMES = ["batch_submit_job", "batch_list_jobs", "
 
 export interface DatabentoMcpServerOptions {
   disabledTools?: Iterable<string>;
+  profile?: DatabentoToolProfile;
 }
 
 function normalizeDisabledTools(disabledTools: Iterable<string> | undefined): Set<string> {
@@ -148,7 +150,7 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 export function listDatabentoTools(options: DatabentoMcpServerOptions = {}): Tool[] {
   const disabledTools = normalizeDisabledTools(options.disabledTools);
 
-  return listDatabentoToolContracts().filter((tool) => !disabledTools.has(tool.name));
+  return listDatabentoToolContracts(options.profile).filter((tool) => !disabledTools.has(tool.name));
 }
 
 function createToolErrorResult(error: string): CallToolResult {
@@ -185,7 +187,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       return createToolErrorResult(`Tool is disabled for this transport: ${name}`);
     }
 
-    const parsedArgs = parseDatabentoToolArguments(name, rawArgs);
+    const parsedArgs = parseDatabentoToolArguments(name, rawArgs, options.profile);
     if (parsedArgs.status === "invalid") {
       return createToolErrorResult(parsedArgs.error);
     }

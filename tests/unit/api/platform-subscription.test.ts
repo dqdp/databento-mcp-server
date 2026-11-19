@@ -25,7 +25,7 @@ describe("authenticated CME Standard historical subscription",()=>{
     "covers all available old L0 %s history with a closed nonfuture interval",schema=>{
       expect(isStandardCmeHistoricalCovered({...request,schema,start:"2010-01-01"},now)).toBe(true);
     });
-  it.each(["trades","mbp-1","tbbo","bbo-1s","bbo-1m"])("uses an exact 12-month boundary for %s",schema=>{
+  it.each(["trades","mbp-1","tbbo","bbo-1s","bbo-1m","cmbp-1","cbbo-1s","cbbo-1m"])("uses an exact 12-month boundary for %s",schema=>{
     expect(isStandardCmeHistoricalCovered({...request,schema,start:"2025-11-17T14:18:33.123000000Z"},now)).toBe(true);
     expect(isStandardCmeHistoricalCovered({...request,schema,start:"2025-11-17T14:18:33.122999999Z"},now)).toBe(false);
     expect(isStandardCmeHistoricalCovered({...request,schema,start:"2025-11-17"},now)).toBe(false);
@@ -56,7 +56,7 @@ describe("authenticated CME Standard historical subscription",()=>{
     expect(isStandardCmeHistoricalCovered({...request,start:"2026-11-16T00:00:00Z",end:undefined},now)).toBe(false);
   });
   it("fails closed on unknown datasets/schemas, omitted end, malformed and future intervals",()=>{
-    for(const changes of [{dataset:"XNAS.ITCH"},{dataset:" GLBX.MDP3"},{schema:"cmbp-1"},{schema:"unknown"},
+    for(const changes of [{dataset:"XNAS.ITCH",schema:"cmbp-1"},{dataset:" GLBX.MDP3"},{schema:"tcbbo"},{schema:"unknown"},
       {start:"2026-11-16T00:00:00Z",end:undefined},{end:"2026-11-17T14:18:33.123000001Z"},{start:"2027-01-01"},
       {start:"2026-02-30"},{end:"2026-11-15"},{start:"1790000000000000000",end:undefined},
       {start:"2026-11-16T00:00:00.0000000001Z"},{start:"2026-11-16T25:00:00Z"}])

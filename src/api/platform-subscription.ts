@@ -2,6 +2,9 @@
 import {createHash} from "node:crypto";
 import {getStandardCmeSchemaEntitlement} from "./entitlement-policy.js";
 
+// The CME feed combines its real and implied books in these Historical L1 schemas.
+export const CME_IMPLIED_QUOTE_SCHEMAS = ["cmbp-1", "cbbo-1s", "cbbo-1m"] as const;
+
 export interface PlatformSubscription {
   plan:"cme_standard";
   policy_version:1;
@@ -56,7 +59,9 @@ function subtractUtcMonths(date:Date,months:number):Date {
 export function isStandardCmeHistoricalCovered(request:Record<string,unknown>,now=new Date()):boolean {
   if(request.dataset!=="GLBX.MDP3"||typeof request.schema!=="string"||
     request.schema!==request.schema.trim().toLowerCase()||!Number.isFinite(now.getTime()))return false;
-  const entitlement=getStandardCmeSchemaEntitlement(request.schema);
+  const entitlement = CME_IMPLIED_QUOTE_SCHEMAS.some(schema => schema === request.schema)
+    ? {rollingWindowMonths: 12}
+    : getStandardCmeSchemaEntitlement(request.schema);
   if(!entitlement)return false;
   const start=timestampNanoseconds(request.start);
   let end=timestampNanoseconds(request.end);

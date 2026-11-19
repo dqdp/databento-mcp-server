@@ -1,10 +1,51 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invokePlatformTool } from "../../mcp/platform-worker.js";
+import { listPlatformTools } from "../../mcp/platform-contract.js";
+import { listDatabentoTools } from "../../mcp/index.js";
 import {createHash} from "node:crypto";
 const barsAvailability=JSON.stringify({schema:{"ohlcv-1d":{start:"2010-06-06T00:00:00Z",end:"2026-01-02T00:00:00Z"}}});
 
 afterEach(()=>vi.restoreAllMocks());
 describe("actual native MCP dispatch under the platform cost boundary",()=>{
+  it.each(["cmbp-1", "cbbo-1s", "cbbo-1m"])("exposes and meters CME implied quotes through the platform for %s", async schema => {
+    const description = (tools: ReturnType<typeof listPlatformTools>) =>
+      tools.find(tool => tool.name === "timeseries_get_range")?.inputSchema.properties?.schema;
+    expect(description(listPlatformTools())).toMatchObject({enum: expect.arrayContaining([schema])});
+    expect(description(listDatabentoTools())).toMatchObject({enum: expect.not.arrayContaining([schema])});
+
+    const apiKey = "db-subscription-fixture";
+    const subscription = {plan: "cme_standard" as const, policy_version: 1 as const,
+      credential_sha256: createHash("sha256").update(apiKey).digest("hex")};
+    const day = 86_400_000;
+    const now = Date.now();
+    const date = (daysAgo: number) => new Date(now - daysAgo * day).toISOString().slice(0, 10);
+    const args = {dataset: "GLBX.MDP3", symbols: "ES.c.0", stype_in: "continuous",
+      schema, start: date(7), end: date(6), limit: 1};
+    const base = {name: "timeseries_get_range", api_key: apiKey,
+      cost_control: {reservation_id: "a".repeat(32), allowance_usd: 0}};
+    const timestamp = BigInt(Date.parse(args.start)) * 1_000_000n;
+    const csv = `ts_recv,ts_event,instrument_id,bid_px_00,ask_px_00\n${timestamp},${timestamp},1234,1000000000,2000000000\n`;
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = new URL(String(input));
+      calls.push(url.pathname);
+      expect(url.searchParams.get("schema")).toBe(schema);
+      return new Response(url.pathname === "/v0/metadata.get_cost" ? "0.01" : csv);
+    });
+    const covered = await invokePlatformTool({...base, arguments: args, subscription});
+    expect(covered.result.isError).not.toBe(true);
+    expect(covered.originals).toHaveLength(1);
+    expect(covered.cost_summary).toMatchObject({approval_required: false, subscription_covered_requests: 1});
+    expect(calls).toEqual(["/v0/timeseries.get_range"]);
+
+    const outside = await invokePlatformTool({...base, subscription, arguments: {...args, start: date(400), end: date(399)}});
+    const withoutPlan = await invokePlatformTool({...base, arguments: args});
+    for (const response of [outside, withoutPlan]) {
+      expect(response.result.isError).toBe(true);
+      expect(response.cost_summary).toMatchObject({approval_required: true, required_allowance_usd: 0.01});
+    }
+    expect(calls).toEqual(["/v0/timeseries.get_range", "/v0/metadata.get_cost", "/v0/metadata.get_cost"]);
+  });
   it("uses a trusted subscription through native MCP without exposing service fields in tool arguments",async()=>{
     const apiKey="db-subscription-fixture";
     const subscription={plan:"cme_standard" as const,policy_version:1 as const,

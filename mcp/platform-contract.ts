@@ -6,8 +6,10 @@ export const PLATFORM_DISABLED_TOOLS = [
   "reference_search_securities", "reference_get_corporate_actions", "reference_get_adjustments",
 ] as const;
 
+export const PLATFORM_MCP_OPTIONS = {disabledTools: PLATFORM_DISABLED_TOOLS, profile: "platform"} as const;
+
 export function listPlatformTools() {
-  return listDatabentoTools({disabledTools: PLATFORM_DISABLED_TOOLS});
+  return listDatabentoTools(PLATFORM_MCP_OPTIONS);
 }
 
 import type {PlatformCostControl} from "../src/api/platform-cost.js";

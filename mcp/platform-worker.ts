@@ -2,7 +2,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createDatabentoMcpServer, createDefaultDatabentoMcpClients } from "./index.js";
-import { listPlatformTools, PLATFORM_DISABLED_TOOLS, type PlatformCall,validateCostControl,validatePlatformSubscription,emptyCostSummary } from "./platform-contract.js";
+import { listPlatformTools, PLATFORM_MCP_OPTIONS, type PlatformCall,validateCostControl,validatePlatformSubscription,emptyCostSummary } from "./platform-contract.js";
 import { installPlatformTransportGuard } from "../src/api/platform-transport.js";
 import { parseDatabentoToolArguments } from "./tool-contracts.js";
 import {withPlatformProviderPricing} from "../src/api/entitlement-policy.js";
@@ -24,7 +24,7 @@ export async function invokePlatformTool(input: PlatformCall) {
       {result,originals,cost_summary:costSummary};
   }
   return withPlatformLiveCapture(rawLive,()=>withPlatformProviderPricing(async()=>{
-    const parsed = parseDatabentoToolArguments(input.name, input.arguments);
+    const parsed = parseDatabentoToolArguments(input.name, input.arguments, PLATFORM_MCP_OPTIONS.profile);
     if (parsed.status !== "valid") return report(GENERIC_RESULT,[]);
     const apiKey = input.api_key ?? (input.name === "get_session_info" ? "db-offline-session-info" : undefined);
     if (typeof apiKey !== "string" || !apiKey.startsWith("db-")) throw new Error("An explicit provider credential is required");
@@ -32,7 +32,7 @@ export async function invokePlatformTool(input: PlatformCall) {
     const failedResult=():CallToolResult=>({content:[{type:"text",text:JSON.stringify({
       error:"Databento operation failed",...guard.failureSummary()})}],isError:true});
     const clients = createDefaultDatabentoMcpClients(apiKey);
-    const server = createDatabentoMcpServer(clients,{disabledTools:PLATFORM_DISABLED_TOOLS});
+    const server = createDatabentoMcpServer(clients, PLATFORM_MCP_OPTIONS);
     const client = new Client({name:"databento-platform-worker",version:"1.0.0"});
     const [clientTransport,serverTransport] = InMemoryTransport.createLinkedPair();
     try {
