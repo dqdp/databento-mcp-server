@@ -1,6 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import * as zodToJsonSchemaModule from "zod-to-json-schema";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import { assertStandardCmeHistoricalEntitlement } from "../src/api/entitlement-policy.js";
 import {
@@ -51,13 +50,7 @@ const BATCH_JOB_STATES = ["queued", "processing", "done", "expired"] as const;
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/;
 
-type ToolArgumentSchema = z.ZodTypeAny;
-type ZodToMcpJsonSchema = (
-  schema: z.ZodTypeAny,
-  options: { $refStrategy: "none" }
-) => Record<string, unknown>;
-
-const convertZodToJsonSchema = zodToJsonSchemaModule.zodToJsonSchema as unknown as ZodToMcpJsonSchema;
+type ToolArgumentSchema = z.ZodType<Record<string, unknown>>;
 
 export interface DatabentoToolDefinition {
   name: string;
@@ -513,9 +506,7 @@ const DATABENTO_TOOL_SCHEMAS = new Map(
 );
 
 function toMcpInputSchema(schema: ToolArgumentSchema): Tool["inputSchema"] {
-  const converted = convertZodToJsonSchema(schema as z.ZodTypeAny, {
-    $refStrategy: "none",
-  });
+  const converted = z.toJSONSchema(schema, { target: "draft-7", io: "input" });
 
   if (typeof converted !== "object" || converted === null || converted.type !== "object") {
     throw new Error("MCP tool input schema must be a JSON object schema");
@@ -525,8 +516,8 @@ function toMcpInputSchema(schema: ToolArgumentSchema): Tool["inputSchema"] {
   return inputSchema as Tool["inputSchema"];
 }
 
-function formatZodPath(path: (string | number)[]): string {
-  return path.length > 0 ? path.join(".") : "arguments";
+function formatZodPath(path: PropertyKey[]): string {
+  return path.length > 0 ? path.map(String).join(".") : "arguments";
 }
 
 function formatToolArgumentError(toolName: string, error: z.ZodError): string {

@@ -1,6 +1,26 @@
 /** Authenticated service cost lease; estimates are not confirmed provider charges. */
 export const MAX_COST_USD=1_000_000;
 export const COST_BASIS = "provider_estimate_after_plan_discounts" as const;
+
+/** Convert the JSON decimal before binary floating point can move it across a micro-USD boundary. */
+export function usdToMicros(text: string, rounding: "up" | "down"): number {
+  const match = /^[ \t\r\n]*(-?)(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?[ \t\r\n]*$/.exec(text);
+  if (!match) throw new Error("Invalid USD amount");
+  const [, sign, whole, fraction = "", exponent = "0"] = match;
+  const digits = (whole + fraction).replace(/^0+/, "");
+  if (!digits) return 0;
+  if (sign) throw new Error("Invalid USD amount");
+
+  // Position of the decimal point after scaling, including scientific notation.
+  const point = digits.length - fraction.length + Number(exponent) + 6;
+  const maximum = MAX_COST_USD * 1_000_000;
+  if (point > String(maximum).length) throw new Error("Invalid USD amount");
+  const floor = point <= 0 ? 0 : Number(digits.slice(0, point).padEnd(point, "0"));
+  const hasRemainder = /[1-9]/.test(digits.slice(Math.max(0, point)));
+  if (floor > maximum || (floor === maximum && hasRemainder)) throw new Error("Invalid USD amount");
+  return rounding === "up" && hasRemainder ? floor + 1 : floor;
+}
+
 export interface PlatformCostControl {
   reservation_id: string;
   allowance_usd: number;

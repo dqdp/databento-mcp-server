@@ -139,6 +139,34 @@ describe("platform transport cost and originals boundary", () => {
     expect(guard.costSummary()).toEqual({reservation_id:"a".repeat(32),estimated_spent_usd:2.5,
       approval_required:false,basis:"provider_estimate_after_plan_discounts"});
   });
+  it.each([
+    ["1.000001", 1.000001],
+    ["1.000003", 1.000003],
+    ["1000001e-6", 1.000001],
+    ["1.00000100000000000001", 1.000002],
+    ["1e-400", 0.000001],
+  ])("accepts the exact requested approval for the estimate %s", async (estimate, approved) => {
+    const reservation_id = "a".repeat(32);
+    const request = {dataset: "GLBX.MDP3", symbols: "ES", schema: "trades", start: "2020-01-01"};
+    const dataCalls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
+      if (new URL(String(url)).pathname === "/v0/metadata.get_cost") return new Response(estimate);
+      dataCalls.push(String(url));
+      return new Response("ts_event,close\n1,2\n");
+    });
+    const http = new DataBentoHTTP("db-fixture");
+    guard = installPlatformTransportGuard("db-fixture", {reservation_id, allowance_usd: 0});
+    await expect(http.get("/v0/timeseries.get_range", request)).rejects.toThrow();
+    expect(guard.costSummary()).toMatchObject({approval_required: true, required_allowance_usd: approved});
+    expect(dataCalls).toHaveLength(0);
+    guard.restore();
+
+    guard = installPlatformTransportGuard("db-fixture", {reservation_id, allowance_usd: approved});
+    await http.get("/v0/timeseries.get_range", request);
+    expect(guard.costSummary()).toMatchObject({approval_required: false, estimated_spent_usd: approved});
+    expect(dataCalls).toHaveLength(1);
+  });
+
   it("aggregates parallel sub-pulls against the entire invocation allowance",async()=>{
     const data:string[]=[];
     vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{

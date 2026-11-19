@@ -2,7 +2,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { DataBentoHTTP, DataBentoHTTPStatusError, NonRetryableResponseError } from "../http/databento-http.js";
-import {COST_BASIS,MAX_COST_USD,validateCostControl,type PlatformCostControl,type PlatformCostSummary} from "./platform-cost.js";
+import {COST_BASIS,MAX_COST_USD,usdToMicros,validateCostControl,type PlatformCostControl,type PlatformCostSummary} from "./platform-cost.js";
 import {isStandardCmeHistoricalCovered,validatePlatformSubscription,type PlatformSubscription} from "./platform-subscription.js";
 
 export interface PlatformOriginal {
@@ -60,7 +60,7 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
   const control=validateCostControl(suppliedControl);
   const subscription=validatePlatformSubscription(suppliedSubscription,apiKey,"timeseries_get_range");
   // Integer micro-USD are reserved before data starts; rounding cannot under-count tiny pulls.
-  const allowanceMicros=Math.floor((control?.allowance_usd??0)*1_000_000);
+  const allowanceMicros = usdToMicros(String(control?.allowance_usd ?? 0), "down");
   let spentMicros=0,approvalRequired=false,requiredAllowance:number|undefined;
   let subscriptionCoveredRequests=0;
   let failure:PlatformFailure|undefined;
@@ -185,12 +185,14 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
     for (const field of COST_FIELDS) if (safe[field] !== undefined) estimate[field] = safe[field];
     // Omitted end stays omitted: preflight and download use identical forward-fill semantics.
     const costResponse = await readInvocation(() => originalGet.call(this, "/v0/metadata.get_cost", estimate, options),"cost_estimate");
-    let cost: unknown;
-    try { cost = JSON.parse(costResponse.value); } catch { rejected("invalid_cost_estimate","cost_estimate"); }
-    if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0 || cost > MAX_COST_USD) rejected("invalid_cost_estimate","cost_estimate");
+    let costMicros: number;
+    try {
+      costMicros = usdToMicros(costResponse.value, "up");
+    } catch {
+      rejected("invalid_cost_estimate", "cost_estimate");
+    }
     capture("/v0/metadata.get_cost", estimate, costResponse.body);
     if(consumedBytes>=MAX_CAPTURE_BYTES)throw new NonRetryableResponseError(ERROR);
-    const costMicros=Math.ceil(cost*1_000_000);
     // No await between this check and reservation: parallel sub-pulls share one invocation cap.
     if(approvalRequired)throw new NonRetryableResponseError(ERROR);
     const requiredMicros=costMicros+spentMicros;
