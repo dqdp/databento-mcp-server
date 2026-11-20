@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { describe, expect, it, vi } from "vitest";
 import { BbaFeed, BBA_BUFFER_SIZE } from "../../src/api/bba-feed.js";
 import { BbaSessions } from "../../mcp/bba-sessions.js";
+import { bbaActions, bbaTool } from "../../mcp/bba-contract.js";
 import { listPlatformTools } from "../../mcp/platform-contract.js";
 
 class Socket extends EventEmitter {
@@ -58,6 +60,23 @@ describe("persistent best bid/ask", () => {
 
   it("advertises a stream separately from the single quote", () => {
     expect(listPlatformTools().map(t => t.name)).toContain("stream_bba");
+  });
+
+  it("advertises the same single-symbol and unsigned ID boundaries it executes", () => {
+    const advertised = new AjvJsonSchemaValidator().getValidator(bbaTool.inputSchema);
+    for (const [stype_in, symbol, valid] of [
+      ["raw_symbol", "ESZ6 C3000", true], ["continuous", "6E.v.0", true],
+      ["raw_symbol", "ALL_SYMBOLS", false], ["raw_symbol", "all_Symbols", false],
+      ["raw_symbol", "ES,NQ", false], ["raw_symbol", " ES", false], ["raw_symbol", "ES ", false],
+      ["raw_symbol", "A|B", false], ["raw_symbol", "A\n", false], ["instrument_id", "0", false],
+      ["instrument_id", "042", false], ["instrument_id", "4294967295", true],
+      ["instrument_id", "4294967296", false], ["instrument_id", "9999999999", false],
+      ["instrument_id", "1", true], ["instrument_id", "4294967200", true],
+    ] as const) {
+      const input = {action: "start", stype_in, symbol};
+      expect(bbaActions.safeParse(input).success, symbol).toBe(valid);
+      expect(advertised(input).valid, symbol).toBe(valid);
+    }
   });
 
   it("distinguishes a quiet book with heartbeats from a stalled provider and rejects a mismatched ID", async () => {
