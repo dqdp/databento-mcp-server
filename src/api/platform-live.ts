@@ -10,13 +10,21 @@ export interface PlatformLiveOriginal {
   request:{endpoint:"live.subscribe";parameters:Record<string,unknown>};
   received_at:string;representation:"raw_live_dbn";
 }
-const captures=new AsyncLocalStorage<PlatformLiveOriginal[]>();
+type LiveFailure = "timeout" | "transport_error" | "response_rejected" | "live_auth_rejected" | "live_subscription_rejected";
+const captures=new AsyncLocalStorage<{originals: PlatformLiveOriginal[]; failure?: LiveFailure}>();
 export function withPlatformLiveCapture<T>(originals:PlatformLiveOriginal[],operation:()=>Promise<T>):Promise<T>{
-  return captures.run(originals,operation);
+  return captures.run({originals},operation);
+}
+export function recordLiveFailure(failure: LiveFailure) {
+  const context = captures.getStore();
+  if (context) context.failure = failure;
+}
+export function liveFailureSummary() {
+  return {error_code: captures.getStore()?.failure ?? "response_rejected", phase: "market_data"};
 }
 export function platformLiveCaptureActive():boolean{return captures.getStore()!==undefined;}
 export function captureLiveDbn(bytes:Buffer,parameters:Record<string,unknown>,receivedAt:string,apiKey:string):void{
-  const originals=captures.getStore();
+  const originals=captures.getStore()?.originals;
   if(!originals)return;
   if(bytes.length<8||bytes.length>16*1024*1024||bytes.toString("ascii",0,3)!=="DBN")throw new Error("Invalid Live DBN capture");
   if(bytes.includes(Buffer.from(apiKey,"utf8")))throw new Error("Invalid Live DBN capture");

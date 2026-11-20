@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {AsyncLocalStorage} from "node:async_hooks";
 import net from "node:net";
-import {platformLiveCaptureActive,captureLiveDbn} from "./platform-live.js";
+import {platformLiveCaptureActive,captureLiveDbn,recordLiveFailure} from "./platform-live.js";
 
 const DEFAULT_LIVE_DATASET = "GLBX.MDP3";
 const DEFAULT_LIVE_PORT = 13000;
@@ -231,7 +231,7 @@ function parseMbp1QuoteRecord(
 
   const bidRaw = record.readBigInt64LE(48);
   const askRaw = record.readBigInt64LE(56);
-  if (bidRaw === UNDEF_PRICE || askRaw === UNDEF_PRICE || bidRaw <= 0n || askRaw <= 0n) {
+  if (bidRaw === UNDEF_PRICE || askRaw === UNDEF_PRICE) {
     return undefined;
   }
 
@@ -393,8 +393,9 @@ export class DatabentoLiveClient {
         callback();
       };
 
-      const fail = (error: Error): void => {
+      const fail = (error: Error, category: Parameters<typeof recordLiveFailure>[0] = "response_rejected"): void => {
         finish(() => {
+          recordLiveFailure(category);
           // A late OS error after teardown must not become an unhandled EventEmitter error.
           socket.on("error",()=>{});
           socket.destroy();
@@ -412,7 +413,7 @@ export class DatabentoLiveClient {
               return;
             }
             if (result.status === "gateway-error") {
-              fail(new Error(`Databento Live gateway error: ${result.message || "unknown error"}`));
+              fail(new Error(`Databento Live gateway error: ${result.message || "unknown error"}`), "live_subscription_rejected");
               return;
             }
 
@@ -456,7 +457,7 @@ export class DatabentoLiveClient {
 
         if (message.success !== undefined) {
           if (message.success !== "1" && message.success.toLowerCase() !== "true") {
-            fail(new Error(`Databento Live authentication failed: ${message.error || "unknown error"}`));
+            fail(new Error(`Databento Live authentication failed: ${message.error || "unknown error"}`), "live_auth_rejected");
             return;
           }
 
@@ -513,17 +514,17 @@ export class DatabentoLiveClient {
       });
 
       const onError = (error: Error): void => {
-        fail(new Error(`Databento Live socket error: ${error.message}`));
+        fail(new Error(`Databento Live socket error: ${error.message}`), "transport_error");
       };
 
       const onClose = (): void => {
         if (!settled) {
-          fail(new Error("Databento Live socket closed before a quote was received"));
+          fail(new Error("Databento Live socket closed before a quote was received"), "transport_error");
         }
       };
 
       timer = setTimeout(() => {
-        fail(new Error(`Databento Live quote timed out after ${timeoutMs}ms`));
+        fail(new Error(`Databento Live quote timed out after ${timeoutMs}ms`), "timeout");
       }, timeoutMs);
 
       socket.on("data", onData);

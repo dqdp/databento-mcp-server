@@ -12,7 +12,7 @@ export interface PlatformOriginal {
   sha256: string;
   request: {endpoint: string; parameters: Record<string, unknown>};
   received_at: string;
-  representation: "decoded_http_body" | "raw_live_dbn";
+  representation: "decoded_http_body" | "raw_live_dbn" | "selected_live_dbn";
 }
 const FREE_METADATA = new Set([
   "/v0/metadata.list_datasets", "/v0/metadata.list_schemas", "/v0/metadata.list_publishers",

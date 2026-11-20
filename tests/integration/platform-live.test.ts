@@ -25,6 +25,18 @@ afterEach(async()=>{
 });
 
 describe("platform bounded Live TCP through actual native MCP",()=>{
+  it("reports a quiet feed as a market-data timeout without exposing provider messages",async()=>{
+    server=net.createServer(socket=>{
+      sockets.add(socket); socket.on("error",()=>{}); socket.on("close",()=>sockets.delete(socket));
+    });
+    await new Promise<void>(resolve=>server!.listen(0,"127.0.0.1",resolve));
+    const port=(server.address() as net.AddressInfo).port;
+    const connect=net.createConnection.bind(net);
+    vi.spyOn(net,"createConnection").mockImplementation((()=>connect({host:"127.0.0.1",port})) as typeof net.createConnection);
+    const reply=await invokePlatformTool({name:"get_live_futures_quote",arguments:{symbol:"ES",timeout_ms:25},api_key:"db-fixture"});
+    expect(JSON.parse((reply.result.content[0] as {text:string}).text)).toEqual({
+      error:"Databento operation failed",error_code:"timeout",phase:"market_data"});
+  });
   it("authenticates CRAM, preserves raw DBN and timestamp nanoseconds, without historical cost calls",async()=>{
     const providerBytes=dbnBytes(),commands:string[]=[];
     server=net.createServer(socket=>{

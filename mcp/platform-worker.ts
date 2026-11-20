@@ -6,7 +6,7 @@ import { listPlatformTools, PLATFORM_MCP_OPTIONS, type PlatformCall,validateCost
 import { installPlatformTransportGuard } from "../src/api/platform-transport.js";
 import { parseDatabentoToolArguments } from "./tool-contracts.js";
 import {withPlatformProviderPricing} from "../src/api/entitlement-policy.js";
-import {withPlatformLiveCapture,LIVE_COST_STATUS,type PlatformLiveOriginal} from "../src/api/platform-live.js";
+import {withPlatformLiveCapture,LIVE_COST_STATUS,liveFailureSummary,type PlatformLiveOriginal} from "../src/api/platform-live.js";
 import {CallToolResultSchema,type CallToolResult} from "@modelcontextprotocol/sdk/types.js";
 import type {PlatformOriginal} from "../src/api/platform-transport.js";
 
@@ -30,7 +30,7 @@ export async function invokePlatformTool(input: PlatformCall) {
     if (typeof apiKey !== "string" || !apiKey.startsWith("db-")) throw new Error("An explicit provider credential is required");
     const guard = installPlatformTransportGuard(apiKey,control,subscription);
     const failedResult=():CallToolResult=>({content:[{type:"text",text:JSON.stringify({
-      error:"Databento operation failed",...guard.failureSummary()})}],isError:true});
+      error:"Databento operation failed",...(live ? liveFailureSummary() : guard.failureSummary())})}],isError:true});
     const clients = createDefaultDatabentoMcpClients(apiKey);
     const server = createDatabentoMcpServer(clients, PLATFORM_MCP_OPTIONS);
     const client = new Client({name:"databento-platform-worker",version:"1.0.0"});

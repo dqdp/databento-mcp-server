@@ -11,8 +11,10 @@ import {listPlatformTools,validateCostControl,validateCostSummary,validatePlatfo
 import type {PlatformOriginal} from "../src/api/platform-transport.js";
 import type {CallToolResult} from "@modelcontextprotocol/sdk/types.js";
 import {validateLiveCostStatus,type PlatformLiveCostStatus} from "../src/api/platform-live.js";
+import { BbaSessions } from "./bba-sessions.js";
+import { sanitizedWorkerEnvironment } from "./platform-contract.js";
 
-export {listPlatformTools} from "./platform-contract.js";
+export {listPlatformTools, sanitizedWorkerEnvironment} from "./platform-contract.js";
 const BODY_LIMIT=2*1024*1024;
 const RESPONSE_LIMIT=48*1024*1024;
 const DEADLINE=120000;
@@ -47,11 +49,6 @@ export function verifyPlatformToken(token:string,key:Buffer,body:Buffer,permissi
   }catch{throw new Error("Unauthorized");}
 }
 
-export function sanitizedWorkerEnvironment(directory:string):NodeJS.ProcessEnv {
-  return {HOME:directory,XDG_CACHE_HOME:path.join(directory,"cache"),TMPDIR:directory,
-    NODE_ENV:"production",TZ:"UTC",LANG:"C.UTF-8"};
-}
-
 class ReplayError extends Error {}
 
 /** A claimed lease stays used after failures/restarts; no provider keys or payloads are stored. */
@@ -71,9 +68,9 @@ async function claimReservation(stateDir:string,reservationId:string):Promise<vo
 
 function validateReply(reply:PlatformReply,input:PlatformCall):PlatformReply {
   if(!reply||!reply.result||typeof reply.result!=="object"||!Array.isArray(reply.originals))throw new Error("Worker failed");
-  if(input.name==="get_live_futures_quote"){
+  if(input.name==="get_live_futures_quote" || input.name==="stream_bba"){
     if(reply.cost_summary!==undefined||input.cost_control!==undefined)throw new Error("Invalid Live cost report");
-    if(reply.result.isError!==true&&!reply.originals.some(original=>original?.representation==="raw_live_dbn"))throw new Error("Missing Live DBN original");
+    if(input.name==="get_live_futures_quote" && reply.result.isError!==true&&!reply.originals.some(original=>original?.representation==="raw_live_dbn"))throw new Error("Missing Live DBN original");
     return {result:reply.result,originals:reply.originals,live_cost_status:validateLiveCostStatus(reply.live_cost_status)};
   }
   if(reply.live_cost_status!==undefined)throw new Error("Invalid cost report");
@@ -138,9 +135,11 @@ function send(response:ServerResponse,status:number,payload:unknown){
 export async function startPlatformHttpServer(options:{
   signingKey:Buffer;host?:string;port?:number;stateDir?:string;
   worker?:(input:PlatformCall,signal:AbortSignal)=>Promise<PlatformReply>;
+  bbaSessions?: BbaSessions;
 }):Promise<StartedPlatformServer>{
   if(!Buffer.isBuffer(options.signingKey)||options.signingKey.length!==32)throw new Error("A separate 32-byte signing key is required");
   const key=Buffer.from(options.signingKey),worker=options.worker??runIsolatedPlatformWorker;
+  const bbaSessions = options.bbaSessions ?? new BbaSessions();
   if(options.stateDir!==undefined&&(!path.isAbsolute(options.stateDir)||!options.stateDir))throw new Error("Absolute private state directory required");
   const enabled=new Set(listPlatformTools().map(tool=>tool.name));
   let active=0;
@@ -161,19 +160,22 @@ export async function startPlatformHttpServer(options:{
     if(!payload||typeof payload!=="object"||Array.isArray(payload)){send(response,400,{error:"invalid_request"});return;}
     const permission=route==="/v1/tools"?"tools:list":payload.name;
     if(typeof permission!=="string"){send(response,400,{error:"invalid_request"});return;}
-    try{verifyPlatformToken(auth.slice(7),key,body,permission);}catch{send(response,401,{error:"unauthorized"});return;}
+    let claims: PlatformClaims;
+    try{claims=verifyPlatformToken(auth.slice(7),key,body,permission);}catch{send(response,401,{error:"unauthorized"});return;}
     if(route==="/v1/tools"){
       if(Object.keys(payload).length){send(response,400,{error:"invalid_request"});return;}
       send(response,200,{tools:listPlatformTools()});return;
     }
     if(!enabled.has(permission)){send(response,403,{error:"operation_not_allowed"});return;}
-    if(Object.keys(payload).some(k=>!["name","arguments","api_key","cost_control","subscription"].includes(k))||
+    const stream = permission === "stream_bba";
+    if(Object.keys(payload).some(k=>!["name","arguments","api_key","cost_control","subscription", ...(stream ? ["credential_revision"] : [])].includes(k))||
+      (stream && (typeof payload.credential_revision !== "string" || !/^[a-f0-9]{64}$/.test(payload.credential_revision)))||
       !payload.arguments||typeof payload.arguments!=="object"||Array.isArray(payload.arguments)||
       (payload.api_key!==undefined&&(typeof payload.api_key!=="string"||payload.api_key.length>8192||!payload.api_key.startsWith("db-")))||
       (permission!=="get_session_info"&&payload.api_key===undefined)){
       send(response,400,{error:"invalid_request"});return;
     }
-    if(permission==="get_live_futures_quote"&&payload.cost_control!==undefined){send(response,400,{error:"historical_cost_not_applicable"});return;}
+    if((permission==="get_live_futures_quote" || stream)&&payload.cost_control!==undefined){send(response,400,{error:"historical_cost_not_applicable"});return;}
     let costControl;
     try{
       costControl=validateCostControl(payload.cost_control);
@@ -193,7 +195,7 @@ export async function startPlatformHttpServer(options:{
       }
       if(controller.signal.aborted)throw new Error("Request aborted");
       const input=payload as unknown as PlatformCall;
-      const reply=validateReply(await worker(input,controller.signal),input);
+      const reply=validateReply(stream ? await bbaSessions.call(input, claims, controller.signal) : await worker(input,controller.signal),input);
       if(controller.signal.aborted)send(response,504,{error:"operation_failed"});
       else send(response,200,reply);
     }catch{send(response,502,{error:"operation_failed"});}
@@ -203,6 +205,7 @@ export async function startPlatformHttpServer(options:{
   await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(options.port??8002,options.host??"127.0.0.1",()=>{server.off("error",reject);resolve();});});
   const address=server.address() as AddressInfo;
   return {server,url:`http://${options.host??"127.0.0.1"}:${address.port}`,close:async()=>{
+    bbaSessions.close();
     for(const controller of controllers)controller.abort();
     await new Promise<void>((resolve,reject)=>{server.close(error=>error?reject(error):resolve());server.closeIdleConnections();});
   }};

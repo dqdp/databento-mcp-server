@@ -247,7 +247,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           price: quote.price,
           bid: quote.bid,
           ask: quote.ask,
-          spread: +(quote.ask - quote.bid).toFixed(2),
+          spread: +(quote.ask - quote.bid).toFixed(9),
           bidSize: quote.bidSize,
           askSize: quote.askSize,
           bidCount: quote.bidCount,
