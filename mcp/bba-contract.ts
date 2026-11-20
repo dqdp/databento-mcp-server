@@ -10,10 +10,12 @@ const actions = [
     limit: z.number().int().min(1).max(100).optional(), wait_ms: z.number().int().min(0).max(5000).optional()}),
   z.strictObject({action: z.literal("stop"), stream_id: streamId}),
 ] as const;
-export const bbaActions = z.discriminatedUnion("action", actions);
+export const bbaActions = z.discriminatedUnion("action", actions).refine(value =>
+  value.action !== "start" || value.stype_in !== "instrument_id" ||
+  (/^[1-9][0-9]{0,9}$/.test(value.symbol) && Number(value.symbol) <= 0xffffffff));
 export type BbaAction = z.infer<typeof bbaActions>;
-export const BBA_IDLE_MS = 45000;
-export const BBA_LIFETIME_MS = 300000;
+// Allow a client to honor the Gateway's 60-second Retry-After and resume the same subscription.
+export const BBA_IDLE_MS = 120000;
 
 export const bbaTool: Tool = {
   name: "stream_bba",
@@ -28,5 +30,11 @@ export const bbaTool: Tool = {
     after: {type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Required for read. Last delivered cursor, initially 0."},
     limit: {type: "integer", minimum: 1, maximum: 100, description: "Read only. Maximum events per page, default 32."},
     wait_ms: {type: "integer", minimum: 0, maximum: 5000, description: "Read only. Maximum wait for an update, default 1000 ms."},
-  }},
+  }, if: {properties: {action: {const: "start"}}},
+    then: {required: ["symbol", "stype_in"], properties: {stream_id: false, after: false, limit: false, wait_ms: false},
+      if: {properties: {stype_in: {const: "instrument_id"}}}, then: {properties: {symbol: {pattern: "^[1-9][0-9]{0,9}$"}}}},
+    else: {required: ["stream_id"], properties: {symbol: false, stype_in: false},
+      if: {properties: {action: {const: "read"}}}, then: {required: ["after"]},
+      else: {properties: {after: false, wait_ms: false, limit: false}}},
+  },
 };

@@ -9,7 +9,7 @@ export interface BbaSubscription {
   symbol: string;
   stype_in: "raw_symbol" | "continuous" | "instrument_id";
 }
-type FeedStatus = "connecting" | "streaming" | "upstream_closed" | "upstream_error";
+type FeedStatus = "connecting" | "streaming" | "upstream_closed" | "upstream_error" | "upstream_stalled";
 const UNDEF_PRICE = 9223372036854775807n;
 const UNDEF_TIME = 18446744073709551615n;
 export class InvalidBbaCursor extends Error {}
@@ -34,17 +34,20 @@ export class BbaFeed {
   private cursor = 0;
   private status: FeedStatus = "connecting";
   private wake?: () => void;
+  private watchdog?: NodeJS.Timeout;
 
   constructor(private readonly subscription: BbaSubscription, private readonly apiKey: string, socketFactory?: LiveSocketFactory) {
     this.consumer = new LiveChainConsumer({apiKey, socketFactory, reconnect: false,
+      onOpen: () => { this.watchdog = setTimeout(() => this.finish("upstream_stalled"), 15000); },
       onData: chunk => this.accept(chunk), onError: () => this.finish("upstream_error"),
       onClose: () => this.finish("upstream_closed")});
     this.consumer.startSymbol(subscription.symbol, subscription.stype_in);
   }
 
   private finish(status: FeedStatus) {
-    if (this.status === "upstream_error" || this.status === "upstream_closed") return;
+    if (this.status !== "streaming" && this.status !== "connecting") return;
     this.status = status;
+    clearTimeout(this.watchdog);
     this.consumer.stop();
     this.wake?.();
   }
@@ -52,12 +55,16 @@ export class BbaFeed {
   private accept(chunk: Buffer) {
     try {
       const previousCursor = this.cursor;
+      let gotRecord = false;
       const receivedAt = new Date().toISOString();
       this.framer.write(chunk);
       for (const record of this.framer.records()) {
+        gotRecord = true;
         if (record[1] === 21) { this.finish("upstream_error"); return; }
         if (record[1] !== 1) continue;
         if (record.length < 80) throw new Error("Invalid MBP-1");
+        if (this.subscription.stype_in === "instrument_id" && record.readUInt32LE(4) !== Number(this.subscription.symbol))
+          throw new Error("Instrument differs from subscription");
         const previous = this.cursor ? this.ring[(this.cursor - 1) % BBA_BUFFER_SIZE].record : undefined;
         // Compare the exact fixed-point prices and sizes, including UNDEF and instrument rolls.
         if (previous && record.subarray(2, 8).equals(previous.subarray(2, 8)) &&
@@ -65,7 +72,12 @@ export class BbaFeed {
         this.ring[this.cursor % BBA_BUFFER_SIZE] = {record: Buffer.from(record), receivedAt};
         this.cursor++;
       }
-      if (this.framer.metadata) this.status = "streaming";
+      if (this.status === "connecting" && this.framer.metadata) {
+        this.status = "streaming";
+        clearTimeout(this.watchdog);
+        // Databento's default interval is 30s; two missing heartbeats indicate a stalled connection.
+        this.watchdog = setTimeout(() => this.finish("upstream_stalled"), 65000);
+      } else if (gotRecord) this.watchdog?.refresh();
       if (this.cursor !== previousCursor) this.wake?.();
     } catch { this.finish("upstream_error"); }
   }

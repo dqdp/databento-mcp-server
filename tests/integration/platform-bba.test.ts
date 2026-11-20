@@ -60,6 +60,31 @@ describe("persistent best bid/ask", () => {
     expect(listPlatformTools().map(t => t.name)).toContain("stream_bba");
   });
 
+  it("distinguishes a quiet book with heartbeats from a stalled provider and rejects a mismatched ID", async () => {
+    vi.useFakeTimers();
+    const socket = new Socket();
+    const feed = new BbaFeed({symbol: "123", stype_in: "instrument_id"}, "db-fixture", () => socket);
+    try {
+      socket.emit("data", Buffer.from("success=1\n"));
+      socket.emit("data", header);
+      const heartbeat = Buffer.alloc(24); heartbeat[0] = 6; heartbeat[1] = 23;
+      for (let i = 0; i < 4; i++) {
+        vi.advanceTimersByTime(30000);
+        socket.emit("data", heartbeat);
+        expect((await feed.read(0, 1, 0)).data.status).toBe("streaming");
+      }
+      vi.advanceTimersByTime(70000);
+      expect((await feed.read(0, 1, 0)).data.status).toBe("upstream_stalled");
+      const other = new Socket();
+      const exact = new BbaFeed({symbol: "456", stype_in: "instrument_id"}, "db-fixture", () => other);
+      try {
+        other.emit("data", Buffer.from("success=1\n"));
+        other.emit("data", Buffer.concat([header, quote(1n, 2n)]));
+        expect((await exact.read(0, 1, 0)).data).toMatchObject({status: "upstream_error", events: []});
+      } finally { exact.stop(); }
+    } finally { feed.stop(); vi.useRealTimers(); }
+  });
+
   it("reports exactly which changes aged out and supports replay within the ring", async () => {
     const socket = new Socket();
     const feed = new BbaFeed({symbol: "123", stype_in: "instrument_id"}, "db-fixture", () => socket);
@@ -76,6 +101,37 @@ describe("persistent best bid/ask", () => {
       expect((await pending).data.events).toHaveLength(0);
       expect(Date.now() - idle).toBeGreaterThanOrEqual(15);
     } finally { feed.stop(); }
+  });
+
+  it("keeps an actively consumed stream alive and preserves it if a reader disconnects", async () => {
+    vi.useFakeTimers();
+    const closed = vi.fn();
+    let release: (() => void) | undefined;
+    const sessions = new BbaSessions(() => ({close: closed, async request(message) {
+      if (message.action === "read" && message.waitMs) await new Promise<void>(resolve => { release = resolve; });
+      return {data: {status: "connecting"}, originals: []};
+    }}));
+    const owner = {sub: "one", workspace: "a".repeat(32), permission: "stream_bba"};
+    const input = {name: "stream_bba", api_key: "db-fake", credential_revision: "a".repeat(64)};
+    async function call(args: Record<string, unknown>, signal = new AbortController().signal) {
+      const reply = await sessions.call({...input, arguments: args}, owner, signal);
+      return JSON.parse((reply.result.content[0] as {text: string}).text);
+    }
+    try {
+      const {stream_id} = await call({action: "start", symbol: "123", stype_in: "instrument_id"});
+      const args = {action: "read", stream_id, after: 0, wait_ms: 0};
+      for (let i = 0; i < 12; i++) {
+        vi.advanceTimersByTime(40000);
+        expect((await call(args)).status).toBe("connecting");
+      }
+      const request = new AbortController();
+      const abandoned = call({...args, wait_ms: 100}, request.signal);
+      request.abort();
+      release!();
+      await abandoned;
+      expect((await call(args)).status).toBe("connecting");
+      expect(closed).not.toHaveBeenCalled();
+    } finally { sessions.close(); vi.useRealTimers(); }
   });
 
   it("binds the handle to the owner and credential revision, caps subscriptions and expires abandoned streams", async () => {
@@ -100,7 +156,7 @@ describe("persistent best bid/ask", () => {
       expect((await action(start)).status).toBe("stream_limit");
       expect((await action(stop, owner, "c".repeat(64))).status).toBe("unavailable");
       expect(close).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(45001);
+      vi.advanceTimersByTime(120001);
       expect(close).toHaveBeenCalledTimes(2);
       expect(peers).toHaveBeenCalledTimes(2);
     } finally { sessions.close(); vi.useRealTimers(); }

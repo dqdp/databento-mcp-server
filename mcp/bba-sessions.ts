@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { bbaActions, BBA_IDLE_MS, BBA_LIFETIME_MS } from "./bba-contract.js";
+import { bbaActions, BBA_IDLE_MS } from "./bba-contract.js";
 import type { BbaCommand, BbaWorkerReply } from "./bba-worker.js";
 import { LIVE_COST_STATUS } from "../src/api/platform-live.js";
 import type { PlatformCall } from "./platform-contract.js";
@@ -46,7 +46,7 @@ function createPeer(): BbaPeer {
   };
 }
 
-interface Session {owner: string; credential: string; peer: BbaPeer; expires: number; timer: NodeJS.Timeout; busy: boolean}
+interface Session {owner: string; credential: string; peer: BbaPeer; timer: NodeJS.Timeout; busy: boolean}
 export class BbaSessions {
   private readonly sessions = new Map<string, Session>();
   constructor(private readonly spawnPeer: () => BbaPeer = createPeer) {}
@@ -72,19 +72,17 @@ export class BbaSessions {
         return reply({status: "stream_limit"});
       const peer = this.spawnPeer();
       const timer = setTimeout(() => this.remove(id), BBA_IDLE_MS);
-      this.sessions.set(id, {owner, credential, peer, timer, expires: Date.now() + BBA_LIFETIME_MS, busy: false});
+      this.sessions.set(id, {owner, credential, peer, timer, busy: false});
     }
     const session = this.sessions.get(id);
     if (!session || session.owner !== owner) return reply({status: "unavailable"});
     if (session.credential !== credential) { this.remove(id); return reply({status: "unavailable"}); }
     if (command.action === "stop") { this.remove(id); return reply({status: "stopped"}); }
     if (session.busy) return reply({status: "busy"});
-    const remaining = session.expires - Date.now();
-    if (remaining <= 0) { this.remove(id); return reply({status: "unavailable"}); }
-    clearTimeout(session.timer);
-    session.timer = setTimeout(() => this.remove(id), Math.min(remaining, BBA_IDLE_MS));
+    session.timer.refresh();
     session.busy = true;
-    const abort = () => this.remove(id);
+    // A lost start never delivers the handle. A lost read can replay from its last acknowledged cursor.
+    const abort = () => { if (command.action === "start") this.remove(id); };
     signal.addEventListener("abort", abort, {once: true});
     try {
       if (signal.aborted) { abort(); throw new Error("Aborted"); }
