@@ -142,7 +142,8 @@ export async function startPlatformHttpServer(options:{
   const bbaSessions = options.bbaSessions ?? new BbaSessions();
   if(options.stateDir!==undefined&&(!path.isAbsolute(options.stateDir)||!options.stateDir))throw new Error("Absolute private state directory required");
   const enabled=new Set(listPlatformTools().map(tool=>tool.name));
-  let active=0;
+  const active = {regular: 0, read: 0, stop: 0};
+  const limits = {regular: MAX_CONCURRENT, read: 4, stop: 2};
   const controllers=new Set<AbortController>();
   const server=http.createServer(async(request,response)=>{
     const route=request.url?.split("?")[0];
@@ -182,8 +183,10 @@ export async function startPlatformHttpServer(options:{
       validatePlatformSubscription(payload.subscription,payload.api_key,permission);
     }catch{send(response,400,{error:"invalid_request"});return;}
     if(costControl&&!options.stateDir){send(response,503,{error:"cost_state_unavailable"});return;}
-    if(active>=MAX_CONCURRENT){send(response,429,{error:"busy"});return;}
-    active++;
+    const action = (payload.arguments as Record<string, unknown>).action;
+    const lane = stream && (action === "read" || action === "stop") ? action : "regular";
+    if(active[lane]>=limits[lane]){send(response,429,{error:"busy"});return;}
+    active[lane]++;
     const controller=new AbortController();controllers.add(controller);
     const timer=setTimeout(()=>controller.abort(),DEADLINE);
     const abort=()=>{if(!response.writableEnded)controller.abort();};
@@ -199,7 +202,7 @@ export async function startPlatformHttpServer(options:{
       if(controller.signal.aborted)send(response,504,{error:"operation_failed"});
       else send(response,200,reply);
     }catch{send(response,502,{error:"operation_failed"});}
-    finally{clearTimeout(timer);response.off("close",abort);controllers.delete(controller);active--;}
+    finally{clearTimeout(timer);response.off("close",abort);controllers.delete(controller);active[lane]--;}
   });
   server.requestTimeout=DEADLINE;server.headersTimeout=15000;
   await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(options.port??8002,options.host??"127.0.0.1",()=>{server.off("error",reject);resolve();});});

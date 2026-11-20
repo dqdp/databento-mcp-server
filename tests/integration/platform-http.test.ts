@@ -45,6 +45,30 @@ describe("private Databento platform authentication",()=>{
     expect(worker).toHaveBeenCalledTimes(1);
     expect((await call(started.url,{name:input.name,arguments:{},api_key})).status).toBe(502);
   });
+  it("admits stream control while four ordinary calls occupy their slots", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const worker = vi.fn(async () => {
+      await hold;
+      return {result: {content: []}, originals: []};
+    });
+    started = await startPlatformHttpServer({signingKey: key, port: 0, worker});
+    const url = started.url;
+    const ordinary = {name: "get_session_info", arguments: {}};
+    const pending = Array.from({length: 4}, () => call(url, ordinary));
+    try {
+      await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(4));
+      expect((await call(url, ordinary)).status).toBe(429);
+      for (const action of ["read", "stop"]) {
+        const response = await call(url, {name: "stream_bba", api_key: "db-test",
+          credential_revision: "b".repeat(64), arguments: {action, stream_id: "a".repeat(32), ...(action === "read" ? {after: 0} : {})}});
+        expect(response.status).toBe(200);
+      }
+    } finally {
+      release();
+      await Promise.all(pending);
+    }
+  });
   it("binds a trusted owner and exact operation to exact bytes",()=>{
     const body=Buffer.from('{"name":"get_session_info","arguments":{}}');
     const claims=verifyPlatformToken(token(body,"get_session_info"),key,body,"get_session_info");
