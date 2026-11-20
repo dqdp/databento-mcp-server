@@ -186,6 +186,13 @@ describe('DataBentoClient', () => {
   });
 
   describe('getHistoricalBars', () => {
+    beforeEach(() => {vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date('2021-01-02T12:00:00Z'));});
+    function respond(body: string) {
+      mockHttpGet.mockImplementation(async (endpoint: string) => endpoint === '/v0/metadata.get_dataset_range'
+        ? JSON.stringify({schema:{'ohlcv-1h':{start:'2010-06-06T00:00:00Z',end:'2021-01-02T00:00:00Z'},
+          'ohlcv-1d':{start:'2010-06-06T00:00:00Z',end:'2021-01-02T00:00:00Z'}}}) : body);
+    }
+    function barQuery() {return mockHttpGet.mock.calls.find(([endpoint]) => endpoint === '/v0/timeseries.get_range')![1];}
     // Mock bars with prices in DataBento fixed-point format (value * 1e9)
     const mockBarsResponse = `ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume
 1609459200000000000,1,1,1234,4500000000,4520000000,4490000000,4510000000,1000
@@ -194,7 +201,7 @@ describe('DataBentoClient', () => {
 1609470000000000000,1,1,1234,4530000000,4550000000,4520000000,4540000000,2500`;
 
     it('should get 1h bars for ES', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       const bars = await client.getHistoricalBars('ES', '1h', 3);
 
@@ -217,7 +224,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should get 1d bars for NQ', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       const bars = await client.getHistoricalBars('NQ', '1d', 2);
 
@@ -232,8 +239,8 @@ describe('DataBentoClient', () => {
       );
     });
 
-    it('should allow large daily history requests and pass the requested limit', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+    it('should allow large daily history requests with enough prefix slots before taking the tail', async () => {
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('ES', '1d', 5000);
 
@@ -242,7 +249,7 @@ describe('DataBentoClient', () => {
         expect.objectContaining({
           schema: 'ohlcv-1d',
           symbols: 'ES.c.0',
-          limit: 5000,
+          limit: expect.any(Number),
         })
       );
     });
@@ -276,7 +283,7 @@ describe('DataBentoClient', () => {
 1609480800000000000,1,1,1234,4530000000,4560000000,4520000000,4535000000,1600
 1609484400000000000,1,1,1234,4535000000,4570000000,4525000000,4540000000,1700`;
 
-      mockHttpGet.mockResolvedValue(eightHoursResponse);
+      respond(eightHoursResponse);
 
       const bars = await client.getHistoricalBars('ES', 'H4', 2);
 
@@ -306,7 +313,7 @@ describe('DataBentoClient', () => {
 1609470000000000000,1,1,1234,4515000000,4530000000,4505000000,4520000000,1300
 1609473600000000000,1,1,1234,4520000000,4540000000,4510000000,4525000000,1400`;
 
-      mockHttpGet.mockResolvedValue(fiveHoursResponse);
+      respond(fiveHoursResponse);
 
       const bars = await client.getHistoricalBars('ES', 'H4', 10);
 
@@ -334,7 +341,7 @@ describe('DataBentoClient', () => {
       });
       const response = `ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n${rows.join('\n')}`;
 
-      mockHttpGet.mockResolvedValue(response);
+      respond(response);
 
       const bars = await client.getHistoricalBars('ES', 'H4', 2);
 
@@ -350,7 +357,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should default a non-ES/NQ symbol to raw_symbol', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('CLZ6', '1d', 3);
 
@@ -365,7 +372,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should honor an explicit stype_in for any symbol', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('CL.v.0', '1d', 3, 'continuous');
 
@@ -379,7 +386,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should throw error when no data is available', async () => {
-      mockHttpGet.mockResolvedValue('');
+      respond('');
 
       await expect(client.getHistoricalBars('ES', '1h', 10)).rejects.toThrow(
         'No bar data available for ES'
@@ -387,7 +394,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should throw error when response has no data lines', async () => {
-      mockHttpGet.mockResolvedValue(
+      respond(
         'ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume\n'
       );
 
@@ -397,12 +404,12 @@ describe('DataBentoClient', () => {
     });
 
     it('should calculate correct date range for 1h timeframe', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('ES', '1h', 48); // 2 days worth
 
-      const callArgs = mockHttpGet.mock.calls[0][1];
-      const startDate = new Date(callArgs.start);
+      const callArgs = barQuery();
+      const startDate = new Date(Number(BigInt(callArgs.start) / 1_000_000n));
       const now = new Date();
       const daysDiff = Math.ceil(
         (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
@@ -412,33 +419,32 @@ describe('DataBentoClient', () => {
       expect(daysDiff).toBeGreaterThanOrEqual(9);
     });
 
-    it('should omit end so DataBento returns latest available bars (avoids intraday HTTP 422)', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+    it('should supply the schema frontier end to avoid one-day forward fill and future HTTP 422', async () => {
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('ES', '1h', 3);
 
-      const callArgs = mockHttpGet.mock.calls[0][1];
-      // `end`=now used to exceed the ohlcv frontier intraday and 422; it must not be sent.
-      expect(callArgs.end).toBeUndefined();
+      const callArgs = barQuery();
+      expect(BigInt(callArgs.end)).toBe(BigInt(Date.parse('2021-01-02T00:00:00Z')) * 1_000_000n);
       expect(callArgs.start).toBeTruthy();
     });
 
     it('should calculate correct date range for H4 timeframe', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('ES', 'H4', 12); // 2 days worth (12 * 4h)
 
-      const callArgs = mockHttpGet.mock.calls[0][1];
+      const callArgs = barQuery();
       expect(callArgs.schema).toBe('ohlcv-1h'); // Fetches 1h to aggregate
     });
 
     it('should calculate correct date range for 1d timeframe', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       await client.getHistoricalBars('ES', '1d', 10);
 
-      const callArgs = mockHttpGet.mock.calls[0][1];
-      const startDate = new Date(callArgs.start);
+      const callArgs = barQuery();
+      const startDate = new Date(Number(BigInt(callArgs.start) / 1_000_000n));
       const now = new Date();
       const daysDiff = Math.ceil(
         (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
@@ -452,7 +458,7 @@ describe('DataBentoClient', () => {
       const response = `ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume
 1609459200000000000,1,1,1234,123456789000,234567890000,12345678000,98765432000,5000`;
 
-      mockHttpGet.mockResolvedValue(response);
+      respond(response);
 
       const bars = await client.getHistoricalBars('ES', '1h', 1);
 
@@ -463,7 +469,7 @@ describe('DataBentoClient', () => {
     });
 
     it('should return last N bars when more data is available', async () => {
-      mockHttpGet.mockResolvedValue(mockBarsResponse);
+      respond(mockBarsResponse);
 
       const bars = await client.getHistoricalBars('ES', '1h', 2);
 
@@ -597,7 +603,7 @@ describe('DataBentoClient', () => {
       const result = (client as any).aggregateToH4(bars);
 
       expect(result).toHaveLength(1);
-      expect(result[0]).toEqual(bars[0]);
+      expect(result[0]).toMatchObject({...bars[0],sourceBarCount:1,aggregationComplete:false});
     });
 
     it('should aggregate 3 bars (incomplete chunk)', () => {
@@ -661,7 +667,7 @@ describe('DataBentoClient', () => {
       const result = (client as any).aggregateToH4(bars);
 
       expect(result).toHaveLength(1);
-      expect(result[0]).toEqual(bars[0]);
+      expect(result[0]).toMatchObject({...bars[0],sourceBarCount:1,aggregationComplete:false});
     });
 
     it('should handle exactly 4 bars (perfect H4)', () => {

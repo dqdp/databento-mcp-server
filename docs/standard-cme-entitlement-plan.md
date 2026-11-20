@@ -1,8 +1,20 @@
 # Standard CME Entitlement Plan
 
-Last updated: 2026-06-16.
+Last updated: 2026-11-17.
 
-## Status
+## Уточнение local и platform — 2026-11-17
+
+Документ ниже описывает исходный **локальный stdio/single-user HTTP** профиль. Его правила hard rejection вне Standard и default zero-cost preflight для batch сохраняются. Они не означают, что private platform entrypoint за Marengo Gateway предоставляет batch или принимает локальные environment-переменные как подтверждение персонального плана.
+
+Для платформы пользователь отменил прежние пороги $10/$50. CME/CBOT/NYMEX/COMEX в `GLBX.MDP3` внутри таблицы Standard ниже разрешены без автоматического `get_cost` и денежных лимитов **при подтверждении текущего ключа**. Вне покрытия или без назначения плана сохраняется оценка поставщика; любая положительная сумма требует разового подтверждения владельца. Gateway по умолчанию использует `historical_cost_mode=confirm_extra` для новых и прежних policy. Технические ограничения и запрет platform Reference/batch остаются. [Полный platform contract](platform-gateway.md).
+
+Назначение Standard вручную фиксирует администратор по заявлению пользователя; это не автоматическая проверка подписки API поставщика. Оно привязано к ключу и ревизии credentials, сбрасывается при сохранении/удалении ключа и не переносится на новый ключ. Node получает строго проверяемое поле `subscription` в подписанном private body и классифицирует каждый фактический historical подзапрос, а не весь outer tool одним решением. Новая platform-политика находится в реализации; её развёртывание этим документом не подтверждается.
+
+Публичная таблица Standard подтверждает L0 full available history, L1 rolling 12 месяцев и L2/L3 rolling 1 месяц. «16+ years» описывает доступную L0 историю, а не максимальную давность ровно 16 лет. [Databento Pricing](https://databento.com/pricing). `get_cost` вне platform-покрытия учитывает flat-rate скидки и остаётся оценкой, не итоговым net списанием. [Metadata get_cost](https://databento.com/docs/api-historical/metadata/metadata-get-cost).
+
+Пользователь отдельно разрешил ограниченную реальную приёмку нескольких фьючерсов/опционов и типов данных. Она не добавляется в обычный CI, не разрешает покупать подписки/автоматически подтверждать доплаты и не разрешает публиковать ключи или лицензированные ответы/выгрузки. Historical Standard не подменяет Live-права: текущий облачный Live-инструмент получает одно `mbp-1` обновление и закрывает соединение; остальных Live schemas и постоянного потока он не предоставляет.
+
+## Local baseline status — 2026-06-16
 
 Implementation in progress. The core entitlement policy, MCP schema enforcement,
 direct response guard, batch `end` requirement, and batch zero-cost preflight

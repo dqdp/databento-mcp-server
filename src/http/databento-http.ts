@@ -49,6 +49,14 @@ interface RequestOptions {
   timeout?: number;
 }
 
+/** A response rejected by a caller's safety policy must not be downloaded again. */
+export class NonRetryableResponseError extends Error {}
+
+/** The status belongs to this failed attempt, never to an earlier retry response. */
+export class DataBentoHTTPStatusError extends Error {
+  constructor(public readonly status:number,message:string){super(message);}
+}
+
 /**
  * DataBento API HTTP Client
  * Handles authentication, retries, and error handling for all Databento API requests
@@ -69,6 +77,11 @@ export class DataBentoHTTP {
       ...DATABENTO_CONFIG,
       ...(overrides || {}),
     };
+  }
+
+  /** Default local behavior; a private adapter may install a bounded byte reader. */
+  public async readResponseText(response: Response): Promise<string> {
+    return response.text();
   }
 
   /**
@@ -179,7 +192,7 @@ export class DataBentoHTTP {
     requestOptions?: RequestOptions
   ): Promise<string> {
     const response = await this.fetchWithRetry(url, options, requestOptions);
-    return response.text();
+    return this.readResponseText(response);
   }
 
   /**
@@ -218,18 +231,21 @@ export class DataBentoHTTP {
         } as RequestInit & { dispatcher?: UndiciAgent });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(
+          const errorText = await this.readResponseText(response);
+          throw new DataBentoHTTPStatusError(response.status,
             `HTTP ${response.status}: ${response.statusText} - ${errorText}`
           );
         }
 
         return response;
       } catch (error) {
+        if (error instanceof NonRetryableResponseError) {
+          throw error;
+        }
         // If this is the last attempt, throw the error
         if (attempt === retryAttempts) {
           throw new Error(
-            `DataBento API request failed after ${retryAttempts} attempts: ${error}`
+            `DataBento API request failed after ${retryAttempts} attempts: ${error}`,{cause:error}
           );
         }
 

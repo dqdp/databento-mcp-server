@@ -33,6 +33,7 @@ export interface LiveChainConsumerOptions {
   handshakeTimeoutMs?: number; // fail+recover a socket that connects but never completes CRAM
   onData: (chunk: Buffer) => void; // post-handshake DBN bytes -> LiveSmileFeed.onData
   onOpen?: () => void; // subscribed + streaming
+  onClose?: () => void;
   onError?: (err: Error) => void;
 }
 
@@ -52,10 +53,12 @@ export class LiveChainConsumer {
   private readonly handshakeTimeoutMs: number;
   private readonly onData: (chunk: Buffer) => void;
   private readonly onOpen?: () => void;
+  private readonly onClose?: () => void;
   private readonly onError?: (err: Error) => void;
 
   private socket: LiveSocket | null = null;
-  private ids: number[] = [];
+  private symbols = '';
+  private stype = 'instrument_id';
   private streaming = false;
   private controlBuffer: Buffer = Buffer.alloc(0);
   private stopped = false;
@@ -74,6 +77,7 @@ export class LiveChainConsumer {
     this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.onData = opts.onData;
     this.onOpen = opts.onOpen;
+    this.onClose = opts.onClose;
     this.onError = opts.onError;
   }
 
@@ -82,7 +86,20 @@ export class LiveChainConsumer {
     if (instrumentIds.length > MAX_SYMBOLS) {
       throw new Error(`Live subscription exceeds the ${MAX_SYMBOLS}-symbol cap (${instrumentIds.length} requested)`);
     }
-    this.ids = instrumentIds;
+    this.symbols = instrumentIds.join(',');
+    this.stype = 'instrument_id';
+    this.stopped = false;
+    this.connect();
+  }
+
+  /** A bounded single contract, with the same persistent transport as the local chain. */
+  startSymbol(symbol: string, stype: 'raw_symbol' | 'continuous' | 'instrument_id'): void {
+    if (!symbol.trim() || symbol.length > 256 || /[,|\x00-\x1f\x7f]/.test(symbol) ||
+        symbol.trim().toUpperCase() === 'ALL_SYMBOLS' || !['raw_symbol', 'continuous', 'instrument_id'].includes(stype)) {
+      throw new Error('Expected one Live symbol');
+    }
+    this.symbols = symbol.trim();
+    this.stype = stype;
     this.stopped = false;
     this.connect();
   }
@@ -106,12 +123,14 @@ export class LiveChainConsumer {
       this.onError?.(new Error(`Databento Live socket error: ${err.message}`));
       this.scheduleReconnect();
     });
-    socket.on('close', () => {
-      if (this.socket === socket) this.scheduleReconnect();
-    });
-    socket.on('end', () => {
-      if (this.socket === socket) this.scheduleReconnect();
-    });
+    const closed = () => {
+      if (this.socket !== socket) return;
+      this.teardownSocket();
+      this.onClose?.();
+      this.scheduleReconnect();
+    };
+    socket.on('close', closed);
+    socket.on('end', closed);
     this.armHandshakeTimeout(socket);
   }
 
@@ -157,7 +176,13 @@ export class LiveChainConsumer {
     this.controlBuffer = Buffer.concat([this.controlBuffer, chunk]);
     for (;;) {
       const nl = this.controlBuffer.indexOf(0x0a);
-      if (nl === -1) return;
+      if (nl === -1 || nl > 65536) {
+        if (this.controlBuffer.length > 65536) {
+          this.onError?.(new Error('Invalid Live control line'));
+          this.teardownSocket();
+        }
+        return;
+      }
       const line = this.controlBuffer.subarray(0, nl + 1);
       const rest = this.controlBuffer.subarray(nl + 1);
       this.handleControl(parseGatewayControlLine(line));
@@ -195,7 +220,7 @@ export class LiveChainConsumer {
         return;
       }
       this.socket.write(
-        serializeGatewayControl({ schema: this.schema, stype_in: 'instrument_id', symbols: this.ids.join(','), id: '0', is_last: '1' }),
+        serializeGatewayControl({ schema: this.schema, stype_in: this.stype, symbols: this.symbols, id: '0', is_last: '1' }),
       );
       this.socket.write(serializeGatewayControl({ start_session: '0' }));
       this.streaming = true;

@@ -1,8 +1,8 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import * as zodToJsonSchemaModule from "zod-to-json-schema";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import { assertStandardCmeHistoricalEntitlement } from "../src/api/entitlement-policy.js";
+import { CME_IMPLIED_QUOTE_SCHEMAS } from "../src/api/platform-subscription.js";
 import {
   MAX_DAILY_HISTORICAL_BARS,
   MAX_INTRADAY_HISTORICAL_BARS,
@@ -51,18 +51,14 @@ const BATCH_JOB_STATES = ["queued", "processing", "done", "expired"] as const;
 const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const ISO_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?$/;
 
-type ToolArgumentSchema = z.ZodTypeAny;
-type ZodToMcpJsonSchema = (
-  schema: z.ZodTypeAny,
-  options: { $refStrategy: "none" }
-) => Record<string, unknown>;
-
-const convertZodToJsonSchema = zodToJsonSchemaModule.zodToJsonSchema as unknown as ZodToMcpJsonSchema;
+type ToolArgumentSchema = z.ZodType<Record<string, unknown>>;
+export type DatabentoToolProfile = "local" | "platform";
 
 export interface DatabentoToolDefinition {
   name: string;
   description: string;
   schema: ToolArgumentSchema;
+  platformSchema?: ToolArgumentSchema;
 }
 
 export type ToolArgumentParseResult =
@@ -134,14 +130,17 @@ function containsAllSymbolsToken(symbols: string): boolean {
     .includes("ALL_SYMBOLS");
 }
 
-function directTimeseriesArgs<T extends z.ZodRawShape>(shape: T): ToolArgumentSchema {
-  return toolArgsWithStandardCmeEntitlement(
-    shape,
-    "dataset",
-    "start",
-    "end",
-    "schema"
-  ).superRefine((args, context) => {
+function directTimeseriesArgs(schemas: readonly [string, ...string[]]): ToolArgumentSchema {
+  return toolArgsWithStandardCmeEntitlement({
+    dataset: nonEmptyString("Dataset code (e.g., 'GLBX.MDP3' for CME, 'XNAS.ITCH' for Nasdaq)"),
+    symbols: nonEmptyString("Comma-separated list of instrument symbols (up to 2000)"),
+    schema: z.enum(schemas).describe("Data schema type"),
+    start: dateLike("Start date (ISO 8601 or YYYY-MM-DD format)"),
+    end: dateLike("Optional exclusive end date (ISO 8601 or YYYY-MM-DD)").optional(),
+    stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type, defaults to 'raw_symbol'").optional(),
+    stype_out: z.enum(SYMBOLOGY_TYPES).describe("Output symbology type, defaults to 'instrument_id'").optional(),
+    limit: z.number().int().min(1).describe("Maximum records to return; defaults to MCP_DIRECT_MAX_RECORDS (10000) and cannot exceed it").optional(),
+  }, "dataset", "start", "end", "schema").superRefine((args, context) => {
     const parsedArgs = args as Record<string, unknown>;
     const limit = parsedArgs.limit;
     const symbols = parsedArgs.symbols;
@@ -173,11 +172,11 @@ function historicalBarsArgs(): ToolArgumentSchema {
       .string()
       .trim()
       .min(1)
-      .refine((value) => value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
+      .refine((value) => value.length<=256 && !/[|\r\n\x00-\x1f\x7f]/.test(value) && value.toUpperCase() !== "ALL_SYMBOLS" && !value.includes(","), {
         message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
       })
       .describe(
-        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+        "Single Databento symbol. ES and NQ are aliases for the continuous front contract; use raw_symbol, instrument_id, or continuous symbols for other futures and options on futures. Parent requests cannot be aggregated into bars."
       ),
     timeframe: z.enum(FUTURES_TIMEFRAMES).describe("Bar timeframe"),
     count: z
@@ -188,7 +187,7 @@ function historicalBarsArgs(): ToolArgumentSchema {
         `Number of bars to retrieve. Max ${MAX_INTRADAY_HISTORICAL_BARS} for 1h/H4, max ${MAX_DAILY_HISTORICAL_BARS} for 1d.`
       ),
     stype_in: z
-      .enum(SYMBOLOGY_TYPES)
+      .enum(["raw_symbol","instrument_id","continuous"])
       .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
       .optional(),
   }).superRefine((args, context) => {
@@ -322,6 +321,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
         .string()
         .trim()
         .min(1)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/)
         .describe("Databento dataset code. Defaults to GLBX.MDP3 for CME Globex futures and options on futures.")
         .optional(),
       stype_in: z
@@ -364,16 +364,8 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   {
     name: "timeseries_get_range",
     description: "Get historical market data with flexible schemas and date ranges. Direct responses are record-limited; use batch_submit_job for ALL_SYMBOLS or larger covered exports.",
-    schema: directTimeseriesArgs({
-      dataset: nonEmptyString("Dataset code (e.g., 'GLBX.MDP3' for CME, 'XNAS.ITCH' for Nasdaq)"),
-      symbols: nonEmptyString("Comma-separated list of instrument symbols (up to 2000)"),
-      schema: z.enum(TIMESERIES_SCHEMAS).describe("Data schema type"),
-      start: dateLike("Start date (ISO 8601 or YYYY-MM-DD format)"),
-      end: dateLike("Optional exclusive end date (ISO 8601 or YYYY-MM-DD)").optional(),
-      stype_in: z.enum(SYMBOLOGY_TYPES).describe("Input symbology type, defaults to 'raw_symbol'").optional(),
-      stype_out: z.enum(SYMBOLOGY_TYPES).describe("Output symbology type, defaults to 'instrument_id'").optional(),
-      limit: z.number().int().min(1).describe("Maximum records to return; defaults to MCP_DIRECT_MAX_RECORDS (10000) and cannot exceed it").optional(),
-    }),
+    schema: directTimeseriesArgs(TIMESERIES_SCHEMAS),
+    platformSchema: directTimeseriesArgs([...TIMESERIES_SCHEMAS, ...CME_IMPLIED_QUOTE_SCHEMAS]),
   },
   {
     name: "get_futures_options_smile",
@@ -507,14 +499,16 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
 ];
 
-const DATABENTO_TOOL_SCHEMAS = new Map(
-  DATABENTO_TOOL_DEFINITIONS.map((definition) => [definition.name, definition.schema])
+const DATABENTO_TOOLS_BY_NAME = new Map(
+  DATABENTO_TOOL_DEFINITIONS.map((definition) => [definition.name, definition])
 );
 
+function schemaForProfile(definition: DatabentoToolDefinition, profile: DatabentoToolProfile): ToolArgumentSchema {
+  return profile === "platform" ? definition.platformSchema ?? definition.schema : definition.schema;
+}
+
 function toMcpInputSchema(schema: ToolArgumentSchema): Tool["inputSchema"] {
-  const converted = convertZodToJsonSchema(schema as z.ZodTypeAny, {
-    $refStrategy: "none",
-  });
+  const converted = z.toJSONSchema(schema, { target: "draft-7", io: "input" });
 
   if (typeof converted !== "object" || converted === null || converted.type !== "object") {
     throw new Error("MCP tool input schema must be a JSON object schema");
@@ -524,8 +518,8 @@ function toMcpInputSchema(schema: ToolArgumentSchema): Tool["inputSchema"] {
   return inputSchema as Tool["inputSchema"];
 }
 
-function formatZodPath(path: (string | number)[]): string {
-  return path.length > 0 ? path.join(".") : "arguments";
+function formatZodPath(path: PropertyKey[]): string {
+  return path.length > 0 ? path.map(String).join(".") : "arguments";
 }
 
 function formatToolArgumentError(toolName: string, error: z.ZodError): string {
@@ -536,22 +530,24 @@ function formatToolArgumentError(toolName: string, error: z.ZodError): string {
   return `Invalid tool arguments for ${toolName}: ${issues}`;
 }
 
-export function listDatabentoToolContracts(): Tool[] {
+export function listDatabentoToolContracts(profile: DatabentoToolProfile = "local"): Tool[] {
   return DATABENTO_TOOL_DEFINITIONS.map((definition) => ({
     name: definition.name,
     description: definition.description,
-    inputSchema: toMcpInputSchema(definition.schema),
+    inputSchema: toMcpInputSchema(schemaForProfile(definition, profile)),
   }));
 }
 
 export function parseDatabentoToolArguments(
   toolName: string,
-  args: unknown
+  args: unknown,
+  profile: DatabentoToolProfile = "local"
 ): ToolArgumentParseResult {
-  const schema = DATABENTO_TOOL_SCHEMAS.get(toolName);
-  if (!schema) {
+  const definition = DATABENTO_TOOLS_BY_NAME.get(toolName);
+  if (!definition) {
     return { status: "unknown" };
   }
+  const schema = schemaForProfile(definition, profile);
 
   let result: ReturnType<ToolArgumentSchema["safeParse"]>;
   try {

@@ -25,6 +25,7 @@ import type { BatchJobRequest, ListJobsParams } from "../src/types/batch.js";
 import {
   listDatabentoToolContracts,
   parseDatabentoToolArguments,
+  type DatabentoToolProfile,
 } from "./tool-contracts.js";
 
 export const DATABENTO_MCP_SERVER_VERSION = "1.3.2";
@@ -124,6 +125,7 @@ export const REMOTE_BATCH_TOOL_NAMES = ["batch_submit_job", "batch_list_jobs", "
 
 export interface DatabentoMcpServerOptions {
   disabledTools?: Iterable<string>;
+  profile?: DatabentoToolProfile;
 }
 
 function normalizeDisabledTools(disabledTools: Iterable<string> | undefined): Set<string> {
@@ -148,7 +150,7 @@ export function createDefaultDatabentoMcpClients(apiKey: string): DatabentoMcpCl
 export function listDatabentoTools(options: DatabentoMcpServerOptions = {}): Tool[] {
   const disabledTools = normalizeDisabledTools(options.disabledTools);
 
-  return listDatabentoToolContracts().filter((tool) => !disabledTools.has(tool.name));
+  return listDatabentoToolContracts(options.profile).filter((tool) => !disabledTools.has(tool.name));
 }
 
 function createToolErrorResult(error: string): CallToolResult {
@@ -185,7 +187,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
       return createToolErrorResult(`Tool is disabled for this transport: ${name}`);
     }
 
-    const parsedArgs = parseDatabentoToolArguments(name, rawArgs);
+    const parsedArgs = parseDatabentoToolArguments(name, rawArgs, options.profile);
     if (parsedArgs.status === "invalid") {
       return createToolErrorResult(parsedArgs.error);
     }
@@ -245,7 +247,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           price: quote.price,
           bid: quote.bid,
           ask: quote.ask,
-          spread: +(quote.ask - quote.bid).toFixed(2),
+          spread: +(quote.ask - quote.bid).toFixed(9),
           bidSize: quote.bidSize,
           askSize: quote.askSize,
           bidCount: quote.bidCount,
@@ -255,6 +257,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,
           sessionId: quote.sessionId,
           source: "DataBento Live API",
+          ...(quote.timestampNs===undefined?{}:{timestampNs:quote.timestampNs,receiveTimestampNs:quote.receiveTimestampNs,
+            receivedAt:quote.receivedAt,freshness:quote.freshness,capture_scope:quote.capture_scope}),
         };
 
         return {
@@ -304,6 +308,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           symbol,
           timeframe,
           count: bars.length,
+          ...(timeframe==="H4"?{aggregation:{timezone:"UTC",interval_hours:4,incomplete_final_bucket:"excluded"}}:{}),
           bars: bars.map((bar) => ({
             timestamp: bar.timestamp.toISOString(),
             open: bar.open,
@@ -311,6 +316,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
             low: bar.low,
             close: bar.close,
             volume: bar.volume,
+            instrument_id:bar.instrumentId,
+            ...(bar.sourceBarCount===undefined?{}:{source_bar_count:bar.sourceBarCount,aggregation_complete:bar.aggregationComplete}),
           })),
         };
 

@@ -54,6 +54,9 @@ jobs:
       - name: Smoke installed skills
         run: npm run smoke:skills
 
+      - name: Smoke private platform entrypoint
+        run: npm run smoke:mcp:platform
+
       - name: Smoke consumer artifacts
         run: npm run smoke:consumer
 
