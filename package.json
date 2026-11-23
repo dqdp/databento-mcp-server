@@ -24,6 +24,7 @@
     "start:http": "node dist/mcp/mcp/http.js",
     "smoke:mcp": "tsx scripts/smoke-mcp-stdio.ts",
     "smoke:mcp:http": "tsx scripts/smoke-mcp-http.ts",
+    "smoke:mcp:platform": "tsx scripts/smoke-mcp-platform.ts",
     "smoke:skills": "tsx scripts/smoke-installed-skills.ts",
     "smoke:consumer": "npm run build:consumer && tsx scripts/smoke-consumer-artifacts.ts",
     "smoke:smile": "tsx scripts/smoke-smile-live.ts",
@@ -54,8 +55,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^17.2.3",
     "undici": "^7.28.0",
-    "zod": "^3.25.76",
-    "zod-to-json-schema": "^3.25.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@faker-js/faker": "^8.4.1",

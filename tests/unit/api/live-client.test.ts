@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import {withPlatformLiveCapture,type PlatformLiveOriginal} from "../../../src/api/platform-live.js";
 import {
   DatabentoLiveClient,
   computeDatabentoCramResponse,
@@ -255,52 +256,30 @@ describe("DatabentoLiveClient", () => {
     );
   });
 
-  it("subscribes futures options parent groups when requested explicitly", async () => {
+  it("rejects a family before subscribing to a one-shot quote", async () => {
+    const socketFactory = vi.fn(() => new FakeLiveSocket());
+    const client = new DatabentoLiveClient("db-synthetic-test", { socketFactory });
+    // JavaScript callers may still pass the symbology used by older versions.
+    await expect(Reflect.apply(client.getLiveFuturesQuote, client, ["CL", { stypeIn: "parent" }]))
+      .rejects.toThrow(/single|contract|stypeIn/);
+    for (const family of ["ES.FUT", "ES.OPT"]) {
+      await expect(client.getLiveFuturesQuote(family)).rejects.toThrow(/contract/);
+    }
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("returns only the requested instrument ID when the feed contains another contract", async () => {
     const socket = new FakeLiveSocket();
-    const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345", {
-      socketFactory: () => socket,
-    });
-
-    const quotePromise = client.getLiveFuturesQuote("ES.OPT", {
-      stypeIn: "parent",
-      timeoutMs: 5_000,
-    });
-
-    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=challenge-123\n"));
-    socket.emit("data", Buffer.from("success=1|session_id=session-1\n"));
-
-    await vi.waitFor(() => {
-      expect(socket.writes.map((write) => write.toString("utf8"))).toContain(
-        "schema=mbp-1|stype_in=parent|symbols=ES.OPT|id=0|is_last=1\n"
-      );
-    });
-
-    socket.emit(
-      "data",
-      Buffer.concat([
-        encodeDbnMetadataPrelude(),
-        encodeMbp1Record({
-          tsEventNs: 1_781_611_200_500_000_000n,
-          tsRecvNs: 1_781_611_200_600_000_000n,
-          instrumentId: 33333,
-          bid: 10.25,
-          ask: 10.5,
-          bidSize: 4,
-          askSize: 5,
-          bidCount: 1,
-          askCount: 2,
-        }),
-      ])
-    );
-
-    await expect(quotePromise).resolves.toEqual(
-      expect.objectContaining({
-        symbol: "ES.OPT",
-        liveSymbol: "ES.OPT",
-        stypeIn: "parent",
-        instrumentId: 33333,
-      })
-    );
+    const client = new DatabentoLiveClient("db-synthetic-test", { socketFactory: () => socket });
+    const quote = client.getLiveFuturesQuote("33333", { stypeIn: "instrument_id" });
+    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=fixture\n"));
+    socket.emit("data", Buffer.from("success=1|session_id=test\n"));
+    const prices = { tsEventNs: 1_781_611_200_500_000_000n, tsRecvNs: 1_781_611_200_600_000_000n,
+      ask: 10.5, bid: 10.25, bidSize: 4, askSize: 5, bidCount: 1, askCount: 2 };
+    socket.emit("data", Buffer.concat([encodeDbnMetadataPrelude(),
+      encodeMbp1Record({ ...prices, instrumentId: 22222, bid: 7 }),
+      encodeMbp1Record({ ...prices, instrumentId: 33333 })]));
+    await expect(quote).resolves.toMatchObject({ instrumentId: 33333, bid: 10.25, ask: 10.5 });
   });
 
   it("rejects ALL_SYMBOLS live quote subscriptions to avoid broad streams", async () => {
@@ -370,4 +349,66 @@ describe("DatabentoLiveClient", () => {
     await expect(quotePromise).rejects.toThrow("Databento Live authentication failed: bad key");
     await expect(quotePromise).rejects.not.toThrow("db-abcdefghijklmnopqrstuvwxyz12345");
   });
+  it.each(["ES|schema=mbo","ES\nstart_session=0","ES\rsymbols=ALL_SYMBOLS"])("rejects protocol-control symbol %s before connecting",async symbol=>{
+    const socketFactory=vi.fn(()=>{throw new Error("unsafe input reached socket");});
+    const client=new DatabentoLiveClient("db-synthetic",{socketFactory});
+    await expect(client.getLiveFuturesQuote(symbol)).rejects.toThrow("protocol");
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+  it("rejects protocol-control dataset before connecting",async()=>{
+    const socketFactory=vi.fn(()=>{throw new Error("unsafe input reached socket");});
+    const client=new DatabentoLiveClient("db-synthetic",{socketFactory});
+    await expect(client.getLiveFuturesQuote("ES",{dataset:"GLBX.MDP3|encoding=json"})).rejects.toThrow("dataset");
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+  it("bounds an unterminated control line and destroys its socket",async()=>{
+    const socket=new FakeLiveSocket(),client=new DatabentoLiveClient("db-synthetic",{socketFactory:()=>socket});
+    const pending=client.getLiveFuturesQuote("ES",{timeoutMs:5});
+    socket.emit("data",Buffer.alloc(64*1024+1,65));
+    await expect(pending).rejects.toThrow("limit");
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it("bounds a declared DBN metadata length before buffering the stream",async()=>{
+    const socket=new FakeLiveSocket(),client=new DatabentoLiveClient("db-synthetic",{socketFactory:()=>socket});
+    const pending=client.getLiveFuturesQuote("ES",{timeoutMs:500});
+    socket.emit("data",Buffer.from("cram=challenge\nsuccess=1\n"));
+    const header=Buffer.alloc(8);header.write("DBN");header[3]=3;header.writeUInt32LE(0xffffffff,4);
+    socket.emit("data",header);
+    await expect(pending).rejects.toThrow("metadata byte limit");
+    expect(socket.destroyed).toBe(true);
+  });
+  it("cleans the timer and data handlers after a protocol failure",async()=>{
+    vi.useFakeTimers();
+    try{
+      const socket=new FakeLiveSocket(),destroy=vi.spyOn(socket,"destroy");
+      const client=new DatabentoLiveClient("db-synthetic",{socketFactory:()=>socket});
+      const pending=client.getLiveFuturesQuote("ES",{timeoutMs:20});
+      socket.emit("data",Buffer.alloc(64*1024+1,65));
+      await expect(pending).rejects.toThrow("limit");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(destroy).toHaveBeenCalledTimes(1);
+      expect(socket.listenerCount("data")).toBe(0);
+      expect(socket.listenerCount("close")).toBe(0);
+      socket.emit("error",new Error("late OS error"));
+    }finally{vi.useRealTimers();}
+  });
+
+  it("reports future timestamps and crossed books as observed quality flags without inventing freshness",async()=>{
+    const socket=new FakeLiveSocket(),now=Date.parse("2026-11-17T14:00:00Z");
+    const client=new DatabentoLiveClient("db-synthetic",{socketFactory:()=>socket,now:()=>now});
+    const originals:PlatformLiveOriginal[]=[];
+    const pending=withPlatformLiveCapture(originals,()=>client.getLiveFuturesQuote("ES",{timeoutMs:100}));
+    socket.emit("data",Buffer.from("cram=challenge\nsuccess=1\n"));
+    const timestampNs=BigInt(now+1000)*1_000_000n+1n;
+    socket.emit("data",Buffer.concat([encodeDbnMetadataPrelude(),encodeMbp1Record({
+      tsEventNs:timestampNs,tsRecvNs:timestampNs+100n,bid:4501,ask:4500,
+      bidSize:1,askSize:2,bidCount:1,askCount:2})]));
+    const quote=await pending;
+    expect(quote.timestampNs).toBe(timestampNs.toString());
+    expect(quote.freshness).toEqual({status:"not_asserted",latest_confirmed:false,event_age_ms:-1000,
+      event_timestamp_in_future:true,crossed_market:true});
+    expect(originals).toHaveLength(1);expect(socket.destroyed).toBe(true);
+  });
+
 });

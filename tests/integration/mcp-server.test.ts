@@ -160,7 +160,7 @@ describe("MCP server integration", () => {
       ).toBe(30000);
       expect(
         (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).stype_in.enum
-      ).toEqual(["raw_symbol", "instrument_id", "continuous", "parent"]);
+      ).toEqual(["raw_symbol", "instrument_id", "continuous"]);
       expect(
         (toolsByName.get("get_live_futures_quote")?.inputSchema.properties as any).dataset.type
       ).toBe("string");
@@ -278,6 +278,9 @@ describe("MCP server integration", () => {
           },
         })
       );
+      expectValidationError(await client.callTool({
+        name: "get_live_futures_quote", arguments: { symbol: "ES.OPT", stype_in: "parent" },
+      }));
       expect(clients.liveClient.getLiveFuturesQuote).not.toHaveBeenCalled();
 
       expectValidationError(
@@ -632,6 +635,9 @@ describe("MCP server integration", () => {
           },
         })
       );
+      expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
+      expectValidationError(await client.callTool({name:"get_historical_bars",arguments:{
+        symbol:"ES.FUT",timeframe:"H4",count:3,stype_in:"parent"}}));
       expect(clients.databentoClient.getHistoricalBars).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();

@@ -22,6 +22,9 @@ interface BarData {
   low: number;
   close: number;
   volume: number;
+  instrumentId?: number;
+  sourceBarCount?: number;
+  aggregationComplete?: boolean;
 }
 
 interface SessionInfo {
@@ -190,6 +193,8 @@ export class DataBentoClient {
     if (!symbol || !symbol.trim()) {
       throw new Error(`Invalid symbol: ${symbol}`);
     }
+    if(stypeIn==="parent"||symbol.toUpperCase()==="ALL_SYMBOLS"||/[|,\r\n\x00-\x1f\x7f]/.test(symbol))
+      throw new Error("Historical bars require a single instrument or continuous symbol; parent symbols are not supported");
 
     const maxCount = maxHistoricalBarsForTimeframe(timeframe);
     if (!Number.isInteger(count) || count < 1 || count > maxCount) {
@@ -203,32 +208,45 @@ export class DataBentoClient {
     const resolvedSymbol = aliasSymbol ?? symbol;
     const resolvedStypeIn = stypeIn ?? (aliasSymbol ? "continuous" : "raw_symbol");
 
-    // Calculate the start of the lookback window based on count and timeframe.
-    const startDate = new Date();
-
-    if (timeframe === "1h") {
-      startDate.setDate(startDate.getDate() - Math.ceil(count / 24) - 7);
-    } else if (timeframe === "H4") {
-      startDate.setDate(startDate.getDate() - Math.ceil(count / 6) - 7);
-    } else if (timeframe === "1d") {
-      startDate.setDate(startDate.getDate() - count - 7);
-    }
-
     const schema = timeframe === "1d" ? "ohlcv-1d" : "ohlcv-1h";
-
-    // `end` is intentionally omitted. DataBento rejects an `end` past a schema's
-    // available frontier (HTTP 422 data_end_after_available_end), and the ohlcv
-    // frontiers lag "now" intraday — so sending end=now broke requests during the
-    // active session. Omitting end returns data up to the latest available bar.
+    const hourNs=3_600_000_000_000n,dayNs=24n*hourNs;
+    const schemaInterval=timeframe==="1d"?dayNs:hourNs;
+    const resultInterval=timeframe==="H4"?4n*hourNs:schemaInterval;
+    const metadata=JSON.parse(await this.http.get("/v0/metadata.get_dataset_range",{dataset:DATASET}));
+    const availability=metadata?.schema?.[schema];
+    let availableStart:bigint,availableEnd:bigint;
+    try{availableStart=quoteRangeNanos(availability?.start);availableEnd=quoteRangeNanos(availability?.end);}
+    catch{throw new Error(`Invalid ${schema} historical availability timestamp`);}
+    if(availableStart>=availableEnd)throw new Error(`Invalid ${schema} historical availability range`);
+    const wallEnd=BigInt(Date.now())*1_000_000n;
+    // Only elapsed hourly/daily/UTC H4 buckets. The dataset-wide frontier is not
+    // sufficient, and date-only start with omitted end means one day, not "now".
+    let end=availableEnd<wallEnd?availableEnd:wallEnd;
+    end=end/resultInterval*resultInterval;
+    const lookbackDays=timeframe==="1d"?Math.ceil(count*7/5)+14:
+      Math.ceil(count*(timeframe==="H4"?4:1)/24*7/5)+7;
+    let start=end/dayNs*dayNs-BigInt(lookbackDays)*dayNs;
+    if(start<availableStart)start=availableStart;
+    start=(start+resultInterval-1n)/resultInterval*resultInterval;
+    if(start>=end)throw new Error(`No complete bar data available for ${symbol}`);
+    // A provider limit returns an oldest-first prefix. Retrieve every possible slot
+    // in this bounded single-series interval before selecting its tail; the extra
+    // record detects truncation/duplicates instead of silently returning stale bars.
+    const limit=Number((end-start)/schemaInterval)+1;
+    if(!Number.isSafeInteger(limit)||limit<1||limit>20000)
+      throw new Error("Unable to establish latest historical bars within the bounded range");
     const params = {
       dataset: DATASET,
       symbols: resolvedSymbol,
       stype_in: resolvedStypeIn,
       stype_out: "instrument_id",
-      start: startDate.toISOString().split("T")[0],
+      start: start.toString(),
+      end: end.toString(),
       schema: schema,
       encoding: "csv",
-      limit: timeframe === "1d" ? count : 1000,
+      pretty_px:false,
+      pretty_ts:false,
+      limit,
     };
 
     const response = await this.http.get("/v0/timeseries.get_range", params);
@@ -244,27 +262,46 @@ export class DataBentoClient {
     if (dataLines.length === 0) {
       throw new Error(`No bar data available for ${symbol}`);
     }
+    if(dataLines.length>=limit)throw new Error("Unable to establish latest historical bars from a truncated response");
+    const headers=lines[0].trim().split(",");
+    const columns=["ts_event","instrument_id","open","high","low","close","volume"];
+    if(columns.some(name=>headers.filter(field=>field===name).length!==1))throw new Error("Invalid historical bar columns");
+    const instruments=new Set<number>();
+    const timestamps=new Set<string>();
 
     const bars: BarData[] = dataLines.map((line) => {
       const fields = line.split(",");
 
-      // CSV format: ts_event,rtype,publisher_id,instrument_id,open,high,low,close,volume
-      const tsEvent = parseInt(fields[0]);
-      const open = parseFloat(fields[4]) / 1e9;
-      const high = parseFloat(fields[5]) / 1e9;
-      const low = parseFloat(fields[6]) / 1e9;
-      const close = parseFloat(fields[7]) / 1e9;
-      const volume = parseFloat(fields[8]);
+      const integer=(name:string):bigint=>{
+        const value=fields[headers.indexOf(name)]?.trim();
+        if(!value||! /^-?\d{1,20}$/.test(value))throw new Error(`Invalid historical bar ${name}`);
+        return BigInt(value);
+      };
+      const tsEvent=integer("ts_event");
+      if(tsEvent<start||tsEvent>=end)throw new Error("Historical bar timestamp outside requested range");
+      if(timeframe==="H4"&&tsEvent%hourNs!==0n)throw new Error("H4 aggregation requires hourly aligned source bars");
+      if(timestamps.has(tsEvent.toString()))throw new Error("Duplicate historical bar timestamp or mixed instruments");
+      timestamps.add(tsEvent.toString());
+      const instrumentId=Number(integer("instrument_id"));
+      if(!Number.isSafeInteger(instrumentId)||instrumentId<0||instrumentId>0xffffffff)throw new Error("Invalid historical bar instrument");
+      instruments.add(instrumentId);
+      if(resolvedStypeIn!=="continuous"&&instruments.size>1)throw new Error("Historical bars contain mixed instruments");
+      const price=(name:string)=>{const value=integer(name);if(value===UNDEF_PRICE)throw new Error("Undefined historical bar price");return Number(value)/1e9;};
+      const open=price("open"),high=price("high"),low=price("low"),close=price("close");
+      const volume=Number(integer("volume"));
+      if(!Number.isSafeInteger(volume)||volume<0)throw new Error("Invalid historical bar volume");
 
       return {
-        timestamp: new Date(Math.floor(tsEvent / 1_000_000)),
+        timestamp: new Date(Number(tsEvent/1_000_000n)),
         open,
         high,
         low,
         close,
         volume,
+        instrumentId,
       };
     });
+    bars.sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime());
 
     // Handle H4 aggregation if needed
     if (timeframe === "H4") {
@@ -280,18 +317,24 @@ export class DataBentoClient {
    */
   private aggregateToH4(bars: BarData[]): BarData[] {
     const h4Bars: BarData[] = [];
-
-    for (let i = 0; i < bars.length; i += 4) {
-      const chunk = bars.slice(i, i + 4);
-      if (chunk.length === 0) continue;
-
+    const buckets=new Map<number,BarData[]>();
+    for(const bar of [...bars].sort((a,b)=>a.timestamp.getTime()-b.timestamp.getTime())){
+      const start=Math.floor(bar.timestamp.getTime()/14_400_000)*14_400_000;
+      const bucket=buckets.get(start)??[];
+      bucket.push(bar);buckets.set(start,bucket);
+    }
+    for(const [timestamp,chunk] of buckets){
+      if(new Set(chunk.map(bar=>bar.instrumentId)).size>1)throw new Error("Cannot aggregate different instruments into one H4 bar");
       h4Bars.push({
-        timestamp: chunk[0].timestamp,
+        timestamp: new Date(timestamp),
         open: chunk[0].open,
         high: Math.max(...chunk.map((b) => b.high)),
         low: Math.min(...chunk.map((b) => b.low)),
         close: chunk[chunk.length - 1].close,
         volume: chunk.reduce((sum, b) => sum + b.volume, 0),
+        ...(chunk[0].instrumentId===undefined?{}:{instrumentId:chunk[0].instrumentId}),
+        sourceBarCount:chunk.length,
+        aggregationComplete:chunk.length===4,
       });
     }
 
