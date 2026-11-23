@@ -16,7 +16,7 @@ import { TimeseriesClient } from "../src/api/timeseries-client.js";
 import { ReferenceClient } from "../src/api/reference-client.js";
 import { SymbologyClient } from "../src/api/symbology-client.js";
 import { BatchClient } from "../src/api/batch-client.js";
-import { DatabentoLiveClient } from "../src/api/live-client.js";
+import { DatabentoLiveClient, type LiveSymbolSType } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import { buildSmile, clampNowToAvailable, resolveExpirySelector, resolveOptionsRoot } from "../src/analytics/pull-chain.js";
 import { loadSmileStatic } from "../src/analytics/smile-cache.js";
@@ -228,7 +228,7 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
         const { symbol, dataset, stype_in, timeout_ms } = args as {
           symbol: string;
           dataset?: string;
-          stype_in?: "raw_symbol" | "instrument_id" | "continuous" | "parent";
+          stype_in?: LiveSymbolSType;
           timeout_ms?: number;
         };
         const quote = await liveClient.getLiveFuturesQuote(symbol, {

@@ -21,7 +21,7 @@ const UNDEF_TIMESTAMP=18_446_744_073_709_551_615n;
 const MAX_LIVE_BYTES=16*1024*1024;
 const MAX_CONTROL_BYTES=64*1024;
 
-export const LIVE_SYMBOL_STYPES = ["raw_symbol", "instrument_id", "continuous", "parent"] as const;
+export const LIVE_SYMBOL_STYPES = ["raw_symbol", "instrument_id", "continuous"] as const;
 
 const LIVE_SYMBOL_ALIASES: Record<string, { symbol: string; stypeIn: LiveSymbolSType }> = {
   ES: { symbol: "ES.v.0", stypeIn: "continuous" },
@@ -338,6 +338,9 @@ export class DatabentoLiveClient {
       throw new Error("get_live_futures_quote requires a single symbol; ALL_SYMBOLS and comma-separated symbols are not supported");
     }
 
+    if (/\.(FUT|OPT)$/i.test(requestedSymbol)) {
+      throw new Error("Select a single contract with instrument search, then quote its raw symbol or instrument_id");
+    }
     const dataset = (options.dataset ?? this.dataset).trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(dataset)) {
       throw new Error("dataset must be a non-empty Databento dataset code");
@@ -348,6 +351,10 @@ export class DatabentoLiveClient {
     const stypeIn = options.stypeIn ?? alias?.stypeIn ?? "raw_symbol";
     if (!LIVE_SYMBOL_STYPES.includes(stypeIn)) {
       throw new Error(`stypeIn must be one of: ${LIVE_SYMBOL_STYPES.join(", ")}`);
+    }
+
+    if (stypeIn === "instrument_id" && (!/^\d+$/.test(liveSymbol) || Number(liveSymbol) < 1 || Number(liveSymbol) > 0xffffffff)) {
+      throw new Error("instrument_id must identify one contract by a positive 32-bit integer");
     }
 
     return {
@@ -417,6 +424,9 @@ export class DatabentoLiveClient {
               return;
             }
 
+            if (request.stypeIn === "instrument_id" && result.quote.instrumentId !== Number(request.liveSymbol)) {
+              continue;
+            }
             if(capture)captureLiveDbn(Buffer.concat(rawChunks),{dataset:request.dataset,schema:"mbp-1",
               symbols:request.liveSymbol,stype_in:request.stypeIn},result.quote.receivedAt!,this.apiKey);
             finish(() => {

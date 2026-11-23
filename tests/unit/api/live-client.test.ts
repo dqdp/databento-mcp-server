@@ -256,52 +256,30 @@ describe("DatabentoLiveClient", () => {
     );
   });
 
-  it("subscribes futures options parent groups when requested explicitly", async () => {
+  it("rejects a family before subscribing to a one-shot quote", async () => {
+    const socketFactory = vi.fn(() => new FakeLiveSocket());
+    const client = new DatabentoLiveClient("db-synthetic-test", { socketFactory });
+    // JavaScript callers may still pass the symbology used by older versions.
+    await expect(Reflect.apply(client.getLiveFuturesQuote, client, ["CL", { stypeIn: "parent" }]))
+      .rejects.toThrow(/single|contract|stypeIn/);
+    for (const family of ["ES.FUT", "ES.OPT"]) {
+      await expect(client.getLiveFuturesQuote(family)).rejects.toThrow(/contract/);
+    }
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("returns only the requested instrument ID when the feed contains another contract", async () => {
     const socket = new FakeLiveSocket();
-    const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345", {
-      socketFactory: () => socket,
-    });
-
-    const quotePromise = client.getLiveFuturesQuote("ES.OPT", {
-      stypeIn: "parent",
-      timeoutMs: 5_000,
-    });
-
-    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=challenge-123\n"));
-    socket.emit("data", Buffer.from("success=1|session_id=session-1\n"));
-
-    await vi.waitFor(() => {
-      expect(socket.writes.map((write) => write.toString("utf8"))).toContain(
-        "schema=mbp-1|stype_in=parent|symbols=ES.OPT|id=0|is_last=1\n"
-      );
-    });
-
-    socket.emit(
-      "data",
-      Buffer.concat([
-        encodeDbnMetadataPrelude(),
-        encodeMbp1Record({
-          tsEventNs: 1_781_611_200_500_000_000n,
-          tsRecvNs: 1_781_611_200_600_000_000n,
-          instrumentId: 33333,
-          bid: 10.25,
-          ask: 10.5,
-          bidSize: 4,
-          askSize: 5,
-          bidCount: 1,
-          askCount: 2,
-        }),
-      ])
-    );
-
-    await expect(quotePromise).resolves.toEqual(
-      expect.objectContaining({
-        symbol: "ES.OPT",
-        liveSymbol: "ES.OPT",
-        stypeIn: "parent",
-        instrumentId: 33333,
-      })
-    );
+    const client = new DatabentoLiveClient("db-synthetic-test", { socketFactory: () => socket });
+    const quote = client.getLiveFuturesQuote("33333", { stypeIn: "instrument_id" });
+    socket.emit("data", Buffer.from("lsg_version=1.0.0\ncram=fixture\n"));
+    socket.emit("data", Buffer.from("success=1|session_id=test\n"));
+    const prices = { tsEventNs: 1_781_611_200_500_000_000n, tsRecvNs: 1_781_611_200_600_000_000n,
+      ask: 10.5, bid: 10.25, bidSize: 4, askSize: 5, bidCount: 1, askCount: 2 };
+    socket.emit("data", Buffer.concat([encodeDbnMetadataPrelude(),
+      encodeMbp1Record({ ...prices, instrumentId: 22222, bid: 7 }),
+      encodeMbp1Record({ ...prices, instrumentId: 33333 })]));
+    await expect(quote).resolves.toMatchObject({ instrumentId: 33333, bid: 10.25, ask: 10.5 });
   });
 
   it("rejects ALL_SYMBOLS live quote subscriptions to avoid broad streams", async () => {

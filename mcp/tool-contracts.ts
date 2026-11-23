@@ -1,5 +1,6 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { LIVE_SYMBOL_STYPES } from "../src/api/live-client.js";
 import { getDirectMaxRecords } from "../src/api/direct-response-policy.js";
 import { assertStandardCmeHistoricalEntitlement } from "../src/api/entitlement-policy.js";
 import { CME_IMPLIED_QUOTE_SCHEMAS } from "../src/api/platform-subscription.js";
@@ -315,7 +316,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
           message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
         })
         .describe(
-          "Single Databento symbol. ES and NQ are aliases for ES.v.0/NQ.v.0 continuous front contracts. Use raw, instrument_id, continuous, or parent symbols for other futures and options on futures."
+          "Single Databento symbol. ES and NQ are aliases for ES.v.0/NQ.v.0 continuous front contracts. For a family such as ES.FUT or ES.OPT, find the contract first and quote its raw_symbol or instrument_id."
         ),
       dataset: z
         .string()
@@ -325,7 +326,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
         .describe("Databento dataset code. Defaults to GLBX.MDP3 for CME Globex futures and options on futures.")
         .optional(),
       stype_in: z
-        .enum(SYMBOLOGY_TYPES)
+        .enum(LIVE_SYMBOL_STYPES)
         .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
         .optional(),
       timeout_ms: z

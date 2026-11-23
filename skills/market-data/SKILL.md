@@ -254,9 +254,9 @@ Databento operating reality (verified against the live MCP, 2026-06-29):
 - The live quote tool `get_live_futures_quote` accepts any single covered
   Databento symbol for futures and options on futures. It supports explicit
   `dataset`, `stype_in`, and `timeout_ms`. Use `stype_in=continuous` for
-  continuous futures such as `CL.v.0`, `stype_in=raw_symbol` or
-  `instrument_id` for exact listed instruments, and `stype_in=parent` only when
-  a first update from a parent group such as `ES.FUT` or `ES.OPT` is acceptable.
+  continuous futures such as `CL.v.0`, or `raw_symbol` / `instrument_id` for
+  an exact listed instrument. For a family such as `ES.FUT` or `ES.OPT`, look
+  up the listed contracts and select one before requesting a quote.
 - The convenience tools `get_futures_quote` and `get_historical_bars` remain
   ES/NQ only. For non-ES/NQ historical bars or broader schemas, use
   `timeseries_get_range`.
