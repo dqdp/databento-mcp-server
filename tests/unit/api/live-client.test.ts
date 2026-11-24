@@ -86,6 +86,43 @@ describe("DatabentoLiveClient", () => {
     expect(getDatabentoLiveGatewayHost("GLBX.MDP3")).toBe("glbx-mdp3.lsg.databento.com");
   });
 
+  it("subscribes once for compact and padded OPRA symbols and decodes the consolidated BBO", async () => {
+    const socket = new FakeLiveSocket();
+    const socketFactory = vi.fn(() => socket);
+    const client = new DatabentoLiveClient("db-fixture", { socketFactory });
+    const compact = "SPX 261218P05425000";
+    const padded = "SPX   261218P05425000";
+    const first = client.getLiveFuturesQuote(compact, { dataset: "opra.pillar" });
+    const second = client.getLiveFuturesQuote(padded, { dataset: "OPRA.PILLAR" });
+    socket.emit("data", Buffer.from("cram=challenge\nsuccess=1\n"));
+
+    const venueQuote = encodeMbp1Record({
+      tsEventNs: 1_781_611_200_500_000_000n, tsRecvNs: 1_781_611_200_600_000_000n,
+      bid: 30.5, ask: 31, bidSize: 4, askSize: 7, bidCount: 2, askCount: 3,
+    });
+    const consolidated = Buffer.from(venueQuote);
+    consolidated[1] = 0xb1;
+    consolidated.writeUInt16LE(30, 2);
+    consolidated.writeBigInt64LE(30_750_000_000n, 48);
+    consolidated.writeUInt16LE(22, 72);
+    consolidated.writeUInt16LE(32, 76);
+    socket.emit("data", Buffer.concat([encodeDbnMetadataPrelude(), venueQuote, consolidated]));
+
+    const [firstQuote, secondQuote] = await Promise.all([first, second]);
+    expect(socketFactory).toHaveBeenCalledTimes(1);
+    expect(socket.writes.map(write => write.toString())).toContain(
+      `schema=cmbp-1|stype_in=raw_symbol|symbols=${padded}|id=0|is_last=1\n`
+    );
+    expect(firstQuote).toMatchObject({
+      symbol: compact, liveSymbol: padded, dataset: "OPRA.PILLAR", schema: "cmbp-1",
+      bid: 30.75, ask: 31, bidSize: 4, askSize: 7, bidCount: null, askCount: null,
+      bidPublisherId: 22, askPublisherId: 32,
+    });
+    expect(secondQuote).toEqual({ ...firstQuote, symbol: padded });
+    expect((await client.getLiveFuturesQuote(padded, { dataset: "OPRA.PILLAR" })).symbol).toBe(padded);
+    expect(socket.destroyed).toBe(true);
+  });
+
   it("authenticates, subscribes to the volume-based continuous front contract, and resolves the first live MBP-1 quote", async () => {
     const socket = new FakeLiveSocket();
     const client = new DatabentoLiveClient("db-abcdefghijklmnopqrstuvwxyz12345", {

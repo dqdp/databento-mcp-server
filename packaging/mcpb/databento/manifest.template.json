@@ -30,7 +30,7 @@
     },
     {
       "name": "get_live_futures_quote",
-      "description": "Get a true Databento Live API top-of-book quote update for a covered futures or futures-options symbol"
+      "description": "Get one Databento Live top-of-book update for a futures contract, option on futures, or OPRA listed option"
     },
     {
       "name": "get_session_info",

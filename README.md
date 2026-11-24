@@ -344,11 +344,15 @@ establish the latest update. A quote from a closed session can still be old: che
 
 #### 2. `get_live_futures_quote`
 
-Get a true live top-of-book quote update for a single covered futures or
-options-on-futures symbol through the Databento Live API socket feed. The tool
-opens a short-lived `mbp-1` subscription, returns the first quote update, and
-closes the socket. `ES` and `NQ` are convenience aliases for `ES.v.0` and
-`NQ.v.0`; all other symbols should specify the appropriate `stype_in`.
+Get the first two-sided Live quote for one contract. The tool selects `cmbp-1`
+for US listed options on `OPRA.PILLAR` and `mbp-1` for other datasets, then
+closes the socket. On CME, `ES` and `NQ` are aliases for `ES.v.0` and `NQ.v.0`.
+
+For example, pass `{"dataset":"OPRA.PILLAR","symbol":"SPX   261218P05425000"}`.
+Use an OCC raw symbol from the contract list. Historical and Live instrument IDs
+can differ on OPRA. In the consolidated quote, `bidPublisherId` and
+`askPublisherId` identify the venues at the best prices. OPRA provides sizes
+in contracts and leaves order counts unavailable (`null`). [Databento OPRA specification](https://databento.com/docs/datasets/opra-pillar).
 
 **Input:**
 ```json
@@ -1323,7 +1327,7 @@ npm run dev
 
 - **Original Historical Convenience Tools**: `get_futures_quote` and
   `get_historical_bars` only support ES and NQ futures; `get_live_futures_quote`
-  accepts a single covered Databento futures or futures-options symbol
+  accepts one futures contract, option on futures, or OPRA option with Live access
 - **Historical Standard CME Tools**: `timeseries_get_range` and
   `batch_submit_job` default to the Standard CME dataset allowlist
   (`GLBX.MDP3`) and entitlement windows

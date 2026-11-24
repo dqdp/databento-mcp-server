@@ -306,7 +306,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
   },
   {
     name: "get_live_futures_quote",
-    description: "Get a true live top-of-book quote update for a futures or futures-options symbol through the Databento Live API socket feed.",
+    description: "Get one two-sided top-of-book update through the Databento Live API. OPRA.PILLAR uses consolidated cmbp-1 for listed US options. Other datasets use mbp-1.",
     schema: toolArgs({
       symbol: z
         .string()
@@ -316,7 +316,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
           message: "Use a single Databento symbol; ALL_SYMBOLS and comma-separated symbols are not supported",
         })
         .describe(
-          "Single Databento symbol. ES and NQ are aliases for ES.v.0/NQ.v.0 continuous front contracts. For a family such as ES.FUT or ES.OPT, find the contract first and quote its raw_symbol or instrument_id."
+          "Single contract. For OPRA.PILLAR, use the OCC raw_symbol (for example SPX   261218P05425000). Historical and Live OPRA instrument IDs can differ. For CME, ES and NQ are aliases for ES.v.0/NQ.v.0. Select a contract first for families such as ES.FUT or ES.OPT."
         ),
       dataset: z
         .string()
@@ -327,7 +327,7 @@ export const DATABENTO_TOOL_DEFINITIONS: DatabentoToolDefinition[] = [
         .optional(),
       stype_in: z
         .enum(LIVE_SYMBOL_STYPES)
-        .describe("Input symbology type. Defaults to continuous for ES/NQ aliases and raw_symbol for all other symbols.")
+        .describe("Input symbology type. Defaults to continuous for the CME ES/NQ aliases and raw_symbol for listed options. For OPRA, use instrument_id only with a Live ID.")
         .optional(),
       timeout_ms: z
         .number()
