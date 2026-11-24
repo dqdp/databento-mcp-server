@@ -26,6 +26,20 @@ describe("platform transport cost and originals boundary", () => {
     expect(upstream.mock.calls.every(([url])=>!String(url).includes("timeseries.get_range"))).toBe(true);
     expect(JSON.stringify(guard.failureSummary())).not.toContain("private");
   });
+  it("allows CME definitions 45 seconds while preserving explicit and metadata timeouts", async () => {
+    const deadlines = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async url =>
+      new Response(String(url).includes("get_cost") ? "0" : "instrument_id,raw_symbol\n1804,NGF27\n"));
+    guard = installPlatformTransportGuard("db-fixture");
+    const http = new DataBentoHTTP("db-fixture");
+    const definition = {dataset: "GLBX.MDP3", symbols: "NGF27", schema: "definition", start: "2026-11-23"};
+    await http.get("/v0/timeseries.get_range", definition);
+    expect(deadlines.mock.calls.map(([ms]) => ms)).toEqual([15000, 45000]);
+    deadlines.mockClear();
+    await http.get("/v0/timeseries.get_range", definition, {timeout: 3000});
+    expect(deadlines.mock.calls.map(([ms]) => ms)).toEqual([3000, 3000]);
+  });
+
   it("reports a sanitized timeout through HTTP wrappers without exposing exception text",async()=>{
     const apiKey="db-fixture";
     const upstream=vi.spyOn(globalThis,"fetch").mockImplementation(async url=>{

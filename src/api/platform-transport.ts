@@ -20,6 +20,7 @@ const FREE_METADATA = new Set([
 ]);
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
+const CME_DEFINITION_TIMEOUT_MS = 45_000;
 const ERROR = "Databento server operation is not permitted";
 const COST_FIELDS = ["dataset", "symbols", "schema", "start", "end", "stype_in", "limit"];
 type FailurePhase="metadata"|"cost_estimate"|"market_data"|"result_processing";
@@ -172,12 +173,16 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
     if (endpoint !== "/v0/timeseries.get_range") throw new Error(ERROR);
     if(approvalRequired)throw new NonRetryableResponseError(ERROR);
     if (!["dataset", "symbols", "schema", "start"].every(field => typeof safe[field] === "string" && safe[field])) throw new Error(ERROR);
+    const dataOptions = {...options, retry: false};
+    if (safe.dataset === "GLBX.MDP3" && safe.schema === "definition" && dataOptions.timeout === undefined) {
+      dataOptions.timeout = CME_DEFINITION_TIMEOUT_MS;
+    }
     if(subscription&&isStandardCmeHistoricalCovered(safe)){
       if(subscriptionCoveredRequests>=10000)throw new NonRetryableResponseError(ERROR);
       subscriptionCoveredRequests++;
       // An included attempt has no monetary estimate. Keep all byte limits, exact originals,
       // and no automatic retries; a mixed tool must classify its next subrequest anew.
-      const response=await readInvocation(()=>originalGet.call(this,endpoint,params,{...options,retry:false}),"market_data");
+      const response=await readInvocation(()=>originalGet.call(this,endpoint,params,dataOptions),"market_data");
       capture(endpoint,safe,response.body);
       return response.value;
     }
@@ -204,7 +209,7 @@ export function installPlatformTransportGuard(apiKey: string, suppliedControl?:P
     }
     spentMicros+=costMicros;
     // A timeout/HTTP failure may still be billable; retain its estimate and never retry data.
-    const response = await readInvocation(() => originalGet.call(this, endpoint, params, {...options,retry:false}),"market_data");
+    const response = await readInvocation(() => originalGet.call(this, endpoint, params, dataOptions),"market_data");
     capture(endpoint, safe, response.body);
     return response.value;
   };
