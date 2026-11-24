@@ -14,8 +14,9 @@ const DBN_PRELUDE_LENGTH = 8;
 const DBN_RECORD_LENGTH_MULTIPLIER = 4;
 const DBN_RECORD_HEADER_LENGTH = 16;
 const DBN_RTYPE_MBP_1 = 1;
+const DBN_RTYPE_CMBP_1 = 0xb1;
 const DBN_RTYPE_ERROR = 21;
-const MBP_1_RECORD_MIN_LENGTH = 80;
+const L1_RECORD_MIN_LENGTH = 80;
 const UNDEF_PRICE = 9_223_372_036_854_775_807n;
 const UNDEF_TIMESTAMP=18_446_744_073_709_551_615n;
 const MAX_LIVE_BYTES=16*1024*1024;
@@ -29,21 +30,24 @@ const LIVE_SYMBOL_ALIASES: Record<string, { symbol: string; stypeIn: LiveSymbolS
 };
 
 export type LiveSymbolSType = (typeof LIVE_SYMBOL_STYPES)[number];
+type LiveQuoteSchema = "mbp-1" | "cmbp-1";
 
 export interface LiveQuoteData {
   symbol: string;
   liveSymbol: string;
   stypeIn: LiveSymbolSType;
   dataset: string;
-  schema: "mbp-1";
+  schema: LiveQuoteSchema;
   instrumentId: number;
   price: number;
   bid: number;
   ask: number;
   bidSize: number;
   askSize: number;
-  bidCount: number;
-  askCount: number;
+  bidCount: number | null;
+  askCount: number | null;
+  bidPublisherId?: number;
+  askPublisherId?: number;
   timestamp: Date;
   receiveTimestamp: Date;
   dataAge: number;
@@ -91,6 +95,7 @@ type NormalizedLiveQuoteRequest = {
   liveSymbol: string;
   stypeIn: LiveSymbolSType;
   dataset: string;
+  schema: LiveQuoteSchema;
   cacheKey: string;
 };
 
@@ -144,9 +149,14 @@ function readNullTerminatedAscii(buffer: Buffer, start: number, end: number): st
   return buffer.toString("utf8", start, stop).trim();
 }
 
-class DbnMbp1QuoteDecoder {
+class DbnL1QuoteDecoder {
   private buffer = Buffer.alloc(0);
   private metadataSkipped = false;
+  private readonly quoteRtype: number;
+
+  constructor(private readonly schema: LiveQuoteSchema) {
+    this.quoteRtype = schema === "cmbp-1" ? DBN_RTYPE_CMBP_1 : DBN_RTYPE_MBP_1;
+  }
 
   write(chunk: Buffer): void {
     if (chunk.length === 0) {
@@ -182,11 +192,11 @@ class DbnMbp1QuoteDecoder {
         };
       }
 
-      if (rtype !== DBN_RTYPE_MBP_1) {
+      if (rtype !== this.quoteRtype) {
         continue;
       }
 
-      const quote = parseMbp1QuoteRecord(record, now);
+      const quote = parseL1QuoteRecord(record, this.schema, now);
       if (quote) {
         return { status: "quote", quote };
       }
@@ -221,12 +231,13 @@ class DbnMbp1QuoteDecoder {
   }
 }
 
-function parseMbp1QuoteRecord(
+function parseL1QuoteRecord(
   record: Buffer,
+  schema: LiveQuoteSchema,
   now: () => number
 ): Omit<LiveQuoteData, "symbol" | "liveSymbol" | "stypeIn" | "dataset" | "schema" | "sessionId"> | undefined {
-  if (record.length < MBP_1_RECORD_MIN_LENGTH) {
-    throw new Error(`Invalid MBP-1 record length: ${record.length}`);
+  if (record.length < L1_RECORD_MIN_LENGTH) {
+    throw new Error(`Invalid ${schema.toUpperCase()} record length: ${record.length}`);
   }
 
   const bidRaw = record.readBigInt64LE(48);
@@ -251,8 +262,9 @@ function parseMbp1QuoteRecord(
     ask,
     bidSize: record.readUInt32LE(64),
     askSize: record.readUInt32LE(68),
-    bidCount: record.readUInt32LE(72),
-    askCount: record.readUInt32LE(76),
+    ...(schema === "cmbp-1"
+      ? { bidCount: null, askCount: null, bidPublisherId: record.readUInt16LE(72), askPublisherId: record.readUInt16LE(76) }
+      : { bidCount: record.readUInt32LE(72), askCount: record.readUInt32LE(76) }),
     timestamp,
     receiveTimestamp: unixNanosToDate(tsRecv),
     dataAge: observedNow - timestamp.getTime(),
@@ -304,13 +316,10 @@ export class DatabentoLiveClient {
     }
 
     const cached = this.quoteCache.get(request.cacheKey);
-    if (cached && cached.expiresAtMs > this.now()) {
-      return cached.quote;
-    }
-
-    const inFlight = this.inFlightQuotes.get(request.cacheKey);
-    if (inFlight) {
-      return inFlight;
+    const existing = cached && cached.expiresAtMs > this.now() ? cached.quote : this.inFlightQuotes.get(request.cacheKey);
+    if (existing) {
+      const quote = await existing;
+      return quote.symbol === request.requestedSymbol ? quote : { ...quote, symbol: request.requestedSymbol };
     }
 
     const quotePromise = this.readLiveQuote(request, timeoutMs)
@@ -341,18 +350,24 @@ export class DatabentoLiveClient {
     if (/\.(FUT|OPT)$/i.test(requestedSymbol)) {
       throw new Error("Select a single contract with instrument search, then quote its raw symbol or instrument_id");
     }
-    const dataset = (options.dataset ?? this.dataset).trim();
+    const requestedDataset = (options.dataset ?? this.dataset).trim();
+    const isOpra = requestedDataset.toUpperCase() === "OPRA.PILLAR";
+    const dataset = isOpra ? "OPRA.PILLAR" : requestedDataset;
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(dataset)) {
       throw new Error("dataset must be a non-empty Databento dataset code");
     }
 
-    const alias = options.stypeIn ? undefined : LIVE_SYMBOL_ALIASES[requestedSymbol.toUpperCase()];
-    const liveSymbol = alias?.symbol ?? requestedSymbol;
+    const alias = options.stypeIn || isOpra ? undefined : LIVE_SYMBOL_ALIASES[requestedSymbol.toUpperCase()];
     const stypeIn = options.stypeIn ?? alias?.stypeIn ?? "raw_symbol";
     if (!LIVE_SYMBOL_STYPES.includes(stypeIn)) {
       throw new Error(`stypeIn must be one of: ${LIVE_SYMBOL_STYPES.join(", ")}`);
     }
 
+    // OCC symbols have a six-character root, often displayed with a single space.
+    const occ = isOpra && stypeIn === "raw_symbol"
+      ? /^([A-Z0-9.]{1,6}) *(\d{6}[CP]\d{8})$/.exec(requestedSymbol)
+      : null;
+    const liveSymbol = occ ? occ[1].padEnd(6) + occ[2] : alias?.symbol ?? requestedSymbol;
     if (stypeIn === "instrument_id" && (!/^\d+$/.test(liveSymbol) || Number(liveSymbol) < 1 || Number(liveSymbol) > 0xffffffff)) {
       throw new Error("instrument_id must identify one contract by a positive 32-bit integer");
     }
@@ -362,6 +377,7 @@ export class DatabentoLiveClient {
       liveSymbol,
       stypeIn,
       dataset,
+      schema: isOpra ? "cmbp-1" : "mbp-1",
       cacheKey: `${dataset}|${stypeIn}|${liveSymbol}`,
     };
   }
@@ -372,7 +388,7 @@ export class DatabentoLiveClient {
 
   private readLiveQuote(request: NormalizedLiveQuoteRequest, timeoutMs: number): Promise<LiveQuoteData> {
     const socket = this.socketFactory({ host: this.gatewayForDataset(request.dataset), port: this.port });
-    const dbnDecoder = new DbnMbp1QuoteDecoder();
+    const dbnDecoder = new DbnL1QuoteDecoder(request.schema);
     let controlBuffer = Buffer.alloc(0);
     let receivedBytes=0,controlBytes=0;
     const rawChunks:Buffer[]=[];
@@ -427,7 +443,7 @@ export class DatabentoLiveClient {
             if (request.stypeIn === "instrument_id" && result.quote.instrumentId !== Number(request.liveSymbol)) {
               continue;
             }
-            if(capture)captureLiveDbn(Buffer.concat(rawChunks),{dataset:request.dataset,schema:"mbp-1",
+            if(capture)captureLiveDbn(Buffer.concat(rawChunks),{dataset:request.dataset,schema:request.schema,
               symbols:request.liveSymbol,stype_in:request.stypeIn},result.quote.receivedAt!,this.apiKey);
             finish(() => {
               socket.on("error",()=>{});
@@ -438,7 +454,7 @@ export class DatabentoLiveClient {
                 liveSymbol: request.liveSymbol,
                 stypeIn: request.stypeIn,
                 dataset: request.dataset,
-                schema: "mbp-1",
+                schema: request.schema,
                 ...result.quote,
                 sessionId,
               });
@@ -474,7 +490,7 @@ export class DatabentoLiveClient {
           sessionId = message.session_id;
           socket.write(
             serializeGatewayControl({
-              schema: "mbp-1",
+              schema: request.schema,
               stype_in: request.stypeIn,
               symbols: request.liveSymbol,
               id: "0",

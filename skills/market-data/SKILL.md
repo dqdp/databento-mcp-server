@@ -56,7 +56,7 @@ Discovery показывает фактические доступные это�
 ### Данные и ограничения
 
 - Сначала выясни instrument/dataset/schema и доступный диапазон через discovery выбранного коннектора. Futures, options on futures и equity options не взаимозаменяемы. Сохраняй provenance, timestamp события/публикации/получения и идентичность инструмента; ICE Brent не заменять NYMEX BZ или spot-бенчмарком без явного запроса.
-- Текущий Databento Live получает одно подходящее `mbp-1` обновление и закрывает Raw TCP/DBN соединение. Не объявлять его постоянным потоком либо поддержкой Live MBO/MBP-10/trades/OHLCV. Другие capabilities использовать только если их явно объявляет фактический сервер. Historical frontier/котировка не доказывают Live-свежесть.
+- Для разовой котировки проверьте описание установленного Live-инструмента. Версия с поддержкой OPRA выбирает `cmbp-1` для `OPRA.PILLAR` и `mbp-1` для остальных datasets, получает первое двустороннее обновление и закрывает Raw TCP/DBN соединение.
 - Для Historical действует серверная политика конкретного ключа. Подтверждённый Standard внутри покрытия не требует клиентского автоматического `get_cost`; вне покрытия положительная оценка требует разового подтверждения в кабинете. Название плана не является проверкой биллинга. Ответ `confirmation_required` не повторять автоматически и не обходить другим инструментом. Технические лимиты и права остаются в силе.
 - Batch/Reference или другая отсутствующая операция из локального раздела ниже не становятся доступными через Marengo. Для большого результата используй только объявленные страницы/экспорт рабочего кэша. Отдельного Research Storage или обязательного журнала исследований этот skill не вводит.
 - Skill помогает выбрать данные; аналитический промпт, методика, отчёт, формулы и визуализация определяются запросом пользователя. Не навязывай фиксированный аналитический workflow или запуск producer как условие получения данных.
@@ -145,8 +145,8 @@ the necessary MCP servers connected.
 Databento MCP tools expected for this skill:
 
 - Quote/session safety: `get_live_futures_quote` (true Databento Live API
-  top-of-book quote update for a single covered futures or futures-options
-  symbol), `get_futures_quote` (latest Historical REST quote, ES/NQ ONLY),
+  top-of-book update for a single future, option on futures, or OPRA option),
+  `get_futures_quote` (latest Historical REST quote, ES/NQ ONLY),
   `get_session_info`.
 - Timeseries/direct data: `get_historical_bars` (ES/NQ ONLY), `timeseries_get_range`
   (the workhorse for everything else — any dataset/symbol/schema, incl. CL, other
@@ -249,10 +249,10 @@ Historical Standard CME guardrails:
   with `MCP_DIRECT_MAX_RECORDS` (default 10000).
 - Use `batch_submit_job` for large covered exports, including `ALL_SYMBOLS`.
 
-Databento operating reality (verified against the live MCP, 2026-06-29):
+Databento tool usage:
 
 - The live quote tool `get_live_futures_quote` accepts any single covered
-  Databento symbol for futures and options on futures. It supports explicit
+  Databento symbol for futures, options on futures and OPRA listed options. It supports explicit
   `dataset`, `stype_in`, and `timeout_ms`. Use `stype_in=continuous` for
   continuous futures such as `CL.v.0`, or `raw_symbol` / `instrument_id` for
   an exact listed instrument. For a family such as `ES.FUT` or `ES.OPT`, look
@@ -261,10 +261,13 @@ Databento operating reality (verified against the live MCP, 2026-06-29):
   ES/NQ only. For non-ES/NQ historical bars or broader schemas, use
   `timeseries_get_range`.
 - `get_live_futures_quote` is the true Databento Live API path. It opens a
-  short-lived Raw API socket subscription for `schema=mbp-1`, returns the first
+  short-lived Raw API socket subscription (`cmbp-1` for `OPRA.PILLAR`, otherwise `mbp-1`), returns the first
   top-of-book update, then closes the socket. It is a short-lived live update
   tool, not an MBO snapshot tool and not a persistent push/stream tool. ES and
   NQ without `stype_in` are convenience aliases for `ES.v.0` and `NQ.v.0`.
+- For OPRA, quote the contract's OCC `raw_symbol`. Historical instrument IDs can
+  differ from Live IDs. Read bid/ask venue IDs from `bidPublisherId` and
+  `askPublisherId`. Order counts are unavailable.
 - `get_futures_quote` is the latest quote path via Databento Historical REST
   (`ES.c.0`/`NQ.c.0`) and uses a local 30-second cache. Treat it as a
   separate historical-data feature, not as a degraded live-data mode, and do not

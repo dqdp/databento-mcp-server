@@ -252,6 +252,8 @@ function createCallToolHandler(clients: DatabentoMcpClients, options: DatabentoM
           askSize: quote.askSize,
           bidCount: quote.bidCount,
           askCount: quote.askCount,
+          bidPublisherId: quote.bidPublisherId,
+          askPublisherId: quote.askPublisherId,
           timestamp: quote.timestamp.toISOString(),
           receiveTimestamp: quote.receiveTimestamp.toISOString(),
           dataAge: `${Math.round(quote.dataAge / 1000)}s ago`,

@@ -152,6 +152,10 @@ describe("MCP server integration", () => {
         maximum: 200,
       });
       expect(toolsByName.get("get_live_futures_quote")?.description).toContain("Databento Live API");
+      const quoteTool = toolsByName.get("get_live_futures_quote")!;
+      expect(JSON.stringify(quoteTool)).toContain("OPRA.PILLAR");
+      expect(JSON.stringify(quoteTool)).toContain("cmbp-1");
+      expect(quoteTool.inputSchema.properties).not.toHaveProperty("schema");
       expect(toolsByName.get("get_live_futures_quote")?.inputSchema.required).toEqual([
         "symbol",
       ]);
@@ -562,6 +566,37 @@ describe("MCP server integration", () => {
           sessionId: "session-1",
         })
       );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("returns OPRA publisher IDs and preserves the padded OCC symbol through the local MCP", async () => {
+    const { client, clients, server } = await connectTestClient();
+    const symbol = "SPX   261218P05425000";
+    vi.mocked(clients.liveClient.getLiveFuturesQuote).mockResolvedValue({
+      symbol, liveSymbol: symbol, stypeIn: "raw_symbol", dataset: "OPRA.PILLAR", schema: "cmbp-1",
+      instrumentId: 345, price: 60, bid: 58, ask: 62, bidSize: 12, askSize: 18,
+      bidCount: null, askCount: null, bidPublisherId: 281, askPublisherId: 289,
+      timestamp: new Date("2026-11-24T15:00:00.000Z"),
+      receiveTimestamp: new Date("2026-11-24T15:00:00.001Z"), dataAge: 5,
+    });
+
+    try {
+      const result = await client.callTool({
+        name: "get_live_futures_quote",
+        arguments: {symbol, dataset: "OPRA.PILLAR"},
+      });
+      expect(result.isError).not.toBe(true);
+      expect(clients.liveClient.getLiveFuturesQuote).toHaveBeenCalledWith(symbol, {
+        dataset: "OPRA.PILLAR", stypeIn: undefined, timeoutMs: undefined,
+      });
+      expect(textPayload(result)).toMatchObject({
+        symbol, liveSymbol: symbol, dataset: "OPRA.PILLAR", schema: "cmbp-1",
+        bid: 58, ask: 62, bidSize: 12, askSize: 18,
+        bidCount: null, askCount: null, bidPublisherId: 281, askPublisherId: 289,
+      });
     } finally {
       await client.close();
       await server.close();
