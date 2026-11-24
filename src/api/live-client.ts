@@ -357,7 +357,9 @@ export class DatabentoLiveClient {
       throw new Error("dataset must be a non-empty Databento dataset code");
     }
 
-    const alias = options.stypeIn || isOpra ? undefined : LIVE_SYMBOL_ALIASES[requestedSymbol.toUpperCase()];
+    const useAlias = !isOpra && (options.stypeIn === undefined ||
+      (dataset.toUpperCase() === "GLBX.MDP3" && options.stypeIn === "continuous"));
+    const alias = useAlias ? LIVE_SYMBOL_ALIASES[requestedSymbol.toUpperCase()] : undefined;
     const stypeIn = options.stypeIn ?? alias?.stypeIn ?? "raw_symbol";
     if (!LIVE_SYMBOL_STYPES.includes(stypeIn)) {
       throw new Error(`stypeIn must be one of: ${LIVE_SYMBOL_STYPES.join(", ")}`);

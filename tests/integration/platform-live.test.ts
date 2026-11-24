@@ -77,7 +77,7 @@ describe("platform bounded Live TCP through actual native MCP",()=>{
     }) as typeof net.createConnection);
     vi.spyOn(Date,"now").mockReturnValue(NOW);
     const historical=vi.spyOn(globalThis,"fetch").mockRejectedValue(new Error("Unexpected HTTP call"));
-    const args = dataset === "GLBX.MDP3" ? {symbol, timeout_ms: 2000} : {symbol, dataset, timeout_ms: 2000};
+    const args = {symbol, dataset, stype_in: stype, timeout_ms: 2000};
     const reply=await invokePlatformTool({name:"get_live_futures_quote",arguments:args,api_key:"db-synthetic-live-owner"});
     expect(reply.result.isError).not.toBe(true);
     const result=JSON.parse((reply.result.content[0] as {text:string}).text);
